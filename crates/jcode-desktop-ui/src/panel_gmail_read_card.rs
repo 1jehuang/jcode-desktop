@@ -229,6 +229,7 @@ fn pill(theme: &Theme, text: String) -> Div {
 pub(super) fn render(
     index: usize,
     view: &View,
+    tokens: Option<Div>,
     expanded: bool,
     on_toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     selection: &Entity<TextSelection>,
@@ -287,6 +288,7 @@ pub(super) fn render(
                 .text_color(theme.TEXT_FAINT)
                 .child(status),
         )
+        .when_some(tokens, |el, tokens| el.child(tokens))
         .when_some(url, |el, url| {
             el.child(
                 div()

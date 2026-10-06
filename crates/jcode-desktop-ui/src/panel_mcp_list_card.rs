@@ -152,6 +152,7 @@ fn plural(count: usize, word: &str) -> String {
 pub(super) fn render(
     index: usize,
     view: &View,
+    tokens: Option<Div>,
     expanded: bool,
     on_toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
     selection: &Entity<TextSelection>,
@@ -192,7 +193,8 @@ pub(super) fn render(
                     view.servers.len(),
                     plural(view.tool_count(), "tool")
                 )),
-        );
+        )
+        .when_some(tokens, |el, tokens| el.child(tokens));
 
     let server_rows = view.servers.iter().enumerate().map(|(n, server)| {
         let hidden = if expanded || server.tools.len() <= TOOLS_COLLAPSED + 1 {

@@ -301,6 +301,7 @@ pub(super) fn render(
     compose: &Compose,
     outcome: &Outcome,
     error: Option<&str>,
+    tokens: Option<Div>,
     superseded: Option<Superseded>,
     expanded: bool,
     on_toggle: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
@@ -419,12 +420,13 @@ pub(super) fn render(
                         .text_color(status_color)
                         .child(status),
                 )
+                .when_some(tokens, |el, tokens| el.child(tokens))
+                .child(div().flex_1())
                 .when(superseded.is_some(), |el| {
                     el.child(
                         div()
                             .id(("gmail-superseded-hide", index))
                             .debug_selector(|| "gmail-compose-hide".into())
-                            .ml_auto()
                             .px_2()
                             .rounded_full()
                             .bg(theme.INLINE_CODE_BG)
@@ -441,7 +443,6 @@ pub(super) fn render(
                         div()
                             .id(("gmail-open", index))
                             .debug_selector(|| "gmail-compose-open".into())
-                            .ml_auto()
                             .px_2()
                             .rounded_md()
                             .text_size(px(12.0))

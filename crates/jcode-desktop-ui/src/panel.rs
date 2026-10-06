@@ -3639,6 +3639,7 @@ impl Panel {
                         &compose,
                         &gmail_draft_card::outcome(output, *done),
                         error.as_deref(),
+                        tool_card_token_pill(output),
                         superseded,
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
@@ -3670,6 +3671,7 @@ impl Panel {
                     let card = gmail_read_card::render(
                         index,
                         &view,
+                        tool_card_token_pill(output),
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -3700,6 +3702,7 @@ impl Panel {
                     let card = mcp_list_card::render(
                         index,
                         &view,
+                        tool_card_token_pill(output),
                         expanded,
                         cx.listener(move |this, _event, _window, cx| {
                             cx.stop_propagation();
@@ -5287,7 +5290,48 @@ fn tool_output_token_badge(output: &str) -> (String, gpui::Rgba) {
         ApproxTokenSeverity::Warning => theme.WARN,
         ApproxTokenSeverity::Danger => theme.ERROR,
     };
+    // MCP results over budget arrive trimmed with a note giving the original
+    // size. Show both, so the badge says what the server actually returned.
+    if let Some(original) = trimmed_mcp_original_tokens(output) {
+        return (
+            format!(
+                "~{} of {}",
+                format_approx_token_count(tokens),
+                format_approx_token_count(original).trim_end_matches(" tok")
+            ),
+            theme.WARN,
+        );
+    }
     (format!("~{}", format_approx_token_count(tokens)), color)
+}
+
+/// The original token count stated by the SDK's MCP trim note, if present.
+fn trimmed_mcp_original_tokens(output: &str) -> Option<usize> {
+    const PREFIX: &str = "[MCP result trimmed from ";
+    let rest = &output[output.rfind(PREFIX)? + PREFIX.len()..];
+    rest.split_once(" to ")?.0.parse().ok()
+}
+
+/// The token badge custom tool cards show in their header, matching the
+/// generic tool row.
+pub(crate) fn tool_card_token_pill(output: &str) -> Option<gpui::Div> {
+    if output.trim().is_empty() {
+        return None;
+    }
+    let (label, color) = tool_output_token_badge(output);
+    Some(
+        div()
+            .debug_selector(|| "tool-card-tokens".into())
+            .flex_none()
+            .px_2()
+            .py(px(2.0))
+            .rounded_full()
+            .bg(Theme::global().INLINE_CODE_BG)
+            .text_size(px(10.0))
+            .line_height(px(14.0))
+            .text_color(color)
+            .child(label),
+    )
 }
 
 /// `12500` -> `12.5k`, `1048576` -> `1.0m`; small counts stay exact.
@@ -7439,6 +7483,18 @@ mod tests {
             tool_output_token_badge(&"xxx\n".repeat(1_900)).0,
             "~1.9k tok"
         );
+    }
+
+    #[test]
+    fn tool_token_badge_reports_the_original_size_of_trimmed_mcp_results() {
+        let output = format!(
+            "{}\n\n[MCP result trimmed from 46210 to 7980 tokens to fit the context budget. \
+             Pass accept_large_output: true for the full result, or narrow the request.]",
+            "x".repeat(31_900)
+        );
+        let (label, _) = tool_output_token_badge(&output);
+        assert_eq!(label, "~8k tok of 46k");
+        assert_eq!(trimmed_mcp_original_tokens("plain output"), None);
     }
 
     fn settle_tool_details(panel: &Entity<Panel>, cx: &mut gpui::VisualTestContext) {
