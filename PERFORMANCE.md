@@ -431,9 +431,12 @@ more than the ~1s it saves, so it is not enabled either.
 
 `jcode-desktop-ui` is 183 non-test modules and ~122k lines. A static scan of
 `crate::`/`super::` references shows ~45k lines in modules that never reach
-`workspace` or `panel`. Those are the split candidates, because an edit to
-`workspace.rs` or a panel file would no longer re-check them, and an edit to
-them would rebuild only a small crate plus the UI crate's metadata reuse.
+`workspace` or `panel`. Those are the split candidates. The expected gain is
+in the UI crate's fixed per-rebuild work (crate metadata 1.2s, monomorphization
+collection, macro expansion, incremental cache save), which scales with crate
+size. Incremental compilation already skips most unchanged code, and editing
+a moved module still rebuilds the UI crate that depends on it, so measure a
+first slice before moving more.
 
 A first, self-contained `jcode-desktop-core` slice closes over itself with no
 extra modules (~11k lines): `diff_model`, `diff`, `learning`, `remote_targets`,
