@@ -110,7 +110,13 @@ def window_rect(hwnd):
 
 
 def hit_test(hwnd, x, y):
-    """Ask the window what Windows sees at a screen point (WM_NCHITTEST)."""
+    """Ask the window what Windows sees at a screen point (WM_NCHITTEST).
+
+    GPUI answers from its last mouse hit test, so move the real cursor there
+    first and let a frame observe it, as a user's pointer would.
+    """
+    user32.SetCursorPos(x, y)
+    time.sleep(0.5)
     user32.SendMessageW.restype = ctypes.c_ssize_t
     user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
     lparam = (y & 0xFFFF) << 16 | (x & 0xFFFF)
