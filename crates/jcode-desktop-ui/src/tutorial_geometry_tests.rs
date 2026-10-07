@@ -204,8 +204,15 @@ fn onboarding_geometry_acceptance(cx: &mut gpui::TestAppContext) {
                 assert_eq!(overlap_area(guide, canvas), 0.0);
             }
             assert!(guide.right() <= px(SIDEBAR_WIDTH));
+            // macOS keeps a titlebar strip for the traffic lights when the
+            // sidebar does not cover it. That is chrome, not a tutorial strip.
+            let titlebar = if cfg!(target_os = "macos") {
+                TITLEBAR_HEIGHT
+            } else {
+                0.0
+            };
             assert!(
-                canvas.top() < px(40.0),
+                canvas.top() < px(40.0 + titlebar),
                 "no reserved tutorial strip at the top"
             );
             let mut regions = Vec::new();

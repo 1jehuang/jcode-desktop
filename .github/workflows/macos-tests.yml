@@ -52,6 +52,8 @@ jobs:
         run: |
           cargo build --bin jcode-desktop
           cargo build -p jcode-desktop-ui
+      - name: Install Poppler for PDF preview tests
+        run: brew install poppler
       - name: Test the Desktop UI
         working-directory: jcode-desktop
         run: cargo test -p jcode-desktop-ui --lib -- ${{ inputs.filter }}
