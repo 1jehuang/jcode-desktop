@@ -54,6 +54,7 @@ struct Demo {
 enum Choice {
     Login(usize),
     Theme,
+    Finish,
     Field,
     Primary,
     OpenGmail,
@@ -164,7 +165,7 @@ impl State {
 
     fn choices(&self) -> Vec<Choice> {
         let mut choices: Vec<Choice> = self.importable().into_iter().map(Choice::Login).collect();
-        choices.push(Choice::Theme);
+        choices.extend([Choice::Theme, Choice::Finish]);
         match self.stage {
             Stage::Complete { .. } => {}
             Stage::Code { .. } | Stage::Verifying { .. } => choices.extend([
@@ -367,6 +368,57 @@ impl Workspace {
         });
     }
 
+    /// The model and login the first session will use: connected logins plus
+    /// the imports still switched on, ranked like the runtime's post-import
+    /// default. `None` when nothing usable is connected or selected.
+    fn account_onboarding_identity(&self) -> Option<(String, String, Option<String>)> {
+        let connected: Vec<&accounts::Account> = self
+            .accounts
+            .iter()
+            .filter(|account| account.available() && account.id != "jcode")
+            .collect();
+        let state = &self.account_sign_in;
+        let mut ids: Vec<&str> = connected.iter().map(|account| account.id.as_str()).collect();
+        for index in state.selected_imports() {
+            ids.extend(state.candidates[index].provider_ids());
+        }
+        let (provider, model) = jcode_base::auth::lifecycle::onboarding_default_selection(&ids)?;
+        let method = connected
+            .iter()
+            .find(|account| account.id == provider)
+            .map(|account| account.auth_kind.clone())
+            .filter(|kind| !kind.trim().is_empty());
+        Some((provider, model, method))
+    }
+
+    /// Keep the demo composer's model and login pills on the real identity
+    /// instead of "Choose model" and "Accounts".
+    fn sync_account_demo_identity(&mut self, cx: &mut Context<Self>) {
+        let Some(panel) = self.account_sign_in.demo.as_ref().map(|demo| demo.panel.clone())
+        else {
+            return;
+        };
+        let identity = self.account_onboarding_identity();
+        let (provider, model, method) = match identity {
+            Some((provider, model, method)) => (Some(provider), Some(model), method),
+            None => (None, None, None),
+        };
+        panel.update(cx, |panel, cx| {
+            if panel.provider == provider && panel.model == model && panel.auth_method == method {
+                return;
+            }
+            panel.provider = provider;
+            panel.auth_method = method;
+            if panel.model != model {
+                panel.model = model.clone();
+                panel
+                    .input
+                    .update(cx, |input, cx| input.set_current_model(model, cx));
+            }
+            cx.notify();
+        });
+    }
+
     /// Right-half action: import the checked logins, then enter the workspace.
     fn continue_account_sign_in(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let selected = self.account_sign_in.selected_imports();
@@ -457,7 +509,7 @@ impl Workspace {
             Choice::StartOver => self.reset_account_sign_in(window, cx),
             Choice::Login(index) => self.toggle_account_import(index, cx),
             Choice::Theme => self.pick_account_theme(Theme::active_preset().next(), cx),
-            Choice::Continue => self.continue_account_sign_in(window, cx),
+            Choice::Finish | Choice::Continue => self.continue_account_sign_in(window, cx),
         }
     }
 
@@ -849,27 +901,46 @@ impl Workspace {
             .filter(|account| account.available())
             .map(|account| account.id.clone())
             .collect();
+        self.sync_account_demo_identity(cx);
         let theme = Theme::global();
         let narrow = window.viewport_size().width < px(760.0);
-        let info = div()
+        let padding = if narrow { 24.0 } else { LEFT_COLUMN_PADDING };
+        let finish = div()
+            .debug_selector(|| "account-sign-in-footer".into())
+            .flex_none()
+            .w_full()
+            .px(px(padding))
+            .pt_3()
+            .pb(px(if narrow { 16.0 } else { TAB_BOTTOM }))
+            .flex()
+            .justify_center()
+            .child(
+                div().w_full().max_w(px(LEFT_CONTENT_WIDTH)).flex().child(
+                    account_button(
+                        "account-sign-in-finish",
+                        "Finish onboarding",
+                        true,
+                        self.account_sign_in.focused(Choice::Finish),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.continue_account_sign_in(window, cx)
+                    })),
+                ),
+            );
+        let scroll = div()
             .id("account-sign-in-card")
             .debug_selector(|| "account-sign-in-card".into())
-            // The left column keeps its natural width (never more than half),
-            // so the live transcript gets whatever space remains.
-            .when(narrow, |el| el.flex_1())
-            .when(!narrow, |el| {
-                el.flex_none()
-                    .w(px(LEFT_COLUMN_WIDTH))
-                    .max_w(gpui::relative(0.5))
-            })
+            .flex_1()
+            .w_full()
             .min_w(px(0.0))
             .min_h(px(0.0))
             .overflow_y_scroll()
             .flex()
             .flex_col()
             .items_center()
-            .px(px(if narrow { 24.0 } else { LEFT_COLUMN_PADDING }))
-            .py(px(if narrow { 28.0 } else { 56.0 }))
+            .px(px(padding))
+            .pt(px(if narrow { 28.0 } else { 56.0 }))
+            .pb_4()
             .child(
                 div()
                     .w_full()
@@ -881,6 +952,24 @@ impl Workspace {
                     .child(self.account_onboarding_logins(cx))
                     .child(self.account_onboarding_theme(cx)),
             );
+        // The left column keeps its natural width (never more than half),
+        // so the live transcript gets whatever space remains. Finish stays
+        // pinned to its bottom while the choices above scroll.
+        let info = div()
+            .debug_selector(|| "account-sign-in-left".into())
+            .when(narrow, |el| el.flex_1())
+            .when(!narrow, |el| {
+                el.flex_none()
+                    .h_full()
+                    .w(px(LEFT_COLUMN_WIDTH))
+                    .max_w(gpui::relative(0.5))
+            })
+            .min_w(px(0.0))
+            .min_h(px(0.0))
+            .flex()
+            .flex_col()
+            .child(scroll)
+            .child(finish);
         let proceed = self.account_onboarding_continue(narrow, window, cx);
         div()
             .debug_selector(|| "account-sign-in".into())

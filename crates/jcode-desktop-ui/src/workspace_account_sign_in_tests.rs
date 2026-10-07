@@ -194,6 +194,8 @@ fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAp
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
     vcx.simulate_keystrokes("tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Finish));
+    vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Field));
     // Tab puts the caret in the field, so typing and Enter go to it.
     vcx.simulate_input("me@example.com");
@@ -202,7 +204,7 @@ fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAp
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }))
     });
-    vcx.simulate_keystrokes("tab tab tab tab");
+    vcx.simulate_keystrokes("tab tab tab tab tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::OpenGmail));
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::StartOver));
@@ -278,6 +280,75 @@ fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppCont
             "tests never import real credentials"
         );
     });
+}
+
+#[gpui::test]
+fn finish_onboarding_pill_sits_bottom_left_and_finishes(cx: &mut gpui::TestAppContext) {
+    for email in [true, false] {
+        let (workspace, vcx) = setup_with_email(cx, email);
+        let finish = vcx.debug_bounds("account-sign-in-finish").expect("finish pill");
+        let card = vcx.debug_bounds("account-sign-in-card").unwrap();
+        let page = vcx.debug_bounds("account-sign-in").unwrap();
+        assert!(finish.right() <= card.right(), "left column: {finish:?}");
+        assert!(finish.top() >= card.bottom() - px(1.), "below the choices");
+        assert!(finish.bottom() >= page.bottom() - px(48.), "pinned to the bottom");
+        click(vcx, "account-sign-in-finish");
+        assert_draft_and_focus(&workspace, vcx);
+    }
+}
+
+#[gpui::test]
+fn demo_composer_shows_model_from_logins_and_imports(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    let identity = |vcx: &mut gpui::VisualTestContext| {
+        let panel = workspace.read_with(vcx, |w, _| {
+            w.account_sign_in.demo.as_ref().unwrap().panel.clone()
+        });
+        panel.read_with(vcx, |p, _| (p.provider.clone(), p.model.clone()))
+    };
+    // Nothing connected or detected: no invented identity.
+    workspace.update(vcx, |w, cx| {
+        w.accounts = Vec::new();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert_eq!(identity(vcx), (None, None));
+    // An existing Claude login fills in Claude's default model.
+    workspace.update(vcx, |w, cx| {
+        w.accounts = accounts::parse(
+            r#"{"providers":[
+                {"id":"claude","display_name":"Claude","status":"available","auth_kind":"OAuth"}
+            ]}"#,
+        )
+        .unwrap();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        identity(vcx),
+        (
+            Some("claude".into()),
+            Some(jcode_provider_core::DEFAULT_CLAUDE_MODEL.into())
+        )
+    );
+    assert!(vcx.debug_bounds("panel-model-name").is_some());
+    // A selected OpenAI import outranks it, and skipping it falls back.
+    workspace.update(vcx, |w, cx| {
+        w.set_account_import_candidates(
+            vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex")],
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        identity(vcx),
+        (
+            Some("openai".into()),
+            Some(jcode_provider_core::DEFAULT_OPENAI_MODEL.into())
+        )
+    );
+    click(vcx, "account-import-toggle-0");
+    assert_eq!(identity(vcx).0.as_deref(), Some("claude"));
 }
 
 #[gpui::test]
