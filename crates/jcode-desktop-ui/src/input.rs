@@ -822,49 +822,7 @@ impl PromptInput {
         provider: &str,
         current: Option<&str>,
     ) -> Option<String> {
-        let wanted = provider_route_methods(provider);
-        let mut matches: Vec<_> = self
-            .model_details
-            .iter()
-            .filter(|(_, detail)| {
-                let method = detail.api_method.to_ascii_lowercase();
-                let owner = detail.provider.to_ascii_lowercase();
-                wanted.iter().any(|wanted| {
-                    method == *wanted
-                        || method.starts_with(&format!("{wanted}-"))
-                        || owner == *wanted
-                })
-            })
-            .collect();
-        // Keep the current model when the target provider serves it.
-        // Otherwise land on the provider's newest flagship (same ranking as
-        // the daemon's post-login selection), not the alphabetically first
-        // route, which previously put Copilot users on `claude-opus-4.6`.
-        if let Some((spec, _)) = matches
-            .iter()
-            .find(|(_, detail)| current.is_some_and(|model| detail.model == model))
-        {
-            return Some((*spec).clone());
-        }
-        let candidates: Vec<&str> = matches
-            .iter()
-            .map(|(_, detail)| detail.model.as_str())
-            .collect();
-        if let Some(best) =
-            jcode_base::auth::lifecycle::preferred_model_for_provider(provider, &candidates)
-            && let Some((spec, _)) = matches.iter().find(|(_, detail)| detail.model == best)
-        {
-            return Some((*spec).clone());
-        }
-        matches.sort_by(|(a, left), (b, right)| {
-            let current_left = current.is_some_and(|model| left.model == model);
-            let current_right = current.is_some_and(|model| right.model == model);
-            current_right
-                .cmp(&current_left)
-                .then_with(|| right.recommended.cmp(&left.recommended))
-                .then_with(|| a.cmp(b))
-        });
-        matches.first().map(|(spec, _)| (*spec).clone())
+        provider_route_spec_in(&self.model_details, provider, current)
     }
 
     fn build_command_suggestions(&self) -> Vec<CommandSuggestion> {
@@ -3569,6 +3527,119 @@ mod model_profile_tests;
 #[cfg(test)]
 #[path = "input_model_picker_tests.rs"]
 mod model_picker_tests;
+
+/// Pick the route spec to switch to when the user selects `provider`.
+///
+/// Keeps the current model when the target provider serves it. Otherwise
+/// lands on the provider's newest flagship using the daemon's shared ranking
+/// (`preferred_model_for_provider`), not the alphabetically first route, which
+/// previously put Copilot users on `claude-opus-4.6`.
+fn provider_route_spec_in(
+    details: &HashMap<String, model_menu::ModelDetails>,
+    provider: &str,
+    current: Option<&str>,
+) -> Option<String> {
+    let wanted = provider_route_methods(provider);
+    let mut matches: Vec<_> = details
+        .iter()
+        .filter(|(_, detail)| {
+            let method = detail.api_method.to_ascii_lowercase();
+            let owner = detail.provider.to_ascii_lowercase();
+            wanted.iter().any(|wanted| {
+                method == *wanted || method.starts_with(&format!("{wanted}-")) || owner == *wanted
+            })
+        })
+        .collect();
+    if let Some((spec, _)) = matches
+        .iter()
+        .find(|(_, detail)| current.is_some_and(|model| detail.model == model))
+    {
+        return Some((*spec).clone());
+    }
+    let candidates: Vec<&str> = matches
+        .iter()
+        .map(|(_, detail)| detail.model.as_str())
+        .collect();
+    if let Some(best) =
+        jcode_base::auth::lifecycle::preferred_model_for_provider(provider, &candidates)
+        && let Some((spec, _)) = matches.iter().find(|(_, detail)| detail.model == best)
+    {
+        return Some((*spec).clone());
+    }
+    matches.sort_by(|(a, left), (b, right)| {
+        right
+            .recommended
+            .cmp(&left.recommended)
+            .then_with(|| a.cmp(b))
+    });
+    matches.first().map(|(spec, _)| (*spec).clone())
+}
+
+#[cfg(test)]
+mod provider_route_spec_tests {
+    use super::*;
+
+    fn details(routes: &[(&str, &str, &str)]) -> HashMap<String, model_menu::ModelDetails> {
+        routes
+            .iter()
+            .map(|(model, provider, method)| {
+                (
+                    format!("{method}:{model}"),
+                    model_menu::ModelDetails {
+                        model: (*model).into(),
+                        recommended: false,
+                        provider: (*provider).into(),
+                        api_method: (*method).into(),
+                        usage: None,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn switching_provider_lands_on_newest_flagship() {
+        let catalog = details(&[
+            ("claude-haiku-4.5", "Copilot", "copilot"),
+            ("claude-opus-4.6", "Copilot", "copilot"),
+            ("claude-opus-5.5", "Copilot", "copilot"),
+            ("anthropic/claude-sonnet-4", "auto", "openrouter"),
+            ("anthropic/claude-opus-4.8", "auto", "openrouter"),
+            ("grok-code-fast-1", "Grok Build", "grok-build-acp"),
+            ("grok-4.7", "Grok Build", "grok-build-acp"),
+            ("claude-opus-4-6", "Anthropic", "claude-oauth"),
+            ("claude-opus-5-5", "Anthropic", "claude-oauth"),
+            ("gpt-5.5", "OpenAI", "openai-oauth"),
+            ("gpt-6-astra", "OpenAI", "openai-oauth"),
+        ]);
+        let cases = [
+            ("copilot", "copilot:claude-opus-5.5"),
+            ("openrouter", "openrouter:anthropic/claude-opus-4.8"),
+            ("grok-build", "grok-build-acp:grok-4.7"),
+            ("claude", "claude-oauth:claude-opus-5-5"),
+            ("openai", "openai-oauth:gpt-6-astra"),
+        ];
+        for (provider, expected) in cases {
+            assert_eq!(
+                provider_route_spec_in(&catalog, provider, Some("some-other-model")).as_deref(),
+                Some(expected),
+                "{provider}"
+            );
+        }
+    }
+
+    #[test]
+    fn switching_provider_keeps_current_model_when_served() {
+        let catalog = details(&[
+            ("claude-opus-4.6", "Copilot", "copilot"),
+            ("claude-opus-5.5", "Copilot", "copilot"),
+        ]);
+        assert_eq!(
+            provider_route_spec_in(&catalog, "copilot", Some("claude-opus-4.6")).as_deref(),
+            Some("copilot:claude-opus-4.6")
+        );
+    }
+}
 
 fn provider_route_methods(provider: &str) -> Vec<String> {
     match provider {
