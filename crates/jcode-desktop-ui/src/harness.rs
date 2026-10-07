@@ -1699,6 +1699,9 @@ fn session_worker_with_connector(
 
     let mut pending = VecDeque::new();
     let mut reported_disconnected_events = false;
+    // Survives reconnects: a retry scheduled before a dropped connection
+    // fires once the replacement transport is attached.
+    let mut turn_retry = jcode_sdk::TurnRetry::new(turn_retry_policy());
 
     // Reconnect in this same worker. The window and workspace stay resident,
     // and history refreshes the panel after the replacement runtime is ready.
@@ -1835,6 +1838,10 @@ fn session_worker_with_connector(
                     }
                     SessionCommand::Send { content, images } => {
                         recovery.supersede();
+                        // New input starts its own request and retry budget.
+                        if turn_retry.user_sent() == jcode_sdk::RetryDecision::Cancelled {
+                            send_retry_phase(&updates, &session_id, String::new());
+                        }
                         let retry_content = content.clone();
                         let retry_images = images.clone();
                         // Only one ordinary send can await acceptance. An old
@@ -1888,6 +1895,9 @@ fn session_worker_with_connector(
                     }
                     SessionCommand::Cancel => {
                         recovery.supersede();
+                        if turn_retry.user_cancelled() == jcode_sdk::RetryDecision::Cancelled {
+                            send_retry_phase(&updates, &session_id, String::new());
+                        }
                         let _ = client.cancel(real_id);
                     }
                     SessionCommand::BackgroundTool => {
@@ -1921,6 +1931,9 @@ fn session_worker_with_connector(
                                 | SessionOperation::RewindUndo
                         ) {
                             recovery.supersede();
+                            if turn_retry.user_cancelled() == jcode_sdk::RetryDecision::Cancelled {
+                                send_retry_phase(&updates, &session_id, String::new());
+                            }
                         }
                         // Effort settles the panel's optimistic label either
                         // way, so its outcome is reported rather than only a
@@ -1987,6 +2000,44 @@ fn session_worker_with_connector(
                         }
                     }
                     SessionCommand::Stop => return,
+                }
+            }
+
+            // A transient turn failure scheduled an automatic continuation.
+            // The failed prompt is already in the transcript, so resume the
+            // session with a hidden reminder rather than resending it.
+            if !turn_active
+                && unaccepted_sends.is_empty()
+                && turn_retry.take_due(std::time::Instant::now())
+            {
+                recovery.supersede();
+                match client
+                    .send_system_reminder(real_id, jcode_sdk::turn_retry::CONTINUATION_REMINDER)
+                {
+                    Ok(()) => {
+                        eprintln!(
+                            "jcode desktop: session {session_id} auto-retry {}/{}",
+                            turn_retry.attempts(),
+                            turn_retry.policy().max_attempts
+                        );
+                        turn_active = true;
+                        _detach.set_processing(true);
+                        send_retry_phase(
+                            &updates,
+                            &session_id,
+                            format!(
+                                "retrying ({}/{})",
+                                turn_retry.attempts(),
+                                turn_retry.policy().max_attempts
+                            ),
+                        );
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "jcode desktop: session {session_id} auto-retry send failed: {error}"
+                        );
+                        turn_retry.send_failed(std::time::Instant::now());
+                    }
                 }
             }
 
@@ -2071,10 +2122,38 @@ fn session_worker_with_connector(
                 }
                 update_turn_activity(&event, &mut turn_active);
                 _detach.set_processing(turn_active);
+                let retry_decision = turn_retry.observe(&event, std::time::Instant::now());
+                let closes_turn =
+                    matches!(event, ApiEvent::Error { .. } | ApiEvent::TurnDone { .. });
                 let _ = updates.send(Update::Event {
                     session_id: session_id.clone(),
                     event: namespace_event(event, &address),
                 });
+                // The panel clears its phase when a turn ends, so announce
+                // the pending retry after forwarding the closing event.
+                match retry_decision {
+                    jcode_sdk::RetryDecision::Cancelled => {
+                        send_retry_phase(&updates, &session_id, String::new());
+                    }
+                    _ if closes_turn => {
+                        if let Some(at) = turn_retry.pending() {
+                            let secs = at
+                                .saturating_duration_since(std::time::Instant::now())
+                                .as_secs()
+                                .max(1);
+                            send_retry_phase(
+                                &updates,
+                                &session_id,
+                                format!(
+                                    "retrying in {secs}s ({}/{})",
+                                    turn_retry.attempts(),
+                                    turn_retry.policy().max_attempts
+                                ),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
             } else if client.is_closed() {
                 lost("runtime connection closed; reconnecting".into());
                 break;
@@ -2099,6 +2178,33 @@ fn session_worker_with_connector(
             std::thread::sleep(reconnect_delay);
         }
     }
+}
+
+/// Desktop uses the SDK's shared retry policy. Tests shrink the delays.
+fn turn_retry_policy() -> jcode_sdk::RetryPolicy {
+    #[cfg(test)]
+    if let Some(policy) = TEST_RETRY_POLICY.with(|policy| *policy.borrow()) {
+        return policy;
+    }
+    jcode_sdk::RetryPolicy::default()
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RETRY_POLICY: std::cell::RefCell<Option<jcode_sdk::RetryPolicy>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Surface automatic retry progress in the panel status line. An empty phase
+/// clears it.
+fn send_retry_phase(updates: &UpdateSender, session_id: &str, phase: String) {
+    let _ = updates.send(Update::Event {
+        session_id: session_id.to_string(),
+        event: ApiEvent::ConnectionPhase {
+            session_id: session_id.to_string(),
+            phase,
+        },
+    });
 }
 
 fn event_session_id(event: &ApiEvent) -> Option<&str> {
