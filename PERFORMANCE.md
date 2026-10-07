@@ -467,3 +467,37 @@ Constraints: the UI crate is the hot-reloaded cdylib, so moved code is linked
 into it statically and keeps one GPUI instance. Moved types must stay out of
 the host/plugin ABI (`jcode-desktop-api`). Do the move while no other session
 has large uncommitted edits in the UI crate, since every moved file conflicts.
+
+### Slice 1 measured, 2026-10-06 (branch `perf/crate-split-impl`)
+
+The 13-module `jcode-desktop-core` slice (~10k of ~140k lines) was built and
+measured against the same commit unsplit, in separate worktrees with their own
+target directories, interleaved so both saw the same load (5-14). Each edit
+appends a private fn to the file, then times the Ctrl+R command
+(`cargo build -p jcode-desktop -p jcode-desktop-ui --lib`) and the unit-test
+build. Medians of 6 runs:
+
+| Edited file | Ctrl+R before | Ctrl+R after | Test build before | Test build after |
+|---|---|---|---|---|
+| `workspace.rs` | 4.71s | 4.77s | 9.75s | 9.53s |
+| `panel.rs` | 4.89s | 4.03s | 9.97s | 8.18s |
+| `harness.rs` | 4.36s | 4.25s | 8.16s | 8.14s |
+| `theme.rs` | 4.38s | 4.18s | 8.67s | 8.27s |
+| `diff_model.rs` (moved) | 4.44s | 5.26s | 8.47s | 10.27s |
+
+`-Ztime-passes` on the UI crate for a `workspace.rs` edit: 4.14s total before,
+3.73s after (metadata 1.09s to 0.98s, monomorphization 0.48s to 0.42s, link
+0.53s to 0.46s). That is about a 10% cut in UI crate rustc time for 7% of the
+code moved, which matches the fixed per-crate work scaling with crate size.
+Wall-clock Ctrl+R differences for most files are within noise, though, and
+editing a moved module is slower (the core crate and then the UI crate both
+rebuild). Those moved modules are rarely edited (0-4 commits in 30 days
+versus 135-150 for `workspace.rs` and `panel.rs`).
+
+Verdict: a small, real gain in rustc time, not a clear wall-clock win. The
+mechanical cost is low: files move unchanged apart from `pub(crate)` to
+`pub`, the UI crate re-exports them under their old names, and all 1735
+workspace tests pass. The larger lever is the second slice (`theme`, `config`,
+`markdown`, `text_selection`, `harness`, ~10k more lines that are edited more
+often), or splitting `workspace` and `panel` themselves, which hold most of
+the code and most of the edits.
