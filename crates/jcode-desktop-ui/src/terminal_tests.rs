@@ -436,7 +436,10 @@ fn trackpad_pinch_reports_ctrl_wheel_and_suppresses_pinch_pan(cx: &mut gpui::Tes
         assert!(panel.pinch_reports(0.5, position).is_empty());
         panel.process_output(b"\x1b[?1000h\x1b[?1006h", false);
         // Ctrl (16) + wheel up (64) zooms in, one notch per 10% of scale.
-        assert_eq!(panel.pinch_reports(0.25, position), b"\x1b[<80;1;1M\x1b[<80;1;1M");
+        assert_eq!(
+            panel.pinch_reports(0.25, position),
+            b"\x1b[<80;1;1M\x1b[<80;1;1M"
+        );
         // The 0.05 remainder carries over, so small deltas still add up.
         assert_eq!(panel.pinch_reports(0.05, position), b"\x1b[<80;1;1M");
         assert_eq!(panel.pinch_reports(-0.1, position), b"\x1b[<81;1;1M");
@@ -459,7 +462,9 @@ fn trackpad_pinch_reports_ctrl_wheel_and_suppresses_pinch_pan(cx: &mut gpui::Tes
         delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
         ..Default::default()
     });
-    panel.read_with(vcx, |panel, _| assert_eq!(panel.terminal.grid.scroll_offset, 0));
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(panel.terminal.grid.scroll_offset, 0)
+    });
     vcx.simulate_event(gpui::PinchEvent {
         position,
         delta: 0.0,
@@ -472,5 +477,7 @@ fn trackpad_pinch_reports_ctrl_wheel_and_suppresses_pinch_pan(cx: &mut gpui::Tes
         delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
         ..Default::default()
     });
-    panel.read_with(vcx, |panel, _| assert_eq!(panel.terminal.grid.scroll_offset, 3));
+    panel.read_with(vcx, |panel, _| {
+        assert_eq!(panel.terminal.grid.scroll_offset, 3)
+    });
 }

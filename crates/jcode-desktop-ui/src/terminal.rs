@@ -5,8 +5,7 @@ use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, PinchEvent, Pixels, Point, Render, RenderImage, ScrollWheelEvent, TouchPhase,
-    UTF16Selection, Window,
-    actions, canvas, div, prelude::*, px,
+    UTF16Selection, Window, actions, canvas, div, prelude::*, px,
 };
 use handterm_common::{
     grid::Selection,
