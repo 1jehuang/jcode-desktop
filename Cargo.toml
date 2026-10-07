@@ -16,14 +16,14 @@ license = "MIT"
 # upstream GPUI. Its `fast/` modules also carry what Desktop needs: the element
 # arena shared with the hot-reloaded UI library, list height hints kept on resize,
 # and native pinch pan. Every GPUI crate comes from this one revision.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "d69f48d4207abe752929230960c4a35934572459", features = ["profiler"] }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "d69f48d4207abe752929230960c4a35934572459" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "0893ac4a59215380c30dd20561ca2edc947bb428", features = ["profiler"] }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "0893ac4a59215380c30dd20561ca2edc947bb428" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance used by host and UI.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "d69f48d4207abe752929230960c4a35934572459" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "0893ac4a59215380c30dd20561ca2edc947bb428" }
 
 [package]
 name = "jcode-desktop"
@@ -162,4 +162,40 @@ opt-level = 2
 [profile.dev.package.unicode-bidi]
 opt-level = 2
 [profile.dev.package.unicode-width]
+opt-level = 2
+# The wgpu stack records and submits every frame on the UI thread. A live
+# Vulkan profile of a streaming dev build spent about a quarter of the UI
+# thread in these crates at opt-level 0, plus the hash maps and allocators
+# they and GPUI lean on.
+[profile.dev.package.wgpu]
+opt-level = 2
+[profile.dev.package.wgpu-core]
+opt-level = 2
+[profile.dev.package.wgpu-hal]
+opt-level = 2
+[profile.dev.package.wgpu-types]
+opt-level = 2
+[profile.dev.package.ash]
+opt-level = 2
+[profile.dev.package.gpu-allocator]
+opt-level = 2
+[profile.dev.package.gpu-descriptor]
+opt-level = 2
+[profile.dev.package.hashbrown]
+opt-level = 2
+[profile.dev.package.indexmap]
+opt-level = 2
+[profile.dev.package.lyon_tessellation]
+opt-level = 2
+[profile.dev.package.lyon_path]
+opt-level = 2
+[profile.dev.package.lyon_geom]
+opt-level = 2
+[profile.dev.package.hdrhistogram]
+opt-level = 2
+[profile.dev.package.etagere]
+opt-level = 2
+[profile.dev.package.smol_str]
+opt-level = 2
+[profile.dev.package.arrayvec]
 opt-level = 2
