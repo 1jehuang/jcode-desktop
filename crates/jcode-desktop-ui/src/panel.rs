@@ -4878,6 +4878,7 @@ impl Render for Panel {
                             let panel = cx.entity().downgrade();
                             move |_, cx| {
                                 let _ = panel.update(cx, |panel, cx| {
+                    .child(self.tail_growth_observer(cx))
                                     panel.resume_transcript_follow_after_scroll(cx);
                                     cx.notify();
                                 });

@@ -36,12 +36,15 @@ const CATCH_UP: f32 = 0.12;
 const VELOCITY_EASE: f32 = 0.06;
 /// Smoothing of the content growth estimate.
 const GROWTH_EASE: f32 = 0.3;
-/// The most the live tail may trail the true end while streaming.
+/// The least the live tail may trail the true end while streaming. The bound
+/// scales up with the viewport so one tall card glides instead of jumping.
 const MAX_LAG_PX: f32 = 240.0;
-/// When not streaming, larger gaps (tool cards, pasted blocks, restores) snap.
+/// Smallest snap threshold. Gaps beyond three viewports snap (restores).
 const MAX_GLIDE_PX: f32 = 160.0;
 /// Ignore pathological frame gaps so a stale timestamp does not leap.
 const MAX_STEP: Duration = Duration::from_millis(100);
+/// How long after a turn stops producing output its tail still glides.
+const LIVE_GRACE: Duration = Duration::from_millis(800);
 /// Frame interval assumed for the first step of a glide.
 const FIRST_STEP: Duration = Duration::from_millis(16);
 
@@ -58,6 +61,11 @@ pub(super) struct TailGlide {
     growth: f32,
     /// Maximum scroll offset seen on the previous frame.
     last_max: Option<f32>,
+    /// The previous frame held still at the end, possibly for a long time.
+    held: bool,
+    /// Last frame the turn was producing output. Growth right after a turn
+    /// ends (response stats, the final tool result) still glides.
+    live_at: Option<Instant>,
 }
 
 impl TailGlide {
@@ -66,12 +74,15 @@ impl TailGlide {
     }
 
     pub(super) fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self {
+            live_at: self.live_at,
+            ..Self::default()
+        };
     }
 
     /// Advance one frame toward `target` from `current` after `dt` seconds.
     /// Returns the new unrounded position. Never passes the target.
-    fn step(&mut self, current: f32, target: f32, dt: f32) -> f32 {
+    fn step(&mut self, current: f32, target: f32, dt: f32, max_lag: f32) -> f32 {
         if dt <= 0.0 {
             return current;
         }
@@ -89,8 +100,8 @@ impl TailGlide {
         self.velocity += (aim - self.velocity) * (1.0 - (-dt / VELOCITY_EASE).exp());
         self.velocity = self.velocity.max(0.0);
         let mut next = (current + self.velocity * dt).min(target);
-        if target - next > MAX_LAG_PX {
-            next = target - MAX_LAG_PX;
+        if target - next > max_lag {
+            next = target - max_lag;
         }
         if target - next <= 0.25 {
             next = target;
@@ -100,29 +111,46 @@ impl TailGlide {
 }
 
 impl Panel {
+    /// A turn is producing output: text, reasoning, tool calls or results.
+    /// The transcript may grow at any moment, so the tail is held by absolute
+    /// position and growth glides in rather than being pinned by layout.
+    fn tail_live(&self) -> bool {
+        !self.streaming_text.is_empty()
+            || !self.streaming_reasoning.is_empty()
+            || self.activity_active()
+    }
+
     /// Whether the follow position is eased rather than pinned this frame.
     pub(super) fn tail_gliding(&self) -> bool {
-        self.stick_to_bottom
-            && (self.tail_glide.active()
-                || !self.streaming_text.is_empty()
-                || !self.streaming_reasoning.is_empty())
+        self.stick_to_bottom && (self.tail_glide.active() || self.tail_live())
     }
 
     /// Keep a following transcript at its live tail. `snap` forces the
-    /// immediate behaviour, for reduced motion. `structural` marks frames
-    /// where rows were added or removed: those snap unless text is streaming
-    /// or a glide is already under way, which keeps fast output continuous
-    /// when the live row settles or a new one begins.
+    /// immediate behaviour, for reduced motion.
+    ///
+    /// Every kind of growth at the tail glides: streamed text wrapping onto a
+    /// new line, a tool card appearing, tool input or output filling in, the
+    /// activity row, response stats. Only jumps larger than a few screens
+    /// (history restores, reconnect recovery) snap. `_structural` is kept for
+    /// callers. Row insertions are no longer a reason to jump.
     pub(super) fn follow_transcript_tail(
         &mut self,
         snap: bool,
-        structural: bool,
+        _structural: bool,
         window: &mut Window,
     ) {
         let bounds = self.transcript_list.viewport_bounds();
+        let viewport = f32::from(bounds.size.height);
         let max = f32::from(self.transcript_list.max_offset_for_scrollbar().y).max(0.0);
         let listed = -f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y);
-        let streaming = !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty();
+        let now = Instant::now();
+        if self.tail_live() {
+            self.tail_glide.live_at = Some(now);
+        }
+        let live = self
+            .tail_glide
+            .live_at
+            .is_some_and(|at| now.saturating_duration_since(at) < LIVE_GRACE);
         // Resume from the unrounded position unless something else moved the list.
         let current = if self.tail_glide.active() && (self.tail_glide.position - listed).abs() <= 1.0
         {
@@ -131,30 +159,26 @@ impl Panel {
             listed
         };
         let gap = max - current;
-        let limit = if streaming || self.tail_glide.active() {
-            // Huge jumps (restores, reconnect recovery) are not motion.
-            f32::from(bounds.size.height).max(MAX_LAG_PX) * 2.0
-        } else {
-            MAX_GLIDE_PX
-        };
+        let limit = (viewport * 3.0).max(MAX_GLIDE_PX);
         if snap
-            || !self.tail_gliding()
-            || (structural && !streaming && !self.tail_glide.active())
-            || bounds.size.height <= px(0.)
-            || !(-0.5..=limit).contains(&gap)
+            || !self.stick_to_bottom
+            || viewport <= 0.0
+            // Shrinking (a live row settling, the activity row leaving) is
+            // held at the new end below, the same as layout would clamp it.
+            || gap > limit
         {
             self.tail_glide.reset();
             self.transcript_list.scroll_to_end();
             return;
         }
         if gap <= 0.5 {
-            if streaming {
+            if live {
                 // Hold this position so growth measured in the coming layout
                 // pass is eased in next frame instead of jumping.
                 self.transcript_list
                     .set_offset_from_scrollbar(point(px(0.), px(-max)));
-                let now = Instant::now();
                 let glide = &mut self.tail_glide;
+                glide.held = true;
                 glide.position = max;
                 glide.last_max = Some(max);
                 // Keep the growth estimate and timestamp warm between lines so
@@ -164,25 +188,36 @@ impl Panel {
                     glide.growth = 0.0;
                 }
                 glide.at = Some(now);
-                window.request_animation_frame();
+                // Streamed text grows every frame. Other growth (tool cards,
+                // tool output) is noticed after paint by
+                // `tail_growth_observer`, so a long tool run does not redraw
+                // the panel every frame while nothing changes.
+                if !self.streaming_text.is_empty() || !self.streaming_reasoning.is_empty() {
+                    window.request_animation_frame();
+                }
             } else {
+                // Idle: let layout pin the end without scheduling frames.
                 self.tail_glide.reset();
                 self.transcript_list.scroll_to_end();
             }
             return;
         }
-        let now = Instant::now();
+        // After holding still, the previous timestamp only says when the
+        // tail was last checked, not a frame interval.
         let dt = self
             .tail_glide
             .at
+            .filter(|_| !self.tail_glide.held)
             .map(|last| now.saturating_duration_since(last).min(MAX_STEP))
             .unwrap_or(FIRST_STEP)
             .as_secs_f32();
+        self.tail_glide.held = false;
         if self.tail_glide.at.is_none() {
             self.tail_glide.last_max = Some(current);
         }
         self.tail_glide.at = Some(now);
-        let next = self.tail_glide.step(current, max, dt);
+        let max_lag = (viewport * 0.6).max(MAX_LAG_PX);
+        let next = self.tail_glide.step(current, max, dt, max_lag);
         self.tail_glide.position = next;
         let scale = window.scale_factor().max(1.0);
         let painted = if next >= max {
@@ -193,6 +228,40 @@ impl Panel {
         self.transcript_list
             .set_offset_from_scrollbar(point(px(0.), px(-painted)));
         window.request_animation_frame();
+    }
+}
+
+impl Panel {
+    /// Paints after the transcript list. Layout may have grown the content
+    /// (a tool card, tool output, an image) without anything scheduling the
+    /// next frame, which would leave the new rows below the fold until some
+    /// unrelated redraw, then jump. Wake the follower as soon as it happens.
+    pub(super) fn tail_growth_observer(&self, cx: &Context<Self>) -> gpui::AnyElement {
+        let panel = cx.entity().downgrade();
+        let list = self.transcript_list.clone();
+        let following = self.stick_to_bottom;
+        let held = self.tail_glide.position;
+        // Mid-glide the follower already schedules its own frames. Only a
+        // tail resting at the end needs waking when layout grows it.
+        let resting = self.tail_glide.active() && self.tail_glide.held;
+        gpui::canvas(
+            |_, _, _| (),
+            move |_, _, _, cx| {
+                if !following || !resting {
+                    return;
+                }
+                let max = f32::from(list.max_offset_for_scrollbar().y);
+                if max <= held + 0.5 {
+                    return;
+                }
+                cx.defer(move |cx| {
+                    let _ = panel.update(cx, |_, cx| cx.notify());
+                });
+            },
+        )
+        .absolute()
+        .size_full()
+        .into_any_element()
     }
 }
 
@@ -224,7 +293,7 @@ mod tests {
                 target += line;
                 debt -= 1.0;
             }
-            let next = glide.step(position, target, dt);
+            let next = glide.step(position, target, dt, MAX_LAG_PX);
             assert!(next <= target && next >= position, "monotonic, bounded");
             steps.push(next - position);
             position = next;
@@ -275,7 +344,7 @@ mod tests {
         let mut position = 0.0;
         let mut steps = Vec::new();
         for _ in 0..60 {
-            let next = glide.step(position, 22.0, 1.0 / 60.0);
+            let next = glide.step(position, 22.0, 1.0 / 60.0, MAX_LAG_PX);
             assert!(next <= 22.0 && next >= position);
             steps.push(next - position);
             position = next;
@@ -292,11 +361,11 @@ mod tests {
         let mut position = 0.0;
         for _ in 0..120 {
             target += 15.0;
-            position = glide.step(position, target, 1.0 / 60.0);
+            position = glide.step(position, target, 1.0 / 60.0, MAX_LAG_PX);
         }
         let mut frames = 0;
         while position < target {
-            position = glide.step(position, target, 1.0 / 60.0);
+            position = glide.step(position, target, 1.0 / 60.0, MAX_LAG_PX);
             frames += 1;
             assert!(frames < 60, "caught up within a second");
         }
@@ -445,5 +514,88 @@ mod tests {
             peak <= mean * 4.0 + 12.0,
             "no catch-up snaps: peak {peak} mean {mean} {steps:?}"
         );
+    }
+
+    #[gpui::test]
+    fn tool_cards_and_text_after_them_glide_instead_of_jumping(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("tail-glide-tools", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.animate_stream_in_tests = true;
+            *panel.items = (0..60)
+                .map(|n| Item::Assistant(format!("History {n}")))
+                .collect();
+            panel.status = "running".into();
+            panel.apply(
+                &ApiEvent::TextDelta {
+                    message_id: None,
+                    session_id: panel.session_id.clone(),
+                    text: "Let me look.".into(),
+                },
+                cx,
+            );
+        });
+        for _ in 0..30 {
+            frame(vcx);
+        }
+        let offset =
+            |panel: &Panel| -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
+        let mut previous = panel.read_with(vcx, |panel, _| offset(panel));
+        let mut glided = false;
+        // Fast agent loop: tool calls, their input, results, and more text,
+        // a new structural row every few frames.
+        for n in 0..12 {
+            let call = format!("call-{n}");
+            for step in 0..6 {
+                panel.update(vcx, |panel, cx| {
+                    let session_id = panel.session_id.clone();
+                    let event = match step {
+                        0 => ApiEvent::ToolStart {
+                            session_id,
+                            call_id: call.clone(),
+                            name: "bash".into(),
+                        },
+                        1 => ApiEvent::ToolInputDelta {
+                            session_id,
+                            call_id: call.clone(),
+                            delta: format!(r#"{{"intent":"step {n}","command":"ls"}}"#),
+                        },
+                        2 => ApiEvent::ToolDone {
+                            session_id,
+                            call_id: call.clone(),
+                            name: "bash".into(),
+                            output: "one\ntwo\nthree\nfour".into(),
+                            error: None,
+                        },
+                        _ => ApiEvent::TextDelta {
+                            message_id: None,
+                            session_id,
+                            text: format!("\n\nResult {n}.{step} looks fine, continuing."),
+                        },
+                    };
+                    panel.apply(&event, cx);
+                });
+                frame(vcx);
+                let (now, gap_now) = panel.read_with(vcx, |panel, _| {
+                    assert!(panel.stick_to_bottom, "still following");
+                    (offset(panel), gap(panel))
+                });
+                assert!(now + 0.5 >= previous, "never scrolls backwards: {previous} -> {now}");
+                glided |= gap_now > 1.0;
+                previous = now;
+            }
+        }
+        assert!(glided, "tail growth was eased, not snapped");
+        for _ in 0..90 {
+            frame(vcx);
+        }
+        panel.read_with(vcx, |panel, _| {
+            assert!(gap(panel).abs() <= 0.5, "caught up: {}", gap(panel));
+        });
     }
 }
