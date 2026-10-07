@@ -482,10 +482,8 @@ pub struct Panel {
     transcript_wheel_glide: WheelGlide,
     transcript_wheel_frame: Option<Instant>,
     transcript_wheel_frame_pending: bool,
-    /// Last frame of an eased tail follow. See `panel_tail_glide`.
-    tail_glide_at: Option<Instant>,
-    /// Scroll velocity of the tail glide spring, in px per second.
-    tail_glide_velocity: f32,
+    /// Eased tail follow state. See `panel_tail_glide`.
+    tail_glide: tail_glide::TailGlide,
     stick_to_bottom: bool,
     transcript_end_visible: bool,
     /// A detached reload offset cannot be applied until asynchronous history
@@ -951,8 +949,7 @@ impl Panel {
             transcript_wheel_glide: WheelGlide::default(),
             transcript_wheel_frame: None,
             transcript_wheel_frame_pending: false,
-            tail_glide_at: None,
-            tail_glide_velocity: 0.0,
+            tail_glide: Default::default(),
             stick_to_bottom: true,
             transcript_end_visible: true,
             pending_history_scroll: None,
@@ -4453,10 +4450,9 @@ impl Render for Panel {
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
             // Ease wrapped-line growth of live text instead of jumping a line.
-            self.follow_transcript_tail(instant_motion || row_count_changed, window);
+            self.follow_transcript_tail(instant_motion, row_count_changed, window);
         } else {
-            self.tail_glide_at = None;
-            self.tail_glide_velocity = 0.0;
+            self.tail_glide.reset();
         }
 
         let input_bounds = std::rc::Rc::new(std::cell::Cell::new(None));
