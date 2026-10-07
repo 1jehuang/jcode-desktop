@@ -49,7 +49,9 @@ jobs:
           key: macos-tests
       - name: Build the Desktop host and UI
         working-directory: jcode-desktop
-        run: cargo build --bin jcode-desktop -p jcode-desktop-ui
+        run: |
+          cargo build --bin jcode-desktop
+          cargo build -p jcode-desktop-ui
       - name: Test the Desktop UI
         working-directory: jcode-desktop
         run: cargo test -p jcode-desktop-ui --lib -- ${{ inputs.filter }}
