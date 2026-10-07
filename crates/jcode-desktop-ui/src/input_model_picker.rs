@@ -127,7 +127,11 @@ impl PromptInput {
             };
             let parts = model_menu::header_parts(model, &self.model_details);
             base.child(logo_svg(parts.logo, &parts.provider, 13.0, faint))
-                .child(div().text_color(Theme::global().TEXT_DIM).child(parts.provider))
+                .child(
+                    div()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(parts.provider),
+                )
                 .child(
                     div()
                         .debug_selector(move || format!("model-picker-auth-{index}"))

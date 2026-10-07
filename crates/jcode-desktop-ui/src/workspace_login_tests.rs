@@ -167,7 +167,10 @@ fn single_panel_footer_accounts_preserves_draft_conversation_and_bounds(
     });
     let bounds = vcx.debug_bounds("single-panel-root").unwrap();
     let input_bounds = vcx.debug_bounds("prompt-input").unwrap();
-    let request = crate::workspace::OpenAccounts { source: source.entity_id(), login_command: None };
+    let request = crate::workspace::OpenAccounts {
+        source: source.entity_id(),
+        login_command: None,
+    };
     workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
     vcx.run_until_parked();
     assert_eq!(vcx.debug_bounds("single-panel-root"), Some(bounds));
@@ -246,7 +249,10 @@ fn single_panel_accounts_choose_model_closes_accounts_and_opens_shared_picker(
     });
     vcx.run_until_parked();
     let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
-    let request = crate::workspace::OpenAccounts { source: source.entity_id(), login_command: None };
+    let request = crate::workspace::OpenAccounts {
+        source: source.entity_id(),
+        login_command: None,
+    };
     workspace.update_in(vcx, |w, window, cx| w.open_accounts(&request, window, cx));
     vcx.run_until_parked();
     let child = accounts_child(vcx);

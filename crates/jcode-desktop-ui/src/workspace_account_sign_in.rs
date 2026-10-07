@@ -354,11 +354,8 @@ impl Workspace {
                         .into_iter()
                         .map(|sample| (Some(format!("From {}", sample.source)), sample.turns))
                         .collect();
-                    demo._replay = crate::panel::demo_replay::run_showcase(
-                        demo.panel.clone(),
-                        showcase,
-                        cx,
-                    );
+                    demo._replay =
+                        crate::panel::demo_replay::run_showcase(demo.panel.clone(), showcase, cx);
                     demo._load = None;
                 });
             })

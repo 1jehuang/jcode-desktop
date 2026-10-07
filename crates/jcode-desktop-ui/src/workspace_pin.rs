@@ -3,7 +3,12 @@
 use super::*;
 
 impl Workspace {
-    pub(super) fn set_session_pinned(&mut self, session_id: &str, pinned: bool, cx: &mut Context<Self>) {
+    pub(super) fn set_session_pinned(
+        &mut self,
+        session_id: &str,
+        pinned: bool,
+        cx: &mut Context<Self>,
+    ) {
         // Optimistic, so the row moves at once. SessionSaved confirms it, and
         // a failure is reported while the next catalog refresh restores truth.
         if let Some(session) = self
@@ -38,22 +43,34 @@ mod tests {
             w
         });
         workspace.update(vcx, |w, cx| {
-            let mut newer = crate::workspace::tests::session_info("session_owl_newer", Some("newer"));
+            let mut newer =
+                crate::workspace::tests::session_info("session_owl_newer", Some("newer"));
             newer.updated_at_ms = Some(2_000);
-            let mut older = crate::workspace::tests::session_info("session_fox_older", Some("older"));
+            let mut older =
+                crate::workspace::tests::session_info("session_fox_older", Some("older"));
             older.updated_at_ms = Some(1_000);
-            w.apply(Update::Sessions { sessions: vec![newer, older] }, cx);
+            w.apply(
+                Update::Sessions {
+                    sessions: vec![newer, older],
+                },
+                cx,
+            );
             cx.notify();
         });
         vcx.run_until_parked();
         while commands.try_recv().is_ok() {}
-        assert!(vcx.debug_bounds("sidebar-session-1").is_some(), "history rows render");
+        assert!(
+            vcx.debug_bounds("sidebar-session-1").is_some(),
+            "history rows render"
+        );
 
         // The older session sits second; pin it from the sidebar.
         let row = vcx.debug_bounds("sidebar-session-1").unwrap();
         vcx.simulate_mouse_move(row.center(), None, gpui::Modifiers::none());
         vcx.run_until_parked();
-        let pin = vcx.debug_bounds("sidebar-pin-1").expect("pin button on history row");
+        let pin = vcx
+            .debug_bounds("sidebar-pin-1")
+            .expect("pin button on history row");
         vcx.simulate_click(pin.center(), gpui::Modifiers::none());
         vcx.run_until_parked();
 
@@ -66,7 +83,10 @@ mod tests {
         assert_eq!(sent, Some(("session_fox_older".to_string(), true)));
         workspace.update(vcx, |w, _| {
             let order = sidebar_session_order(&w.sessions);
-            assert_eq!(order[0].session_id, "session_fox_older", "pinned sessions lead");
+            assert_eq!(
+                order[0].session_id, "session_fox_older",
+                "pinned sessions lead"
+            );
             assert!(order[0].saved);
         });
 

@@ -364,7 +364,12 @@ fn sign_in_checklist_expands_only_the_current_step(cx: &mut gpui::TestAppContext
         state.callback_waiting = true;
         cx.notify();
     });
-    for selector in ["login-step-1", "login-step-2", "login-step-3", "login-step-4"] {
+    for selector in [
+        "login-step-1",
+        "login-step-2",
+        "login-step-3",
+        "login-step-4",
+    ] {
         assert!(vcx.debug_bounds(selector).is_some(), "{selector}");
     }
     let current = vcx.debug_bounds("login-current-step").unwrap();

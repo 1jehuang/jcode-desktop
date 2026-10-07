@@ -101,9 +101,11 @@ impl Workspace {
             } else if slot.panel.read(cx).is_default_directory() {
                 self.render_folder_picker(cx)
             } else {
-                slot.panel
-                    .clone()
-                    .cached(gpui::StyleRefinement::default().size_full())
+                // Retained, and rebuilt on its own inside the chrome: see
+                // `render_strip`.
+                div()
+                    .size_full()
+                    .child(slot.panel.clone())
                     .into_any_element()
             }
         });

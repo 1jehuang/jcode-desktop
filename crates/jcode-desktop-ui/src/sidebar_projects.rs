@@ -325,43 +325,43 @@ impl Workspace {
                 if git {
                     let directory = local.clone().unwrap_or_default();
                     actions = actions.child(
-                    sidebar_worktrees::header_action(
-                        format!("sidebar-project-worktree-{index}").into(),
-                        "New worktree: start a branch in its own checkout",
-                        sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
-                        true,
-                        group,
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.begin_worktree(directory.clone(), window, cx);
-                        }),
-                    ),
+                        sidebar_worktrees::header_action(
+                            format!("sidebar-project-worktree-{index}").into(),
+                            "New worktree: start a branch in its own checkout",
+                            sidebar_worktrees::icon(sidebar_worktrees::BRANCH_ICON, 11.0),
+                            true,
+                            group,
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.begin_worktree(directory.clone(), window, cx);
+                            }),
+                        ),
                     );
                 }
                 if let Some(directory) = local.clone() {
                     let key = project.key.clone();
                     actions = actions.child(
-                    sidebar_worktrees::header_action(
-                        format!("sidebar-project-new-{index}").into(),
-                        "New thread in this project",
-                        div().child("+").into_any_element(),
-                        true,
-                        group,
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.sidebar_projects.collapsed.insert(key.clone(), false);
-                            this.focus_pending = true;
-                            this.open_local_draft(Some(directory.clone()), cx);
-                        }),
-                    ),
+                        sidebar_worktrees::header_action(
+                            format!("sidebar-project-new-{index}").into(),
+                            "New thread in this project",
+                            div().child("+").into_any_element(),
+                            true,
+                            group,
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.sidebar_projects.collapsed.insert(key.clone(), false);
+                                this.focus_pending = true;
+                                this.open_local_draft(Some(directory.clone()), cx);
+                            }),
+                        ),
                     );
                 }
                 el.child(actions)
@@ -445,22 +445,22 @@ impl Workspace {
             .when_some(path, |el, path| {
                 el.child(
                     sidebar_worktrees::hover_actions(group, 4.0).child(
-                    sidebar_worktrees::header_action(
-                        format!("sidebar-checkout-new-{index}").into(),
-                        "New thread on this branch",
-                        div().child("+").into_any_element(),
-                        true,
-                        group,
-                    )
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(move |this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.focus_pending = true;
-                            this.open_local_draft(Some(path.clone()), cx);
-                        }),
-                    ),
+                        sidebar_worktrees::header_action(
+                            format!("sidebar-checkout-new-{index}").into(),
+                            "New thread on this branch",
+                            div().child("+").into_any_element(),
+                            true,
+                            group,
+                        )
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(move |this, _, window, cx| {
+                                window.prevent_default();
+                                cx.stop_propagation();
+                                this.focus_pending = true;
+                                this.open_local_draft(Some(path.clone()), cx);
+                            }),
+                        ),
                     ),
                 )
             })

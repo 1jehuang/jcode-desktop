@@ -301,9 +301,8 @@ mod tests {
     #[test]
     fn cached_union_matches_fresh_tessellation_after_moving() {
         let at = |dx: f32, dy: f32| {
-            [line(100., 0.), line(40., 22.), line(80., 44.)].map(|b| {
-                Bounds::new(point(b.origin.x + px(dx), b.origin.y + px(dy)), b.size)
-            })
+            [line(100., 0.), line(40., 22.), line(80., 44.)]
+                .map(|b| Bounds::new(point(b.origin.x + px(dx), b.origin.y + px(dy)), b.size))
         };
         let first = rounded_union(&at(0., 0.), RADIUS).unwrap();
         for (dx, dy) in [(0., 0.), (13.5, -250.25), (-7., 1000.)] {

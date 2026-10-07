@@ -84,8 +84,20 @@ impl Workspace {
                 cx.notify();
             }))
             .tooltip(move |_, cx| {
-                cx.new(|_| live_tabs::TabTooltip(format!("{}\nClick to check for and apply updates", if detail == label { label.clone() } else { format!("{label}\n{detail}") }).into()))
-                    .into()
+                cx.new(|_| {
+                    live_tabs::TabTooltip(
+                        format!(
+                            "{}\nClick to check for and apply updates",
+                            if detail == label {
+                                label.clone()
+                            } else {
+                                format!("{label}\n{detail}")
+                            }
+                        )
+                        .into(),
+                    )
+                })
+                .into()
             })
             .child(
                 div()

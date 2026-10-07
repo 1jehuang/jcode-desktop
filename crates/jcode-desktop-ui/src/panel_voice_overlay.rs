@@ -767,8 +767,14 @@ mod tests {
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(1000.), px(700.)));
         for (error, label) in [
-            ("Voice transcription request timed out", "Transcription timed out"),
-            ("No speech was detected. Try recording again.", "No speech detected"),
+            (
+                "Voice transcription request timed out",
+                "Transcription timed out",
+            ),
+            (
+                "No speech was detected. Try recording again.",
+                "No speech detected",
+            ),
         ] {
             panel.update(vcx, |panel, cx| {
                 panel.seed_voice_preview(PreviewState::Empty);

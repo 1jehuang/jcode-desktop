@@ -278,11 +278,7 @@ impl Render for VoiceOverlay {
                             .whitespace_nowrap()
                             .overflow_hidden()
                             .text_ellipsis()
-                            .text_color(if decided {
-                                theme.TEXT
-                            } else {
-                                theme.TEXT_DIM
-                            })
+                            .text_color(if decided { theme.TEXT } else { theme.TEXT_DIM })
                             .child(self.snapshot.title.clone()),
                     )
                     .when_some(self.snapshot.levels, |el, levels| {

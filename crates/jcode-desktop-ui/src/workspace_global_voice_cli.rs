@@ -329,6 +329,9 @@ mod tests {
             "Voice not configured"
         );
         assert!(failure_label(&VoiceError::CaptureFailed).chars().count() <= 28);
-        assert_eq!(failure_label(&VoiceError::Timeout), "Transcription timed out");
+        assert_eq!(
+            failure_label(&VoiceError::Timeout),
+            "Transcription timed out"
+        );
     }
 }

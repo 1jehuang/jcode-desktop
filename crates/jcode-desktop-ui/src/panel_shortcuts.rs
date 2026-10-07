@@ -44,11 +44,16 @@ impl Panel {
     pub(super) fn has_running_tool(&self) -> bool {
         self.preview_state.is_none()
             && !self.is_pending_session()
-            && self
-                .items
-                .iter()
-                .rev()
-                .any(|item| matches!(item, Item::Tool { done: false, error: None, .. }))
+            && self.items.iter().rev().any(|item| {
+                matches!(
+                    item,
+                    Item::Tool {
+                        done: false,
+                        error: None,
+                        ..
+                    }
+                )
+            })
     }
 
     pub(super) fn background_running_tool_if_any(&mut self, cx: &mut Context<Self>) {

@@ -2574,7 +2574,10 @@ mod tests {
         };
         // A pid beyond the kernel's pid_max can never be alive.
         assert_eq!(record(Some(u32::MAX - 1)).lifecycle_status(), "crashed");
-        assert_eq!(record(Some(std::process::id())).lifecycle_status(), "active");
+        assert_eq!(
+            record(Some(std::process::id())).lifecycle_status(),
+            "active"
+        );
         assert_eq!(record(None).lifecycle_status(), "active");
     }
 

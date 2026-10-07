@@ -441,7 +441,8 @@ impl Panel {
                         return;
                     };
                     let current = entity.read(cx);
-                    if current.offscreen_prompt == offscreen && current.offscreen_prompt_clip == clip
+                    if current.offscreen_prompt == offscreen
+                        && current.offscreen_prompt_clip == clip
                     {
                         return;
                     }

@@ -186,6 +186,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public("/reload", "Reload into newest available binary"),
     RegisteredCommand::public("/restart", "Restart with current binary"),
+    RegisteredCommand::public(
+        "/restart-all",
+        "Restart the server and every Desktop window, restoring all windows and sessions",
+    ),
     RegisteredCommand::public("/rebuild", "Background rebuild and auto reload"),
     RegisteredCommand::public("/selfdev", "Open a new self-dev jcode session"),
     RegisteredCommand::public("/update", "Background update and auto reload"),

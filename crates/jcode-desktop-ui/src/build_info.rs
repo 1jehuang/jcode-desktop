@@ -196,10 +196,7 @@ mod tests {
             "v0.1.0 · Beta 15"
         );
         assert_eq!(footer_label("0.1.0", false, None, 220), "v0.1.0");
-        assert_eq!(
-            footer_label("0.1.0", true, None, 220),
-            "v0.1.0 · Dev"
-        );
+        assert_eq!(footer_label("0.1.0", true, None, 220), "v0.1.0 · Dev");
         assert_eq!(
             footer_label("0.1.0-dev", true, Some(300), 220),
             "v0.1.0-dev · built just now"

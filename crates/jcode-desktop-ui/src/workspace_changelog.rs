@@ -346,8 +346,9 @@ mod tests {
             vcx.run_until_parked();
         }
         let before_bounds = vcx.debug_bounds("panel-3").unwrap();
-        let mut snapshot =
-            workspace.update_in(vcx, |w, window, cx| w.snapshot_for_reload(window, cx).unwrap());
+        let mut snapshot = workspace.update_in(vcx, |w, window, cx| {
+            w.snapshot_for_reload(window, cx).unwrap()
+        });
         assert_eq!(snapshot.active, 3);
         let bytes = snapshot.encode().unwrap();
         workspace.update_in(vcx, |w, window, cx| {
@@ -367,7 +368,11 @@ mod tests {
                     .is_focused(window),
                 "keyboard focus stays on the panel the user was on"
             );
-            assert!(w.slots.iter().any(|slot| slot.panel.read(cx).is_changelog()));
+            assert!(
+                w.slots
+                    .iter()
+                    .any(|slot| slot.panel.read(cx).is_changelog())
+            );
         });
         let after_bounds = vcx
             .debug_bounds("panel-3")

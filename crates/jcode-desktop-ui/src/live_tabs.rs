@@ -1595,7 +1595,11 @@ mod tests {
         assert_eq!(TabLayout::hover_paint_order(4, 1, None).last(), Some(&1));
         for available in [100.0, 400.0, 1200.0] {
             for left in [0.0, 50.0, available - 40.0] {
-                let rest = TabGeometry { left, width: 40.0, height: TAB_HEIGHT - 4.0 };
+                let rest = TabGeometry {
+                    left,
+                    width: 40.0,
+                    height: TAB_HEIGHT - 4.0,
+                };
                 let pop = TabLayout::pop_out(rest, 208.0, available);
                 assert_eq!(pop.height, TAB_HEIGHT);
                 assert!(pop.width >= rest.width);

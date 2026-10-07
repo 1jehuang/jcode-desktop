@@ -509,6 +509,9 @@ fn configure_system_allocator() {
 }
 
 fn main() {
+    if let Some(code) = jcode_desktop_ui::run_restart_worker_if_requested() {
+        std::process::exit(code);
+    }
     configure_system_allocator();
     jcode_desktop_ui::memory::disable_transparent_huge_pages();
     if env::args_os().any(|argument| argument == "--version" || argument == "-V") {

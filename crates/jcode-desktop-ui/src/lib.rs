@@ -73,6 +73,19 @@ use gpui::{App, KeyBinding, Window};
 
 pub const APP_ID: &str = "jcode-desktop";
 
+/// `jcode-desktop --restart-all-worker`: the detached process behind
+/// `/restart-all`. Returns `None` for every other launch.
+pub fn run_restart_worker_if_requested() -> Option<i32> {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    if !args
+        .iter()
+        .any(|arg| arg == workspace::restart::WORKER_FLAG)
+    {
+        return None;
+    }
+    Some(workspace::restart::run_worker(args))
+}
+
 /// The linked Desktop build, available without initializing GPUI or a window.
 pub fn build_version() -> String {
     format!("{} ({})", build_info::version(), build_info::revision())
@@ -260,7 +273,13 @@ unsafe extern "C-unwind" fn activate(
     // generations so allocation destructors and these accessors stay callable.
     unsafe { host.install_element_arena_context() };
     let snapshot = if snapshot_len == 0 {
-        workspace::recovery::load()
+        // A `/restart-all` relaunch names its own saved window state.
+        let restart = {
+            let window = unsafe { &*window.cast::<Window>() };
+            let app = unsafe { &*app.cast::<App>() };
+            workspace::restart::take_restore_state(window, app)
+        };
+        restart.or_else(workspace::recovery::load)
     } else {
         let bytes = unsafe { std::slice::from_raw_parts(snapshot, snapshot_len) };
         match workspace::WorkspaceSnapshot::decode(bytes) {
@@ -315,6 +334,7 @@ unsafe extern "C-unwind" fn activate(
             }
         });
         workspace::recovery::install(&workspace, window, app);
+        workspace::restart::install(&workspace, window, app);
         workspace::applets::install(&workspace, window, app);
         // The host activates explicit launches/reopens. A background startup
         // rebuild must not steal OS focus if the user switched applications.

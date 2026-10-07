@@ -181,7 +181,10 @@ fn focus_moves_and_new_panels_do_not_rerender_other_panels(cx: &mut gpui::TestAp
     workspace.update_in(vcx, |w, window, cx| w.focus_left(&FocusLeft, window, cx));
     vcx.run_until_parked();
     let after: Vec<_> = panels.iter().map(count).collect();
-    assert_eq!(after, before, "moving focus must reuse every panel's render");
+    assert_eq!(
+        after, before,
+        "moving focus must reuse every panel's render"
+    );
     workspace.update(vcx, |w, cx| w.push_test_panel("p4", cx));
     vcx.run_until_parked();
     let after: Vec<_> = panels.iter().map(count).collect();
@@ -228,9 +231,7 @@ fn camera_pan_frames_skip_offscreen_panels(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(
-    cx: &mut gpui::TestAppContext,
-) {
+fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
         workspace.push_test_panel("derived", cx);
@@ -254,7 +255,11 @@ fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(
         panel.update(vcx, |_, cx| cx.notify());
         vcx.run_until_parked();
     }
-    assert_eq!(rows(vcx), before, "unchanged transcript must reuse its rows");
+    assert_eq!(
+        rows(vcx),
+        before,
+        "unchanged transcript must reuse its rows"
+    );
     panel.update(vcx, |panel, cx| {
         panel
             .items
@@ -262,7 +267,11 @@ fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(
         cx.notify();
     });
     vcx.run_until_parked();
-    assert_ne!(rows(vcx), before, "a transcript change must rebuild its rows");
+    assert_ne!(
+        rows(vcx),
+        before,
+        "a transcript change must rebuild its rows"
+    );
     assert_eq!(
         panel.read_with(vcx, |panel, _| panel.test_transcript_row_count()),
         51
@@ -341,14 +350,16 @@ fn running_tool_row_pulses_do_not_rebuild_the_panel(cx: &mut gpui::TestAppContex
     });
     vcx.run_until_parked();
     for _ in 0..3 {
-        vcx.executor().advance_clock(std::time::Duration::from_millis(50));
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
         vcx.run_until_parked();
     }
     let workspace_before = view_renders("Workspace");
     let panel_before = view_renders("Panel");
     let ticker_before = view_renders("Ticker");
     for _ in 0..20 {
-        vcx.executor().advance_clock(std::time::Duration::from_millis(50));
+        vcx.executor()
+            .advance_clock(std::time::Duration::from_millis(50));
         vcx.run_until_parked();
     }
     let workspace = view_renders("Workspace") - workspace_before;

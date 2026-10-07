@@ -453,9 +453,7 @@ impl Panel {
         match self.voice.phase {
             Phase::Idle => self.start_voice(cx),
             Phase::Recording => self.stop_voice("voice toggled off", cx),
-            Phase::Checking => {
-                self.cancel_voice(false, "voice toggled again while connecting", cx)
-            }
+            Phase::Checking => self.cancel_voice(false, "voice toggled again while connecting", cx),
             Phase::Transcribing | Phase::Routing => self.cancel_voice(
                 false,
                 "voice toggled again while transcribing (text discarded)",
@@ -468,7 +466,8 @@ impl Panel {
     /// as ABNORMAL so unexpected stops can be found and fixed.
     fn cancel_voice(&mut self, normal: bool, reason: &'static str, cx: &mut Context<Self>) {
         if self.voice.phase != Phase::Idle {
-            self.voice.log_end(normal, &format!("canceled: {reason}"), None);
+            self.voice
+                .log_end(normal, &format!("canceled: {reason}"), None);
         }
         self.reset_voice_attempt();
         cx.notify();
@@ -535,8 +534,16 @@ impl Panel {
             Ok(recording) => {
                 voice_log(format_args!(
                     "recording started ({}{})",
-                    if self.voice.hold_capture { "hold" } else { "toggle" },
-                    if self.voice.global_capture { ", global" } else { "" },
+                    if self.voice.hold_capture {
+                        "hold"
+                    } else {
+                        "toggle"
+                    },
+                    if self.voice.global_capture {
+                        ", global"
+                    } else {
+                        ""
+                    },
                 ));
                 jcode_base::voice::timing::mark("ui shows recording");
                 if self.voice.global_capture {
@@ -775,8 +782,9 @@ impl Panel {
                 "global voice: inserted {} transcript chars",
                 text.chars().count()
             );
-            self.input
-                .update(cx, |input, cx| input.append_dictation(&tag::wrap(&text), cx));
+            self.input.update(cx, |input, cx| {
+                input.append_dictation(&tag::wrap(&text), cx)
+            });
             self.voice.phase = Phase::Idle;
             self.voice.error = None;
             cx.notify();
@@ -934,8 +942,9 @@ impl Panel {
             // Emit only an exact member of the bounded snapshot, never a model-supplied path.
             cx.emit(VoiceSessionRequested(session, text));
         } else {
-            self.input
-                .update(cx, |input, cx| input.append_dictation(&tag::wrap(&text), cx));
+            self.input.update(cx, |input, cx| {
+                input.append_dictation(&tag::wrap(&text), cx)
+            });
         }
         cx.notify();
     }
@@ -1371,7 +1380,10 @@ mod tests {
                     .unwrap()
                     .contains("provider unavailable")
             );
-            assert_eq!(panel.input.read(cx).content.as_ref(), tag::wrap("keep this"));
+            assert_eq!(
+                panel.input.read(cx).content.as_ref(),
+                tag::wrap("keep this")
+            );
         });
     }
 
@@ -1557,10 +1569,9 @@ mod tests {
                 "the transcript shows the send"
             );
             assert!(
-                panel
-                    .items
-                    .iter()
-                    .any(|item| matches!(item, Item::User(text) if text == &tag::wrap("fix the bug")))
+                panel.items.iter().any(
+                    |item| matches!(item, Item::User(text) if text == &tag::wrap("fix the bug"))
+                )
             );
             assert!(panel.voice.live_transcript.is_empty());
             assert!(!panel.voice_active());
@@ -1629,7 +1640,10 @@ mod tests {
                 panel.voice.sessions = Some(Vec::new());
                 let before = panel.items.len();
                 panel.resolve_voice_for_test("spoken words", result, cx);
-                assert_eq!(panel.input.read(cx).content.as_ref(), format!("typed\n{}", tag::wrap("spoken words")));
+                assert_eq!(
+                    panel.input.read(cx).content.as_ref(),
+                    format!("typed\n{}", tag::wrap("spoken words"))
+                );
                 assert_eq!(panel.items.len(), before);
                 assert!(!panel.voice_active());
                 assert!(panel.voice.live_transcript.is_empty());
@@ -2010,11 +2024,9 @@ mod tests {
                 "Typed while transcribing"
             );
             assert!(
-                panel
-                    .items
-                    .iter()
-                    .skip(items)
-                    .any(|item| matches!(item, Item::User(text) if text == &tag::wrap("dictated words"))),
+                panel.items.iter().skip(items).any(
+                    |item| matches!(item, Item::User(text) if text == &tag::wrap("dictated words"))
+                ),
                 "voice sends only the trimmed utterance"
             );
             let items = panel.items.len();

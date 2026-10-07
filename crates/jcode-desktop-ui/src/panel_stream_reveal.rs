@@ -236,7 +236,11 @@ mod tests {
         };
         assert_eq!(reveal.visible("α βγ"), "α");
         reveal.shown = 6.0;
-        assert_eq!(reveal.visible("α βγ"), "α βγ", "mid-char cut completes the word");
+        assert_eq!(
+            reveal.visible("α βγ"),
+            "α βγ",
+            "mid-char cut completes the word"
+        );
         reveal.snap(3);
         assert_eq!(
             reveal.visible("αβγ"),

@@ -2122,6 +2122,17 @@ impl Panel {
                     };
                     self.items.push(item);
                 }
+                "/restart-all" | "/restart-all desktop" => {
+                    let restart_server = trimmed == "/restart-all";
+                    self.items.push(match crate::workspace::restart::spawn_worker(restart_server) {
+                        Ok(()) => Item::Assistant(if restart_server {
+                            "Restarting the Jcode server and every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.".into()
+                        } else {
+                            "Restarting every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.".into()
+                        }),
+                        Err(error) => Item::Error(format!("Could not start the restart: {error}")),
+                    });
+                }
                 "/commit-push" | "/commit-and-push" => self.submit_command_prompt(
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
@@ -3183,7 +3194,9 @@ impl Panel {
             self.reasoning_reveal
                 .visible(&self.streaming_reasoning)
                 .hash(&mut state);
-            self.text_reveal.visible(&self.streaming_text).hash(&mut state);
+            self.text_reveal
+                .visible(&self.streaming_text)
+                .hash(&mut state);
             state.finish()
         };
         let expansions = {
@@ -3811,35 +3824,28 @@ impl Panel {
                                 *done || error.is_some(),
                                 cx,
                             ))
-                            .when(
-                                !*done && error.is_none() && self.has_running_tool(),
-                                |el| {
-                                    el.child(
-                                        div()
-                                            .id(("tool-background", index))
-                                            .debug_selector(|| "tool-background".into())
-                                            .flex_none()
-                                            .px_2()
-                                            .py(px(2.0))
-                                            .rounded_full()
-                                            .bg(Theme::global().INLINE_CODE_BG)
-                                            .hover(|style| {
-                                                style.bg(Theme::global().TOOL_BORDER)
-                                            })
-                                            .cursor_pointer()
-                                            .text_size(px(10.0))
-                                            .line_height(px(14.0))
-                                            .text_color(Theme::global().TEXT_FAINT)
-                                            .on_click(cx.listener(
-                                                |this, _event, _window, cx| {
-                                                    cx.stop_propagation();
-                                                    this.background_running_tool(cx);
-                                                },
-                                            ))
-                                            .child("Background  Alt+B"),
-                                    )
-                                },
-                            )
+                            .when(!*done && error.is_none() && self.has_running_tool(), |el| {
+                                el.child(
+                                    div()
+                                        .id(("tool-background", index))
+                                        .debug_selector(|| "tool-background".into())
+                                        .flex_none()
+                                        .px_2()
+                                        .py(px(2.0))
+                                        .rounded_full()
+                                        .bg(Theme::global().INLINE_CODE_BG)
+                                        .hover(|style| style.bg(Theme::global().TOOL_BORDER))
+                                        .cursor_pointer()
+                                        .text_size(px(10.0))
+                                        .line_height(px(14.0))
+                                        .text_color(Theme::global().TEXT_FAINT)
+                                        .on_click(cx.listener(|this, _event, _window, cx| {
+                                            cx.stop_propagation();
+                                            this.background_running_tool(cx);
+                                        }))
+                                        .child("Background  Alt+B"),
+                                )
+                            })
                             // The token pill is the sole expansion control,
                             // including while a tool is still running.
                             .when(has_detail, |el| {
@@ -4475,7 +4481,13 @@ impl Render for Panel {
                 .flex()
                 // Short windows anchor the composer (and its pill row below)
                 // to the bottom so it never spills into the footer.
-                .map(|el| if short_viewport { el.items_end() } else { el.items_center() })
+                .map(|el| {
+                    if short_viewport {
+                        el.items_end()
+                    } else {
+                        el.items_center()
+                    }
+                })
                 .justify_center()
                 .px_4()
                 .pb(px(if short_viewport { 8. } else { 64. }))
@@ -4828,8 +4840,14 @@ impl Render for Panel {
                     // Hidden at the live end so the newest line stays crisp.
                     .when(show_jump_chip && self.startup_layout.is_none(), |el| {
                         let background = Theme::global().panel_background(self.surface_focused);
-                        let clear = gpui::Rgba { a: 0., ..background };
-                        let half = gpui::Rgba { a: 0.55, ..background };
+                        let clear = gpui::Rgba {
+                            a: 0.,
+                            ..background
+                        };
+                        let half = gpui::Rgba {
+                            a: 0.55,
+                            ..background
+                        };
                         // Two stacked ramps approximate an eased blur-like
                         // falloff: a long soft veil, then a firmer edge
                         // where the transcript meets the composer.
@@ -4860,6 +4878,7 @@ impl Render for Panel {
                     .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))
+                    .child(self.tail_growth_observer(cx))
                     .child(crate::scrollbar::interactive_vertical_list(
                         &self.transcript_list,
                         "transcript-scrollbar",
@@ -4878,7 +4897,6 @@ impl Render for Panel {
                             let panel = cx.entity().downgrade();
                             move |_, cx| {
                                 let _ = panel.update(cx, |panel, cx| {
-                    .child(self.tail_growth_observer(cx))
                                     panel.resume_transcript_follow_after_scroll(cx);
                                     cx.notify();
                                 });
@@ -5147,10 +5165,7 @@ fn human_auth_method(method: &str) -> String {
     let method = method.to_lowercase();
     if method.contains("oauth") {
         "oauth".to_string()
-    } else if method.contains("api-key")
-        || method.contains("api_key")
-        || method.ends_with("-api")
-    {
+    } else if method.contains("api-key") || method.contains("api_key") || method.ends_with("-api") {
         "api key".to_string()
     } else {
         method

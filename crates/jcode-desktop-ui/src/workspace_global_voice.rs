@@ -118,8 +118,7 @@ fn spawn_args(own: impl Iterator<Item = std::ffi::OsString>) -> Vec<std::ffi::Os
     // Joins the shared single-panel host. The hold flag and working directory
     // travel with the forwarded per-window launch, so every voice window runs
     // (and hot reloads) in one process instead of accumulating stale hosts.
-    let mut args: Vec<std::ffi::OsString> =
-        vec!["--single-panel".into(), SPAWNED_HOLD_FLAG.into()];
+    let mut args: Vec<std::ffi::OsString> = vec!["--single-panel".into(), SPAWNED_HOLD_FLAG.into()];
     args.extend(own.filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"));
     args
 }
@@ -679,12 +678,7 @@ mod spawn_tests {
             .map(std::ffi::OsString::from);
         assert_eq!(
             spawn_args(own.into_iter()),
-            [
-                "--single-panel",
-                SPAWNED_HOLD_FLAG,
-                "--hot-reload"
-            ]
-            .map(std::ffi::OsString::from)
+            ["--single-panel", SPAWNED_HOLD_FLAG, "--hot-reload"].map(std::ffi::OsString::from)
         );
     }
 }

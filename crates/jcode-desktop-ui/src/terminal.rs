@@ -4,7 +4,8 @@ use crate::{image_cache::ImageIds, theme::Theme};
 use gpui::{
     Bounds, ClipboardItem, Context, ElementInputHandler, EntityInputHandler, FocusHandle,
     Focusable, KeyBinding, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Render, RenderImage, ScrollWheelEvent, UTF16Selection, Window,
+    MouseUpEvent, PinchEvent, Pixels, Point, Render, RenderImage, ScrollWheelEvent, TouchPhase,
+    UTF16Selection, Window,
     actions, canvas, div, prelude::*, px,
 };
 use handterm_common::{
@@ -26,6 +27,8 @@ const ROWS: u16 = 40;
 const COLS: u16 = 120;
 const FONT_SIZE: f32 = 13.0;
 const LINE_HEIGHT: f32 = 18.0;
+/// Pinch scale change that produces one Ctrl+wheel notch (Jcode zooms 10%).
+const PINCH_STEP: f32 = 0.1;
 const PADDING: f32 = 10.0;
 // Keep one busy PTY from starving the UI thread. A later tick drains the rest.
 const POLL_BUDGET: usize = 256 * 1024;
@@ -79,6 +82,8 @@ pub struct TerminalPanel {
     cell_width: Pixels,
     selecting: bool,
     wheel_remainder: f32,
+    pinch_remainder: f32,
+    pinch_active: bool,
     image_ids: ImageIds,
     images: HashMap<u32, CachedImage>,
     image_generation: Option<u64>,
@@ -200,6 +205,8 @@ impl TerminalPanel {
             cell_width: px(8.0),
             selecting: false,
             wheel_remainder: 0.0,
+            pinch_remainder: 0.0,
+            pinch_active: false,
             image_ids: ImageIds::get(cx),
             images: HashMap::new(),
             image_generation: None,
@@ -407,7 +414,56 @@ impl TerminalPanel {
         }
     }
 
+    /// Terminal protocols have no pinch event, so a trackpad pinch is reported
+    /// as Ctrl+wheel, the de facto zoom gesture TUIs such as Jcode already
+    /// handle. Each `PINCH_STEP` of scale change emits one wheel notch.
+    fn pinch(&mut self, event: &PinchEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event.phase {
+            TouchPhase::Started => {
+                self.pinch_active = true;
+                self.pinch_remainder = 0.0;
+            }
+            TouchPhase::Ended | TouchPhase::Cancelled => self.pinch_active = false,
+            TouchPhase::Moved => {}
+        }
+        if !event.delta.is_finite() {
+            return;
+        }
+        let bytes = self.pinch_reports(event.delta, event.position);
+        if self.terminal.mouse_mode == MouseMode::Off {
+            return;
+        }
+        self.send(&bytes);
+        window.prevent_default();
+        cx.stop_propagation();
+    }
+
+    fn pinch_reports(&mut self, delta: f32, position: Point<Pixels>) -> Vec<u8> {
+        if self.terminal.mouse_mode == MouseMode::Off {
+            return Vec::new();
+        }
+        self.pinch_remainder += delta / PINCH_STEP;
+        let notches = self.pinch_remainder.trunc() as i32;
+        self.pinch_remainder -= notches as f32;
+        let (col, row) = self.cell_at_point(position);
+        let mut bytes = Vec::new();
+        for _ in 0..notches.unsigned_abs().min(20) {
+            // Wheel up (64) zooms in, wheel down (65) zooms out. 16 is Ctrl.
+            let button = if notches > 0 { 64 } else { 65 } | 16;
+            if let Some(report) = self.terminal.encode_mouse(button, col, row, true) {
+                bytes.extend_from_slice(&report);
+            }
+        }
+        bytes
+    }
+
     fn scroll(&mut self, event: &ScrollWheelEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if self.pinch_active {
+            // Linux forwards a pinch's translation as precise scroll. Do not
+            // let it scroll the app underneath the zoom gesture.
+            cx.stop_propagation();
+            return;
+        }
         let delta = event.delta.pixel_delta(px(LINE_HEIGHT)).y / px(LINE_HEIGHT);
         self.wheel_remainder += delta;
         let lines = self.wheel_remainder.trunc() as i32;
@@ -542,6 +598,13 @@ impl Render for TerminalPanel {
             .on_mouse_up_out(MouseButton::Middle, cx.listener(Self::mouse_up))
             .on_mouse_move(cx.listener(Self::mouse_move))
             .on_scroll_wheel(cx.listener(Self::scroll))
+            .capture_pinch(cx.listener(|this, event: &PinchEvent, _, _| {
+                // Release pinch ownership even if the pointer left the panel.
+                if matches!(event.phase, TouchPhase::Ended | TouchPhase::Cancelled) {
+                    this.pinch_active = false;
+                }
+            }))
+            .on_pinch(cx.listener(Self::pinch))
     }
 }
 

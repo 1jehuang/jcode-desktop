@@ -760,7 +760,11 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
-        if self.login.as_ref().is_some_and(|state| state.selection_only) {
+        if self
+            .login
+            .as_ref()
+            .is_some_and(|state| state.selection_only)
+        {
             return None;
         }
         if let Some(state) = self.login.as_mut()

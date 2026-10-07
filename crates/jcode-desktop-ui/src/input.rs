@@ -578,7 +578,8 @@ impl PromptInput {
         self
     }
 
-    /// Placeholder shown at `now`, and whether it is still animating.
+    /// Placeholder shown at `now`, the example it belongs to, and whether it
+    /// is still animating.
     fn placeholder_text(
         &self,
         now: Instant,
@@ -816,7 +817,11 @@ impl PromptInput {
     }
 
     /// An available catalog spec for a signed-in provider, preferring the current model.
-    pub(crate) fn provider_route_spec(&self, provider: &str, current: Option<&str>) -> Option<String> {
+    pub(crate) fn provider_route_spec(
+        &self,
+        provider: &str,
+        current: Option<&str>,
+    ) -> Option<String> {
         let wanted = provider_route_methods(provider);
         let mut matches: Vec<_> = self
             .model_details
@@ -825,10 +830,32 @@ impl PromptInput {
                 let method = detail.api_method.to_ascii_lowercase();
                 let owner = detail.provider.to_ascii_lowercase();
                 wanted.iter().any(|wanted| {
-                    method == *wanted || method.starts_with(&format!("{wanted}-")) || owner == *wanted
+                    method == *wanted
+                        || method.starts_with(&format!("{wanted}-"))
+                        || owner == *wanted
                 })
             })
             .collect();
+        // Keep the current model when the target provider serves it.
+        // Otherwise land on the provider's newest flagship (same ranking as
+        // the daemon's post-login selection), not the alphabetically first
+        // route, which previously put Copilot users on `claude-opus-4.6`.
+        if let Some((spec, _)) = matches
+            .iter()
+            .find(|(_, detail)| current.is_some_and(|model| detail.model == model))
+        {
+            return Some((*spec).clone());
+        }
+        let candidates: Vec<&str> = matches
+            .iter()
+            .map(|(_, detail)| detail.model.as_str())
+            .collect();
+        if let Some(best) =
+            jcode_base::auth::lifecycle::preferred_model_for_provider(provider, &candidates)
+            && let Some((spec, _)) = matches.iter().find(|(_, detail)| detail.model == best)
+        {
+            return Some((*spec).clone());
+        }
         matches.sort_by(|(a, left), (b, right)| {
             let current_left = current.is_some_and(|model| left.model == model);
             let current_right = current.is_some_and(|model| right.model == model);
@@ -2008,43 +2035,41 @@ impl Element for TextElement {
         let focused = self.input.read(cx).focus_handle.is_focused(window);
         let reduced = motion_reduced(cx);
         let (cursor_pos, caret_alpha, caret_next, caret_gliding) = {
-                let input = self.input.read(cx);
-                let mut state = input.motion.borrow_mut();
-                let state = &mut *state;
-                let key = (input.content.clone(), cursor);
-                let mut edited = false;
-                if state.key.as_ref() != Some(&key) {
-                    edited = state.key.as_ref().is_some_and(|(old, _)| *old != key.0);
-                    if key.0.is_empty() && state.key.as_ref().is_some_and(|(old, _)| !old.is_empty())
-                    {
-                        // Emptying the composer starts a fresh example.
-                        state.seed = state.seed.wrapping_add(1);
-                    }
-                    state.key = Some(key);
-                    state.epoch = now;
+            let input = self.input.read(cx);
+            let mut state = input.motion.borrow_mut();
+            let state = &mut *state;
+            let key = (input.content.clone(), cursor);
+            let mut edited = false;
+            if state.key.as_ref() != Some(&key) {
+                edited = state.key.as_ref().is_some_and(|(old, _)| *old != key.0);
+                if key.0.is_empty() && state.key.as_ref().is_some_and(|(old, _)| !old.is_empty()) {
+                    // Emptying the composer starts a fresh example.
+                    state.seed = state.seed.wrapping_add(1);
                 }
-                let epoch = state.epoch;
-                let glide = state
-                    .glide
-                    .get_or_insert_with(|| motion::Glide::new(target, now));
-                if edited {
-                    // Typed text lands this frame, so the caret must too. A
-                    // glide here trails the new character and forces extra
-                    // full-panel frames between keystrokes.
-                    glide.snap(target, now);
-                } else {
-                    glide.retarget(target, line_height, now, reduced);
-                }
-                let (position, gliding) = glide.position(now);
-                let (alpha, next) =
-                    motion::caret_alpha(now.saturating_duration_since(epoch), reduced);
-                (
-                    position,
-                    alpha,
-                    next.filter(|_| focused),
-                    focused && gliding,
-                )
-            };
+                state.key = Some(key);
+                state.epoch = now;
+            }
+            let epoch = state.epoch;
+            let glide = state
+                .glide
+                .get_or_insert_with(|| motion::Glide::new(target, now));
+            if edited {
+                // Typed text lands this frame, so the caret must too. A
+                // glide here trails the new character and forces extra
+                // full-panel frames between keystrokes.
+                glide.snap(target, now);
+            } else {
+                glide.retarget(target, line_height, now, reduced);
+            }
+            let (position, gliding) = glide.position(now);
+            let (alpha, next) = motion::caret_alpha(now.saturating_duration_since(epoch), reduced);
+            (
+                position,
+                alpha,
+                next.filter(|_| focused),
+                focused && gliding,
+            )
+        };
         if caret_gliding {
             // The 33ms ticker is too coarse for a 55ms glide. Draw every frame.
             window.request_animation_frame();
@@ -2497,9 +2522,14 @@ impl Render for PromptInput {
                     .text_size(px(14.0))
                     .when(spacious, |el| {
                         // One line of 16px text plus padding.
-                        el.min_h(px(SPACIOUS_MIN_HEIGHT)).px_4().py_4().text_size(px(16.0))
+                        el.min_h(px(SPACIOUS_MIN_HEIGHT))
+                            .px_4()
+                            .py_4()
+                            .text_size(px(16.0))
                     })
-                    .when(self.trailing_inset > 0., |el| el.pr(px(self.trailing_inset)))
+                    .when(self.trailing_inset > 0., |el| {
+                        el.pr(px(self.trailing_inset))
+                    })
                     .child(
                         div()
                             .id("prompt-editor")
@@ -3337,7 +3367,8 @@ mod tests {
         std::fs::remove_dir_all(&home).unwrap();
 
         let (input, vcx) = cx.add_window_view(|_, cx| {
-            let mut input = PromptInput::new(cx, "Type something…", |_, _, _, _| {}).with_example_prompts();
+            let mut input =
+                PromptInput::new(cx, "Type something…", |_, _, _, _| {}).with_example_prompts();
             input.set_working_dir(Some("/repo/app"));
             input
         });
@@ -3346,7 +3377,10 @@ mod tests {
         let picked = |vcx: &mut gpui::VisualTestContext| {
             input.update(vcx, |input, _| {
                 let state = input.motion.borrow();
-                let picked = state.prompts.as_ref().expect("composer painted its examples");
+                let picked = state
+                    .prompts
+                    .as_ref()
+                    .expect("composer painted its examples");
                 (picked.prompts[0].to_string(), picked.prompts[1].to_string())
             })
         };
@@ -3366,8 +3400,14 @@ mod tests {
         });
         vcx.run_until_parked();
         let (first, second) = picked(vcx);
-        assert!(motion::FALLBACK_PROMPTS.contains(&first.as_str()), "{first}");
-        assert!(motion::FALLBACK_PROMPTS.contains(&second.as_str()), "{second}");
+        assert!(
+            motion::FALLBACK_PROMPTS.contains(&first.as_str()),
+            "{first}"
+        );
+        assert!(
+            motion::FALLBACK_PROMPTS.contains(&second.as_str()),
+            "{second}"
+        );
     }
 
     #[gpui::test]
@@ -3535,7 +3575,11 @@ fn provider_route_methods(provider: &str) -> Vec<String> {
         "openai" => vec!["openai-oauth".into()],
         "openai-api" => vec!["openai-api-key".into(), "openai-api".into()],
         "claude" => vec!["claude-oauth".into()],
-        "anthropic-api" => vec!["anthropic-api-key".into(), "anthropic-api".into(), "claude-api".into()],
+        "anthropic-api" => vec![
+            "anthropic-api-key".into(),
+            "anthropic-api".into(),
+            "claude-api".into(),
+        ],
         other => vec![other.into()],
     }
 }

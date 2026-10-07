@@ -55,7 +55,8 @@ impl Timers {
         for id in working {
             if !self.0.contains_key(id) {
                 let now = Instant::now();
-                self.0.insert(id.clone(), cx.new(|cx| WorkingTimer::new(now, cx)));
+                self.0
+                    .insert(id.clone(), cx.new(|cx| WorkingTimer::new(now, cx)));
             }
         }
     }

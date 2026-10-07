@@ -421,3 +421,56 @@ fn image_history_survives_alt_screen_and_resize_without_reupload(cx: &mut gpui::
         })
     });
 }
+
+#[gpui::test]
+fn trackpad_pinch_reports_ctrl_wheel_and_suppresses_pinch_pan(cx: &mut gpui::TestAppContext) {
+    cx.update(bind_keys);
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| TerminalPanel::new(None, None, None, HostHandle::inert(), cx));
+    vcx.run_until_parked();
+    let position = panel.read_with(vcx, |panel, _| {
+        panel.bounds.origin + gpui::point(px(4.), px(4.))
+    });
+    panel.update(vcx, |panel, _| {
+        // Without mouse reporting there is nothing to forward the pinch to.
+        assert!(panel.pinch_reports(0.5, position).is_empty());
+        panel.process_output(b"\x1b[?1000h\x1b[?1006h", false);
+        // Ctrl (16) + wheel up (64) zooms in, one notch per 10% of scale.
+        assert_eq!(panel.pinch_reports(0.25, position), b"\x1b[<80;1;1M\x1b[<80;1;1M");
+        // The 0.05 remainder carries over, so small deltas still add up.
+        assert_eq!(panel.pinch_reports(0.05, position), b"\x1b[<80;1;1M");
+        assert_eq!(panel.pinch_reports(-0.1, position), b"\x1b[<81;1;1M");
+    });
+
+    vcx.simulate_event(gpui::PinchEvent {
+        position,
+        delta: 0.2,
+        modifiers: Default::default(),
+        phase: gpui::TouchPhase::Started,
+    });
+    panel.read_with(vcx, |panel, _| assert!(panel.pinch_active));
+    panel.update(vcx, |panel, _| {
+        panel.process_output("\r\nline".repeat(150).as_bytes(), false);
+        panel.terminal.mouse_mode = MouseMode::Off;
+    });
+    // Pinch translation arrives as precise scroll and must not scroll.
+    vcx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
+        ..Default::default()
+    });
+    panel.read_with(vcx, |panel, _| assert_eq!(panel.terminal.grid.scroll_offset, 0));
+    vcx.simulate_event(gpui::PinchEvent {
+        position,
+        delta: 0.0,
+        modifiers: Default::default(),
+        phase: gpui::TouchPhase::Ended,
+    });
+    panel.read_with(vcx, |panel, _| assert!(!panel.pinch_active));
+    vcx.simulate_event(ScrollWheelEvent {
+        position,
+        delta: gpui::ScrollDelta::Lines(gpui::point(0., 3.)),
+        ..Default::default()
+    });
+    panel.read_with(vcx, |panel, _| assert_eq!(panel.terminal.grid.scroll_offset, 3));
+}

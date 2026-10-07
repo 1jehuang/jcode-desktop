@@ -92,6 +92,8 @@ use crate::updates;
 
 #[path = "workspace_recovery.rs"]
 pub(crate) mod recovery;
+#[path = "workspace_restart.rs"]
+pub(crate) mod restart;
 
 #[cfg(test)]
 #[path = "closing_navigation_tests.rs"]
@@ -1829,9 +1831,7 @@ impl Workspace {
         // Stay on the saved panel. If it was not restorable, stay on the same
         // row rather than jumping to the first panel of the workspace.
         self.active = restored(snapshot.active)
-            .or_else(|| {
-                snapshot.row_focus[self.active_row].and_then(restored)
-            })
+            .or_else(|| snapshot.row_focus[self.active_row].and_then(restored))
             .or_else(|| {
                 self.slots
                     .iter()
@@ -5576,9 +5576,9 @@ impl Workspace {
                     selected,
                     saved: session.saved,
                     details: (row.subdirectory.is_some()
-                            || sidebar_session_created_ms(&session.session_id).is_some()
-                            || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
-                            || session.edit_stats.is_some()),
+                        || sidebar_session_created_ms(&session.session_id).is_some()
+                        || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
+                        || session.edit_stats.is_some()),
                 }
             })
             .collect::<Vec<_>>();
@@ -5679,7 +5679,12 @@ impl Workspace {
                 let next_hidden = below.get(DOCK_LIMIT).map(|(item, _)| *item);
                 fn jump(
                     item: usize,
-                ) -> impl Fn(&mut Workspace, &gpui::MouseDownEvent, &mut Window, &mut Context<Workspace>) + 'static {
+                ) -> impl Fn(
+                    &mut Workspace,
+                    &gpui::MouseDownEvent,
+                    &mut Window,
+                    &mut Context<Workspace>,
+                ) + 'static {
                     move |this, _, window, cx| {
                         window.prevent_default();
                         cx.stop_propagation();
@@ -5723,13 +5728,7 @@ impl Workspace {
                         let (info, _, count) = &groups[project];
                         row(("sidebar-project-dock-item", project).into())
                             .debug_selector(move || format!("sidebar-project-dock-{project}"))
-                            .child(
-                                div()
-                                    .w(px(12.0))
-                                    .flex_none()
-                                    .text_size(px(10.0))
-                                    .child("›"),
-                            )
+                            .child(div().w(px(12.0)).flex_none().text_size(px(10.0)).child("›"))
                             .child(
                                 div()
                                     .flex_1()
@@ -6979,17 +6978,12 @@ impl Workspace {
                         }
                     }
                     tooltip.push_str(&format!("\n\n{}", accounts::USAGE_ESTIMATE_NOTE));
-                    let amount = |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
+                    let amount =
+                        |period| report.period_amount(period).unwrap_or_else(|| "n/a".into());
                     // Estimates: the tooltip carries the caveat, not the row.
-                    let summary = format!(
-                        "today {} · total {}",
-                        amount("Today"),
-                        amount("Lifetime")
-                    );
-                    let label = report
-                        .account_label
-                        .clone()
-                        .filter(|_| many);
+                    let summary =
+                        format!("today {} · total {}", amount("Today"), amount("Lifetime"));
+                    let label = report.account_label.clone().filter(|_| many);
                     history = history.child(
                         div()
                             .id(("account-history", index * 100 + report_index))
@@ -10019,10 +10013,21 @@ mod tests {
         let row_name = format!("sidebar-session-{row}");
         let row_bounds = vcx.debug_bounds(row_name.clone().leak()).unwrap();
         let spin_bounds = vcx.debug_bounds(spinner(row).leak()).unwrap();
-        let title = vcx.debug_bounds(format!("sidebar-session-title-{row}").leak()).unwrap();
-        assert!(vcx.debug_bounds(format!("sidebar-pin-{row}").leak()).is_none());
-        assert!(vcx.debug_bounds(format!("sidebar-working-{row}").leak()).is_some());
-        assert!(vcx.debug_bounds(format!("sidebar-working-{}", 1 - row).leak()).is_none());
+        let title = vcx
+            .debug_bounds(format!("sidebar-session-title-{row}").leak())
+            .unwrap();
+        assert!(
+            vcx.debug_bounds(format!("sidebar-pin-{row}").leak())
+                .is_none()
+        );
+        assert!(
+            vcx.debug_bounds(format!("sidebar-working-{row}").leak())
+                .is_some()
+        );
+        assert!(
+            vcx.debug_bounds(format!("sidebar-working-{}", 1 - row).leak())
+                .is_none()
+        );
         assert!(title.right() <= spin_bounds.left());
         assert!(row_bounds.right() - spin_bounds.right() < px(crate::scrollbar::GUTTER + 12.0));
 
@@ -10030,8 +10035,15 @@ mod tests {
         vcx.simulate_mouse_move(row_bounds.center(), None, gpui::Modifiers::default());
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(spinner(row).leak()).is_none());
-        assert!(vcx.debug_bounds(format!("sidebar-pin-{row}").leak()).is_some());
-        vcx.simulate_mouse_move(gpui::point(px(2000.0), px(2000.0)), None, gpui::Modifiers::default());
+        assert!(
+            vcx.debug_bounds(format!("sidebar-pin-{row}").leak())
+                .is_some()
+        );
+        vcx.simulate_mouse_move(
+            gpui::point(px(2000.0), px(2000.0)),
+            None,
+            gpui::Modifiers::default(),
+        );
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
         let mark = workspace.read_with(vcx, |workspace, _| {
@@ -10063,9 +10075,7 @@ mod tests {
     }
 
     #[gpui::test]
-    fn sidebar_mark_shows_only_while_open_session_is_active(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn sidebar_mark_shows_only_while_open_session_is_active(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("sidebar-activity", cx);
@@ -15013,10 +15023,7 @@ mod tests {
             cx.run_until_parked();
             // Leave the header and its menu before using the page.
             cx.update(|window, cx| {
-                window.simulate_mouse_move(
-                    gpui::point(px(130.0), popout.bottom() + px(40.0)),
-                    cx,
-                );
+                window.simulate_mouse_move(gpui::point(px(130.0), popout.bottom() + px(40.0)), cx);
             });
             cx.run_until_parked();
             assert!(cx.debug_bounds(expanded).is_none());

@@ -265,16 +265,19 @@ impl Account {
 }
 
 /// Resolve the credential, not the model family (Claude can use OpenRouter).
+/// The daemon may report a display name (`Claude`, `Anthropic`, `OpenAI`,
+/// `GitHub Copilot`) rather than a canonical id, so normalize first.
 pub fn credential_id(provider: &str, auth: Option<&str>) -> String {
     let api_key = auth == Some("api key");
-    match provider {
-        "anthropic" if api_key => "anthropic-api",
-        "anthropic" | "claude-cli" => "claude",
-        "openai" if api_key => "openai-api",
-        "gemini" if api_key => "gemini-api",
-        other => other,
+    let provider = provider.trim().to_ascii_lowercase();
+    match provider.as_str() {
+        "anthropic" | "claude" if api_key => "anthropic-api".to_owned(),
+        "anthropic" | "claude" | "claude-cli" => "claude".to_owned(),
+        "openai" if api_key => "openai-api".to_owned(),
+        "gemini" if api_key => "gemini-api".to_owned(),
+        "github copilot" => "copilot".to_owned(),
+        _ => provider,
     }
-    .to_owned()
 }
 
 /// Bounded MRU, updated only on completed turns, never on tokens or quota polls.
@@ -676,6 +679,12 @@ mod tests {
         assert_eq!(credential_id("openai", Some("api key")), "openai-api");
         assert_eq!(credential_id("openai", Some("oauth")), "openai");
         assert_eq!(credential_id("openrouter", None), "openrouter");
+        // The daemon reports display names, not canonical ids.
+        assert_eq!(credential_id("Claude", Some("oauth")), "claude");
+        assert_eq!(credential_id("Anthropic", Some("oauth")), "claude");
+        assert_eq!(credential_id("Claude", Some("api key")), "anthropic-api");
+        assert_eq!(credential_id("OpenAI", Some("oauth")), "openai");
+        assert_eq!(credential_id("OpenRouter", None), "openrouter");
     }
 
     #[test]
