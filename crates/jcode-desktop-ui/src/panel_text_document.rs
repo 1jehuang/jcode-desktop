@@ -8,6 +8,11 @@ type Segments = Vec<(SharedString, SharedString)>;
 pub(super) struct TranscriptTextDocument {
     rows: HashMap<usize, (u64, Segments)>,
     order: Vec<usize>,
+    /// The items revision the settled rows were last fingerprinted at. While
+    /// it holds, a settled row is the same item it was, so only rows built
+    /// from live text, and disclosure changes, need hashing again. Streaming
+    /// changes only those, many times a second.
+    settled_revision: Option<u64>,
 }
 
 impl TranscriptTextDocument {
@@ -15,13 +20,14 @@ impl TranscriptTextDocument {
     /// changes. Settled markdown is not reparsed on pointer/animation frames.
     pub(super) fn sync(
         &mut self,
-        items: &[Item],
+        items: &Transcript,
         rows: &[TranscriptRenderRow],
         expanded_prompts: &HashSet<(usize, bool)>,
         expanded_tools: &HashSet<String>,
     ) -> Option<Segments> {
         let order: Vec<_> = rows.iter().map(|row| row.index).collect();
         let mut changed = self.order != order;
+        let settled_unchanged = self.settled_revision == Some(items.revision());
         for row in rows {
             let item = match &row.source {
                 TranscriptRowSource::Settled(index) => &items[*index],
@@ -30,7 +36,19 @@ impl TranscriptTextDocument {
             let prompt_expanded = expanded_prompts.contains(&(row.index, false));
             let tool_expanded =
                 matches!(item, Item::Tool { call_id, .. } if expanded_tools.contains(call_id));
-            let fingerprint = fingerprint(item, prompt_expanded, tool_expanded);
+            let flags = (u64::from(prompt_expanded) << 1) | u64::from(tool_expanded);
+            if settled_unchanged
+                && matches!(row.source, TranscriptRowSource::Settled(_))
+                && self
+                    .rows
+                    .get(&row.index)
+                    .is_some_and(|entry| entry.0 & 0b11 == flags)
+            {
+                continue;
+            }
+            // The low two bits carry the disclosure flags so a settled row
+            // skipped above still notices when it is expanded or collapsed.
+            let fingerprint = (fingerprint(item, prompt_expanded, tool_expanded) & !0b11) | flags;
             if self
                 .rows
                 .get(&row.index)
@@ -42,6 +60,7 @@ impl TranscriptTextDocument {
             self.rows.insert(row.index, (fingerprint, segments));
             changed = true;
         }
+        self.settled_revision = Some(items.revision());
         if !changed {
             return None;
         }
@@ -264,11 +283,12 @@ mod tests {
     #[test]
     fn complete_document_caches_rows_and_excludes_collapsed_output() {
         let mut cache = TranscriptTextDocument::default();
-        let items = vec![
+        let items: Transcript = vec![
             Item::User("Prompt".into()),
             tool(),
             Item::Assistant("Answer".into()),
-        ];
+        ]
+        .into();
         let rows = rows(&items);
         let prompts = HashSet::new();
         let mut tools = HashSet::new();
@@ -289,6 +309,40 @@ mod tests {
         let trimmed = cache.sync(&items, &rows[..1], &prompts, &tools).unwrap();
         assert_eq!(trimmed.len(), 1);
         assert_eq!(cache.rows.len(), 1);
+    }
+
+    #[test]
+    fn settled_rows_are_rehashed_only_when_the_transcript_changes() {
+        let mut cache = TranscriptTextDocument::default();
+        let mut items: Transcript =
+            vec![Item::User("Prompt".into()), Item::Assistant("first".into())].into();
+        let prompts = HashSet::new();
+        let tools = HashSet::new();
+        let rows_now = rows(&items);
+        assert!(cache.sync(&items, &rows_now, &prompts, &tools).is_some());
+        // Same transcript: nothing to replace.
+        assert!(cache.sync(&items, &rows_now, &prompts, &tools).is_none());
+        // An in-place edit bumps the revision, so the changed row is seen.
+        if let Some(Item::Assistant(text)) = items.get_mut(1) {
+            *text = "second".into();
+        }
+        let doc = cache.sync(&items, &rows(&items), &prompts, &tools).unwrap();
+        assert!(doc.iter().any(|(_, text)| text.contains("second")));
+        assert!(!doc.iter().any(|(_, text)| text.contains("first")));
+        // Live text is an owned row and is always compared.
+        let mut live = rows(&items);
+        live.push(TranscriptRenderRow {
+            index: 2,
+            source: TranscriptRowSource::Owned(Box::new(Item::Assistant("partial".into()))),
+            role: None,
+            show_label: false,
+        });
+        let doc = cache.sync(&items, &live, &prompts, &tools).unwrap();
+        assert!(doc.iter().any(|(_, text)| text.contains("partial")));
+        live[2].source =
+            TranscriptRowSource::Owned(Box::new(Item::Assistant("partial more".into())));
+        let doc = cache.sync(&items, &live, &prompts, &tools).unwrap();
+        assert!(doc.iter().any(|(_, text)| text.contains("partial more")));
     }
 
     #[test]
