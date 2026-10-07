@@ -497,7 +497,10 @@ versus 135-150 for `workspace.rs` and `panel.rs`).
 Verdict: a small, real gain in rustc time, not a clear wall-clock win. The
 mechanical cost is low: files move unchanged apart from `pub(crate)` to
 `pub`, the UI crate re-exports them under their old names, and all 1735
-workspace tests pass. The larger lever is the second slice (`theme`, `config`,
+workspace tests pass. The split build also launches and renders through
+`scripts/screenshot.py` (real app, offline fixture): prompt cards with their
+rounded backgrounds, diff counts, markdown, code, and math all paint. The
+larger lever is the second slice (`theme`, `config`,
 `markdown`, `text_selection`, `harness`, ~10k more lines that are edited more
 often), or splitting `workspace` and `panel` themselves, which hold most of
 the code and most of the edits.
