@@ -2,6 +2,7 @@
 members = [
     ".",
     "crates/jcode-desktop-api",
+    "crates/jcode-desktop-core",
     "crates/jcode-desktop-motion",
     "crates/jcode-desktop-ui",
 ]

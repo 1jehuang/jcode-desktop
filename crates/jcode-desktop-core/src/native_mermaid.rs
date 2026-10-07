@@ -20,11 +20,11 @@ use mermaid_rs_renderer::scene::{
     BlendMode, Color, FillRule, Paint, PathCommand, Scene, SceneCommand,
 };
 
-pub(crate) const MAX_DIAGRAM_HEIGHT: f32 = 520.;
+pub const MAX_DIAGRAM_HEIGHT: f32 = 520.;
 
 /// A cached, tessellated vector diagram. Cloning does not duplicate geometry.
 #[derive(Clone)]
-pub(crate) struct NativeMermaid {
+pub struct NativeMermaid {
     width: f32,
     height: f32,
     paths: Arc<[NativePath]>,
@@ -42,7 +42,7 @@ struct NativePath {
 }
 
 impl NativeMermaid {
-    pub(crate) fn new(scene: &Scene) -> Result<Self, String> {
+    pub fn new(scene: &Scene) -> Result<Self, String> {
         if !scene.width.is_finite()
             || !scene.height.is_finite()
             || scene.width <= 0.
@@ -122,19 +122,19 @@ impl NativeMermaid {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn width(&self) -> f32 {
+    // Not cfg(test): the UI crate's tests read these, and cfg(test) applies
+    // only to this crate's own test build.
+    pub fn width(&self) -> f32 {
         self.width
     }
-    #[cfg(test)]
-    pub(crate) fn height(&self) -> f32 {
+    pub fn height(&self) -> f32 {
         self.height
     }
 
     /// Intrinsic size is an upper bound, never a target to upscale toward.
     /// Width and aspect ratio drive Taffy layout together, so tall diagrams
     /// reserve precisely their scaled height rather than a clipped fixed box.
-    pub(crate) fn element(&self) -> AnyElement {
+    pub fn element(&self) -> AnyElement {
         let diagram = self.clone();
         let max_width = self
             .width

@@ -74,7 +74,7 @@ struct ActionRecord {
 }
 
 impl ActionCapture {
-    pub(crate) fn new(path: PathBuf) -> Self {
+    pub fn new(path: PathBuf) -> Self {
         Self {
             path,
             pending: None,

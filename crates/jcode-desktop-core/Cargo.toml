@@ -1,0 +1,38 @@
+[package]
+name = "jcode-desktop-core"
+version = "0.4.0"
+edition.workspace = true
+license.workspace = true
+description = "Leaf modules of Jcode Desktop's UI that do not depend on the workspace or panels"
+
+# A separate crate so edits to the large UI crate do not re-check these
+# modules, and their metadata stays reusable across UI rebuilds. Linked
+# statically into the hot-reloaded UI cdylib, so it shares its GPUI instance.
+
+[dependencies]
+gpui.workspace = true
+# Shared with the host: one ImageIds type across the plugin boundary.
+jcode-desktop-api.workspace = true
+jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
+jcode-provider-core = { path = "../../../jcode/crates/jcode-provider-core" }
+anyhow = "1"
+tempfile = "3"
+libc = { version = "0.2", features = ["extra_traits"] }
+async-channel = "2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+mermaid-rs-renderer = { git = "https://github.com/1jehuang/mermaid-rs-renderer.git", rev = "3726ccbffe0e8032361eb9668694b24f77858060", default-features = false, features = ["scene"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+toml = "0.8"
+
+[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
+jcode-base = { path = "../../../jcode/crates/jcode-base", features = ["voice-capture"] }
+
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false, features = ["voice-capture"] }
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+hdrhistogram = "7.6"

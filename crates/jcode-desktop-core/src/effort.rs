@@ -16,7 +16,7 @@ const FALLBACK_LADDER: &[&str] = &["none", "minimal", "low", "medium", "high", "
 
 /// Levels the serving model accepts, weakest first. Empty when the provider
 /// has no effort control. Swarm modes follow the real levels, as in the TUI.
-pub(crate) fn ladder(provider: Option<&str>, model: Option<&str>) -> Vec<&'static str> {
+pub fn ladder(provider: Option<&str>, model: Option<&str>) -> Vec<&'static str> {
     let model = model.map(str::trim).filter(|model| !model.is_empty());
     let Some(model) = model else {
         return FALLBACK_LADDER.to_vec();
@@ -38,7 +38,7 @@ pub(crate) fn ladder(provider: Option<&str>, model: Option<&str>) -> Vec<&'stati
 /// The next level in `direction` (positive = stronger), or `None` at either
 /// end. With no known current level, stepping starts from `medium`, the
 /// providers' usual default, so one press lands on high or low.
-pub(crate) fn step(
+pub fn step(
     ladder: &[&'static str],
     current: Option<&str>,
     direction: i8,
@@ -63,7 +63,7 @@ pub(crate) fn step(
 }
 
 /// Friendly name for status copy, e.g. `xhigh` reads `xHigh`.
-pub(crate) fn label(effort: &str) -> &str {
+pub fn label(effort: &str) -> &str {
     match effort {
         "none" => "None",
         "minimal" => "Minimal",
@@ -79,18 +79,18 @@ pub(crate) fn label(effort: &str) -> &str {
 }
 
 /// The configured effort chords in GPUI syntax, `(increase, decrease)`.
-pub(crate) struct EffortKeys {
+pub struct EffortKeys {
     pub increase: Vec<String>,
     pub decrease: Vec<String>,
 }
 
 impl EffortKeys {
-    pub(crate) fn from_config() -> Self {
+    pub fn from_config() -> Self {
         let keys = &jcode_base::config::config().keybindings;
         Self::parse(&keys.effort_increase, &keys.effort_decrease)
     }
 
-    pub(crate) fn parse(increase: &str, decrease: &str) -> Self {
+    pub fn parse(increase: &str, decrease: &str) -> Self {
         Self {
             increase: parse_chords(increase, "effort_increase"),
             decrease: parse_chords(decrease, "effort_decrease"),
@@ -98,7 +98,7 @@ impl EffortKeys {
     }
 
     /// Display label such as `Alt+Left / Alt+Right`, or `None` when unbound.
-    pub(crate) fn label(&self) -> Option<String> {
+    pub fn label(&self) -> Option<String> {
         let decrease = self.decrease.first()?;
         let increase = self.increase.first()?;
         Some(format!(
@@ -216,7 +216,7 @@ fn display_chord(chord: &str) -> String {
 /// through to the next binding, so Alt+Left keeps moving by word elsewhere.
 /// A chord already claimed by a global workspace binding (Cmd+Left focuses
 /// the left panel on macOS) is skipped rather than stolen.
-pub(crate) fn bind_keys(cx: &mut App) {
+pub fn bind_keys(cx: &mut App) {
     let keys = EffortKeys::from_config();
     let taken = |chord: &str, cx: &App| {
         let Ok(keystroke) = Keystroke::parse(chord) else {
@@ -247,7 +247,7 @@ pub(crate) fn bind_keys(cx: &mut App) {
 }
 
 /// The label of the effort chords that are actually bound, for hints.
-pub(crate) fn bound_keys_label(cx: &App) -> Option<String> {
+pub fn bound_keys_label(cx: &App) -> Option<String> {
     let keymap = cx.key_bindings();
     let keymap = keymap.borrow();
     let first = |action: &dyn gpui::Action| {

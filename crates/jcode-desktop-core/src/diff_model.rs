@@ -12,43 +12,43 @@ use serde_json::Value;
 #[path = "diff_tool_result.rs"]
 mod tool_result;
 
-pub(crate) fn from_tool_result(name: &str, input: &str, output: &str) -> Option<DiffPreview> {
+pub fn from_tool_result(name: &str, input: &str, output: &str) -> Option<DiffPreview> {
     tool_result::from_result(name, input, output)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DiffPreview {
-    pub(crate) files: Vec<DiffFile>,
+pub struct DiffPreview {
+    pub files: Vec<DiffFile>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DiffFile {
-    pub(crate) path: String,
-    pub(crate) previous_path: Option<String>,
-    pub(crate) kind: String,
-    pub(crate) hunks: Vec<DiffHunk>,
-    pub(crate) note: Option<String>,
+pub struct DiffFile {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub kind: String,
+    pub hunks: Vec<DiffHunk>,
+    pub note: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DiffHunk {
-    pub(crate) header: String,
-    pub(crate) lines: Vec<DiffLine>,
+pub struct DiffHunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DiffLine {
-    pub(crate) kind: LineKind,
+pub struct DiffLine {
+    pub kind: LineKind,
     /// Line content without the diff prefix or line terminator.
-    pub(crate) text: String,
-    pub(crate) old_line: Option<usize>,
-    pub(crate) new_line: Option<usize>,
+    pub text: String,
+    pub old_line: Option<usize>,
+    pub new_line: Option<usize>,
     /// UTF-8 byte offsets into `text`, always on character boundaries.
-    pub(crate) emphasis: Option<Range<usize>>,
+    pub emphasis: Option<Range<usize>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LineKind {
+pub enum LineKind {
     Context,
     Added,
     Removed,
@@ -56,7 +56,7 @@ pub(crate) enum LineKind {
 }
 
 impl DiffPreview {
-    pub(crate) fn counts(&self) -> (usize, usize) {
+    pub fn counts(&self) -> (usize, usize) {
         self.files.iter().fold((0, 0), |(a, r), file| {
             let (added, removed) = file.counts();
             (a + added, r + removed)
@@ -65,7 +65,7 @@ impl DiffPreview {
 }
 
 impl DiffFile {
-    pub(crate) fn counts(&self) -> (usize, usize) {
+    pub fn counts(&self) -> (usize, usize) {
         self.hunks
             .iter()
             .flat_map(|h| &h.lines)
@@ -78,7 +78,7 @@ impl DiffFile {
 
     /// Copyable preview, including file identity, notes and hunk boundaries.
     /// Snippet previews are deliberately not presented as applicable patches.
-    pub(crate) fn plain_text(&self) -> String {
+    pub fn plain_text(&self) -> String {
         use std::fmt::Write;
         let mut out = String::new();
         if let Some(previous) = &self.previous_path {
@@ -143,7 +143,7 @@ const NO_SNIPPET_NEWLINE: &str = "\\ No newline at end of snippet";
 /// Recognize desktop file-editing tools, with or without `functions.` prefix.
 /// Invalid JSON or missing required arguments does not produce an invented diff.
 /// Raw patch arguments may be streaming, so unterminated metadata is buffered.
-pub(crate) fn from_tool(name: &str, input: &str) -> Option<DiffPreview> {
+pub fn from_tool(name: &str, input: &str) -> Option<DiffPreview> {
     parse_tool(name, input, 0)
 }
 
@@ -616,7 +616,7 @@ fn emphasize(lines: &mut [DiffLine]) {
 /// Unequal runs may skip surplus lines on the longer side, for example a newly
 /// inserted comment before a replacement. Work is bounded by fixed lookahead
 /// and capped prefix/suffix comparisons, rather than a cross-product matrix.
-pub(crate) fn replacement_pairs(
+pub fn replacement_pairs(
     lines: &[DiffLine],
     removed: &[usize],
     added: &[usize],
@@ -724,7 +724,7 @@ fn changed_ranges(old: &str, new: &str) -> (Option<Range<usize>>, Option<Range<u
 /// Incomplete or malformed hunks retain useful content with an explicit note.
 /// Unlike raw input to `from_tool`, this argument is considered complete, so a
 /// final metadata line does not need a trailing newline.
-pub(crate) fn from_patch(patch: &str) -> Option<DiffPreview> {
+pub fn from_patch(patch: &str) -> Option<DiffPreview> {
     parse_patch(patch, false)
 }
 

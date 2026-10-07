@@ -2,7 +2,7 @@
 use serde::Deserialize;
 use std::{sync::mpsc, time::Instant};
 
-pub(crate) fn enabled() -> bool {
+pub fn enabled() -> bool {
     let args: Vec<_> = std::env::args_os().collect();
     enabled_for(
         std::env::var("JCODE_DESKTOP_SELF_DEV").as_deref() == Ok("1"),
@@ -29,21 +29,21 @@ fn enabled_for(
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "command", rename_all = "lowercase", deny_unknown_fields)]
-pub(crate) enum Request {
+pub enum Request {
     List {},
     Onboarding {},
     Open { state: String },
     Reset { state: String },
 }
 
-pub(crate) struct Pending {
+pub struct Pending {
     pub request: Request,
     pub reply: mpsc::SyncSender<serde_json::Value>,
     pub deadline: Instant,
 }
 
 #[cfg(not(unix))]
-pub(crate) struct Server;
+pub struct Server;
 #[cfg(not(unix))]
 impl Server {
     pub fn start() -> std::io::Result<(Self, async_channel::Receiver<Pending>)> {
@@ -54,7 +54,7 @@ impl Server {
     }
 }
 #[cfg(unix)]
-pub(crate) use unix::Server;
+pub use unix::Server;
 
 #[cfg(unix)]
 mod unix {
@@ -78,7 +78,7 @@ mod unix {
 
     /// Join before unloading the UI dylib: no thread may execute retired UI code.
     /// Unlink only the inode we created, never an endpoint from another generation.
-    pub(crate) struct Server {
+    pub struct Server {
         path: PathBuf,
         identity: (u64, u64),
         stop: Arc<AtomicBool>,
