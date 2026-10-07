@@ -16,14 +16,14 @@ license = "MIT"
 # upstream GPUI. Its `fast/` modules also carry what Desktop needs: the element
 # arena shared with the hot-reloaded UI library, list height hints kept on resize,
 # and native pinch pan. Every GPUI crate comes from this one revision.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "0893ac4a59215380c30dd20561ca2edc947bb428", features = ["profiler"] }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "0893ac4a59215380c30dd20561ca2edc947bb428" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "424044ad7f36e5599dbaa08519b84614ff57f0db", features = ["profiler"] }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "424044ad7f36e5599dbaa08519b84614ff57f0db" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
 [patch.crates-io]
 # Keep the orb library on the exact GPUI instance used by host and UI.
-gpui = { git = "https://github.com/1jehuang/gpui", rev = "0893ac4a59215380c30dd20561ca2edc947bb428" }
+gpui = { git = "https://github.com/1jehuang/gpui", rev = "424044ad7f36e5599dbaa08519b84614ff57f0db" }
 
 [package]
 name = "jcode-desktop"

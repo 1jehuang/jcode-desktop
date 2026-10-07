@@ -29,6 +29,10 @@ use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask,
 mod selection_tests;
 
 #[cfg(test)]
+#[path = "panel_file_drop_tests.rs"]
+mod file_drop_tests;
+
+#[cfg(test)]
 #[path = "panel_provisional_history_tests.rs"]
 mod provisional_history_tests;
 
@@ -4653,6 +4657,24 @@ impl Render for Panel {
             .overflow_hidden()
             .track_focus(&self.focus_handle)
             .key_context("ChatPanel")
+            // Files dragged in from the file manager: images attach like a
+            // paste, other files are referenced by path in the prompt.
+            .when(!self.transcript_only && !self.demo, |el| {
+                el.drag_over::<gpui::ExternalPaths>(|style, _, _, _| {
+                    style.bg(Theme::global().SELECTION)
+                })
+                .on_drop(cx.listener(
+                    |panel, paths: &gpui::ExternalPaths, window, cx| {
+                        // The input's change observer updates this panel, so
+                        // apply the drop after this panel update returns.
+                        let paths = paths.paths().to_vec();
+                        let input = panel.input.clone();
+                        window.defer(cx, move |window, cx| {
+                            input.update(cx, |input, cx| input.drop_files(&paths, window, cx));
+                        });
+                    },
+                ))
+            })
             .on_action(cx.listener(|panel, _: &shortcuts::JumpToLatest, _, cx| {
                 panel.jump_to_latest(cx);
             }))

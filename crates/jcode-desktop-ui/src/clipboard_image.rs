@@ -87,6 +87,11 @@ fn decode_metadata(media_type: String, bytes: Vec<u8>) -> Result<ClipboardImage,
     })
 }
 
+/// Image bytes from another source, such as a file dropped on the window.
+pub fn from_bytes(media_type: String, bytes: Vec<u8>) -> Result<ClipboardImage, String> {
+    decode_metadata(media_type, bytes)
+}
+
 fn preferred_type<'a>(offered: impl IntoIterator<Item = &'a str>) -> Option<&'static str> {
     let offered: Vec<_> = offered.into_iter().collect();
     IMAGE_TYPES.into_iter().find(|wanted| {
