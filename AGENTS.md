@@ -49,6 +49,10 @@
     Run `justrust test -p jcode-desktop-harness`.
   - `crates/jcode-desktop-model`: `diff_model`, `diff`, `learning`, `todoist`,
     `pdf_render`. Run `justrust test -p jcode-desktop-model`.
+  - `crates/jcode-desktop-ui-core` (GPUI, ~1.5s): `theme`, `config`,
+    `render_stats`, `text_selection`, `prompt_background`, `scrollbar`,
+    `image_cache`, `animation_clock`, `transition`, `pulse_text`.
+    Run `justrust test -p jcode-desktop-ui-core`.
   - `crates/jcode-desktop-motion`, `crates/jcode-desktop-api`: likewise.
   The UI re-exports these modules at their old `crate::` paths, so find a
   module's home with `ls crates/*/src/<module>.rs`. Run the UI tests only when
