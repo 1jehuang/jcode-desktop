@@ -2348,6 +2348,38 @@ impl Workspace {
                         }
                     }
                 }
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            if panel.session_saved_settled(saved, label.as_deref(), None) {
+                                cx.notify();
+                            }
+                        });
+                    }
+                }
+                self.bridge.send(Command::RefreshSessions);
+            }
+            Update::SessionSaveFailed {
+                session_id,
+                saved,
+                error,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            if !panel.session_saved_settled(saved, None, Some(&error)) {
+                                let verb = if saved { "save" } else { "unsave" };
+                                panel.items.push(crate::panel::Item::Error(format!(
+                                    "Failed to {verb} session: {error}"
+                                )));
+                            }
+                            crate::sounds::play(crate::sounds::Cue::Error, cx);
+                            cx.notify();
+                        });
+                        break;
+                    }
+                }
+                // Undo the optimistic sidebar state from a pin click.
                 self.bridge.send(Command::RefreshSessions);
             }
             Update::EffortSettled {

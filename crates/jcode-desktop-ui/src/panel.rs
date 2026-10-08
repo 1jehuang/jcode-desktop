@@ -430,6 +430,9 @@ pub struct Panel {
     pub reasoning_effort: Option<String>,
     /// Effort requests the runtime has not answered yet.
     pending_effort: Option<effort_switch::PendingEffort>,
+    /// `/save` or `/unsave` requests awaiting the daemon's confirmation, so
+    /// the transcript only claims success once the bookmark persisted.
+    pending_save_requests: usize,
     /// Latest provider-reported prompt occupancy, with cache accounting normalized.
     context_tokens: Option<u64>,
     response_stats: response_stats::Tracker,
@@ -900,6 +903,7 @@ impl Panel {
             auth_method: usage_fixture.then(|| "oauth".into()),
             reasoning_effort: usage_fixture.then(|| "high".into()),
             pending_effort: None,
+            pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
             items: demo_items().into(),
@@ -1980,20 +1984,9 @@ impl Panel {
         } else if trimmed == "/save" || trimmed.starts_with("/save ") {
             let label = trimmed["/save".len()..].trim();
             let label = (!label.is_empty()).then(|| label.to_string());
-            let message = match &label {
-                Some(label) => {
-                    format!(
-                        "📌 Session saved as \"{label}\". It will appear at the top of /resume."
-                    )
-                }
-                None => "📌 Session saved. It will appear at the top of /resume.".to_string(),
-            };
-            self.run_session_operation(SessionOperation::SetSaved(true, label), message);
+            self.request_session_saved(true, label);
         } else if trimmed == "/unsave" {
-            self.run_session_operation(
-                SessionOperation::SetSaved(false, None),
-                "Session removed from saved.",
-            );
+            self.request_session_saved(false, None);
         } else if let Some(target) = trimmed.strip_prefix("/rewind ").map(str::trim) {
             if target == "undo" {
                 self.run_session_operation(SessionOperation::RewindUndo, "Rewind undone.");
@@ -2246,6 +2239,46 @@ impl Panel {
         let input = self.input.clone();
         cx.defer(move |cx| input.update(cx, |input, cx| input.close_model_menu(cx)));
         cx.notify();
+    }
+
+    /// Ask the daemon to bookmark or unbookmark this session. The transcript
+    /// note waits for [`Self::session_saved_settled`] so a rejected request
+    /// never reads as saved.
+    fn request_session_saved(&mut self, saved: bool, label: Option<String>) {
+        if self.is_side_document() || self.preview_state.is_some() {
+            return;
+        }
+        self.bridge.send(Command::SessionOperation {
+            session_id: self.session_id.clone(),
+            operation: SessionOperation::SetSaved(saved, label),
+        });
+        self.pending_save_requests += 1;
+    }
+
+    /// Settle one pending `/save` or `/unsave`. Returns false when no request
+    /// from this panel was waiting, e.g. a sidebar pin, so callers stay quiet.
+    pub(crate) fn session_saved_settled(
+        &mut self,
+        saved: bool,
+        label: Option<&str>,
+        error: Option<&str>,
+    ) -> bool {
+        if self.pending_save_requests == 0 {
+            return false;
+        }
+        self.pending_save_requests -= 1;
+        self.items.push(match (error, saved, label) {
+            (Some(error), true, _) => Item::Error(format!("Failed to save session: {error}")),
+            (Some(error), false, _) => Item::Error(format!("Failed to unsave session: {error}")),
+            (None, true, Some(label)) => Item::Assistant(format!(
+                "📌 Session saved as \"{label}\". It will appear at the top of /resume."
+            )),
+            (None, true, None) => {
+                Item::Assistant("📌 Session saved. It will appear at the top of /resume.".into())
+            }
+            (None, false, _) => Item::Assistant("Session removed from saved.".into()),
+        });
+        true
     }
 
     fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {

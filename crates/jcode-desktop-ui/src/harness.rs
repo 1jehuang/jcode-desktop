@@ -147,6 +147,12 @@ pub enum Update {
         saved: bool,
         label: Option<String>,
     },
+    /// The daemon rejected a bookmark change for a live session.
+    SessionSaveFailed {
+        session_id: String,
+        saved: bool,
+        error: String,
+    },
     /// The control connection died; the bridge will retry.
     Disconnected {
         reason: String,
@@ -1961,9 +1967,10 @@ fn session_worker_with_connector(
                                     });
                                 }
                                 Err(error) => {
-                                    let _ = updates.send(Update::CommandFailed {
+                                    let _ = updates.send(Update::SessionSaveFailed {
                                         session_id: session_id.clone(),
-                                        reason: format!("Failed to save session: {error}"),
+                                        saved: *saved,
+                                        error: error.to_string(),
                                     });
                                 }
                             }

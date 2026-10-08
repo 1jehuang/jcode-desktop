@@ -329,3 +329,59 @@ fn save_with_label_names_the_session_in_tabs_and_resume(cx: &mut gpui::TestAppCo
         })
     ));
 }
+
+fn last_item_text(workspace: &Workspace, cx: &gpui::App) -> Option<(bool, String)> {
+    match workspace.slots[0].panel.read(cx).items.last()? {
+        crate::panel::Item::Assistant(text) => Some((false, text.clone())),
+        crate::panel::Item::Error(text) => Some((true, text.clone())),
+        _ => None,
+    }
+}
+
+#[gpui::test]
+fn save_only_claims_success_after_the_daemon_confirms(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        let before = w.slots[0].panel.read(cx).items.len();
+        w.slots[0].panel.update(cx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/save tracker", cx));
+        });
+        assert_eq!(w.slots[0].panel.read(cx).items.len(), before);
+    });
+    let _ = commands.try_recv();
+
+    // A rejected save reads as a failure only, never "saved" then "failed".
+    workspace.update(vcx, |w, cx| {
+        let before = w.slots[0].panel.read(cx).items.len();
+        w.apply(
+            Update::SessionSaveFailed {
+                session_id: "session_fox_original".into(),
+                saved: true,
+                error: "unknown_request: unknown request: set_session_saved".into(),
+            },
+            cx,
+        );
+        assert_eq!(w.slots[0].panel.read(cx).items.len(), before + 1);
+        let (is_error, text) = last_item_text(w, cx).unwrap();
+        assert!(is_error);
+        assert!(text.starts_with("Failed to save session:"), "{text}");
+        assert!(!w.sessions[0].saved);
+    });
+
+    workspace.update(vcx, |w, cx| {
+        w.slots[0].panel.update(cx, |panel, cx| {
+            assert!(panel.handle_slash_command_for_test("/save tracker", cx));
+        });
+        w.apply(
+            Update::SessionSaved {
+                session_id: "session_fox_original".into(),
+                saved: true,
+                label: Some("tracker".into()),
+            },
+            cx,
+        );
+        let (is_error, text) = last_item_text(w, cx).unwrap();
+        assert!(!is_error);
+        assert!(text.contains("Session saved as \"tracker\""), "{text}");
+    });
+}
