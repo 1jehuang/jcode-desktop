@@ -4333,6 +4333,7 @@ dependencies = [
  "jcode-desktop-harness",
  "jcode-desktop-model",
  "jcode-desktop-motion",
+ "jcode-desktop-ui-core",
  "jcode-fuzzy",
  "jcode-provider-core",
  "jcode-render-core",
@@ -4357,6 +4358,21 @@ dependencies = [
  "two-face",
  "unicode-segmentation",
  "zbus",
+]
+
+[[package]]
+name = "jcode-desktop-ui-core"
+version = "0.5.0"
+dependencies = [
+ "gpui",
+ "image",
+ "jcode-desktop-api",
+ "jcode-desktop-harness",
+ "jcode-desktop-motion",
+ "serde",
+ "tempfile",
+ "toml 0.8.23",
+ "unicode-segmentation",
 ]
 
 [[package]]

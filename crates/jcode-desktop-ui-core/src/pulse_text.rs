@@ -18,10 +18,10 @@ use gpui::{Context, Entity, IntoElement, Render, Rgba, SharedString, Window, div
 /// 20 Hz on the shared decorative grid, the rate pulses always used.
 const PULSE_TICK: Duration = Duration::from_millis(50);
 /// Running tool rows breathe on this period, in step with sidebar titles.
-pub(crate) const TOOL_PULSE_PERIOD: Duration = Duration::from_millis(1400);
+pub const TOOL_PULSE_PERIOD: Duration = Duration::from_millis(1400);
 
 #[derive(Clone, PartialEq)]
-pub(crate) enum Kind {
+pub enum Kind {
     /// Text whose opacity breathes with `curve`.
     PulseText {
         text: SharedString,
@@ -43,7 +43,7 @@ pub(crate) enum Kind {
     },
 }
 
-pub(crate) struct Ticker {
+pub struct Ticker {
     kind: Kind,
     /// A tick is scheduled. A `Cell`, not entity state: clearing it through
     /// an entity update would count as a change for every view holding this
@@ -56,7 +56,7 @@ pub(crate) struct Ticker {
 fn phase(period: Duration, cx: &gpui::App) -> f32 {
     static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let now = cx.background_executor().now();
-    let epoch = if cfg!(test) {
+    let epoch = if cfg!(any(test, feature = "test-support")) {
         now
     } else {
         *EPOCH.get_or_init(|| now)
@@ -66,7 +66,7 @@ fn phase(period: Duration, cx: &gpui::App) -> f32 {
 }
 
 impl Ticker {
-    pub(crate) fn new(kind: Kind) -> Self {
+    pub fn new(kind: Kind) -> Self {
         Self {
             kind,
             tick_pending: Rc::default(),
@@ -149,15 +149,15 @@ impl Render for Ticker {
 /// last given is kept here, so the holder never reads the ticker view while
 /// drawing, which would make it depend on every tick.
 #[derive(Default)]
-pub(crate) struct Tickers(HashMap<String, (Entity<Ticker>, Kind)>);
+pub struct Tickers(HashMap<String, (Entity<Ticker>, Kind)>);
 
 impl Tickers {
-    pub(crate) fn retain(&mut self, mut live: impl FnMut(&str) -> bool) {
+    pub fn retain(&mut self, mut live: impl FnMut(&str) -> bool) {
         self.0.retain(|key, _| live(key));
     }
 
     /// The ticker for `key` showing `kind`, created on first use.
-    pub(crate) fn get<T: 'static>(
+    pub fn get<T: 'static>(
         &mut self,
         key: &str,
         kind: Kind,

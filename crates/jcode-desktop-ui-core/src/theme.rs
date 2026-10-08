@@ -127,7 +127,7 @@ impl Theme {
 
     /// Final palette for expensive cached artwork. Transition frames should not
     /// trigger repeated diagram layout and path tessellation while fading UI.
-    pub(crate) fn selected() -> &'static Self {
+    pub fn selected() -> &'static Self {
         let _ = themes();
         &themes()[ACTIVE_THEME.load(Ordering::Relaxed)]
     }
@@ -145,12 +145,13 @@ impl Theme {
         // advance, so each switch kept redrawing for its full 180 ms. The
         // palette is also process-global, so a fade started by one test leaked
         // in-between colours into tests running in parallel. Switch instantly.
-        *transition_state().lock().unwrap() =
-            if cfg!(test) || crate::config::get().appearance.reduce_motion {
-                None
-            } else {
-                Some((from, std::time::Instant::now()))
-            };
+        *transition_state().lock().unwrap() = if cfg!(any(test, feature = "test-support"))
+            || crate::config::get().appearance.reduce_motion
+        {
+            None
+        } else {
+            Some((from, std::time::Instant::now()))
+        };
     }
 
     /// Settled palette for a preset, for swatch previews that should not
@@ -480,8 +481,8 @@ static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(ThemePreset::Parchment.index
 
 /// The active theme is process-global. Every unit test that selects a theme
 /// must hold this for its whole body, or parallel tests observe its palette.
-#[cfg(test)]
-pub(crate) fn test_theme_lock() -> std::sync::MutexGuard<'static, ()> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_theme_lock() -> std::sync::MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }

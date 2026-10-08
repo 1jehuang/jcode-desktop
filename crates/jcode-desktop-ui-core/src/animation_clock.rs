@@ -13,19 +13,19 @@ use gpui::BackgroundExecutor;
 
 /// Delay from `now` until the next boundary of a `period` grid anchored at
 /// `epoch`. Always strictly positive, so a tick can never spin.
-pub(crate) fn delay_to_boundary(epoch: Instant, now: Instant, period: Duration) -> Duration {
+pub fn delay_to_boundary(epoch: Instant, now: Instant, period: Duration) -> Duration {
     let period_ns = period.as_nanos().max(1);
     let into = now.saturating_duration_since(epoch).as_nanos() % period_ns;
     Duration::from_nanos((period_ns - into) as u64)
 }
 
 /// Wait until the next shared `period` boundary on `executor`'s clock.
-pub(crate) async fn next_tick(executor: &BackgroundExecutor, period: Duration) {
+pub async fn next_tick(executor: &BackgroundExecutor, period: Duration) {
     static EPOCH: OnceLock<Instant> = OnceLock::new();
     let now = executor.now();
     // Test executors use a fake clock, so anchor there rather than on a real
     // Instant captured by an unrelated test in the same process.
-    let epoch = if cfg!(test) {
+    let epoch = if cfg!(any(test, feature = "test-support")) {
         now
     } else {
         *EPOCH.get_or_init(|| now)

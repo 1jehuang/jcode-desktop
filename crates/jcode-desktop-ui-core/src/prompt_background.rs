@@ -14,7 +14,7 @@ const VERTICAL_PADDING: f32 = 4.;
 const RADIUS: f32 = 12.;
 
 /// Structured Markdown fallback. As with `wrap`, the parent reserves padding.
-pub(crate) fn wrap_block(child: AnyElement, color: Rgba) -> AnyElement {
+pub fn wrap_block(child: AnyElement, color: Rgba) -> AnyElement {
     div()
         .relative()
         .min_w_0()
@@ -44,7 +44,7 @@ pub(crate) fn wrap_block(child: AnyElement, color: Rgba) -> AnyElement {
         .into_any_element()
 }
 
-pub(crate) fn wrap(child: AnyElement, layout: TextLayout, color: Rgba) -> AnyElement {
+pub fn wrap(child: AnyElement, layout: TextLayout, color: Rgba) -> AnyElement {
     div()
         .relative()
         .min_w_0()
@@ -107,7 +107,7 @@ fn translated(path: &gpui::Path<Pixels>, offset: gpui::Point<Pixels>) -> gpui::P
 /// rectangles, as used by prompt cards and the matching text selection.
 /// Shapes are cached relative to their first line, so a card that only moves
 /// (scrolling, sticky pinning) reuses its tessellation.
-pub(crate) fn rounded_union(lines: &[Bounds<Pixels>], radius: f32) -> Option<gpui::Path<Pixels>> {
+pub fn rounded_union(lines: &[Bounds<Pixels>], radius: f32) -> Option<gpui::Path<Pixels>> {
     let origin = lines.first()?.origin;
     let key = path_key(lines, radius);
     if let Some(hit) = PATH_CACHE.with_borrow_mut(|cache| {

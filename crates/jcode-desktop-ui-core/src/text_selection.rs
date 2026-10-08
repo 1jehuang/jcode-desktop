@@ -97,7 +97,7 @@ struct Copied {
 }
 
 /// How long the "Copied" confirmation stays beside the selection.
-pub(crate) const COPIED_DURATION: Duration = Duration::from_millis(1000);
+pub const COPIED_DURATION: Duration = Duration::from_millis(1000);
 
 impl TextSelection {
     pub fn new(cx: &mut Context<Self>) -> Self {
@@ -125,7 +125,7 @@ impl TextSelection {
 
     /// A complete logical document, including rows the virtual list has never
     /// mounted. Geometry is separate and only retained for the current paint.
-    pub(crate) fn set_document(&mut self, document: Vec<(SharedString, SharedString)>) {
+    pub fn set_document(&mut self, document: Vec<(SharedString, SharedString)>) {
         if self.document == document {
             return;
         }
@@ -161,7 +161,7 @@ impl TextSelection {
         self.document_index = index;
     }
 
-    pub(crate) fn is_dragging(&self) -> bool {
+    pub fn is_dragging(&self) -> bool {
         self.selecting
     }
 
@@ -313,7 +313,7 @@ impl TextSelection {
     }
 
     /// Whether the brief "Copied" confirmation is showing.
-    pub(crate) fn copied_visible(&self) -> bool {
+    pub fn copied_visible(&self) -> bool {
         self.copied.is_some() && !self.selecting
     }
 
@@ -587,7 +587,7 @@ pub fn selectable(
 
 /// Select a native shaped text leaf whose display has a layout-only prefix.
 /// Selection state and clipboard text always use the original source offsets.
-pub(crate) fn selectable_with_prefix(
+pub fn selectable_with_prefix(
     model: Entity<TextSelection>,
     key: impl Into<SharedString>,
     text: impl Into<SharedString>,
@@ -800,7 +800,7 @@ fn is_inline_label(key: &str) -> bool {
 
 /// Install once, before the text children, on the scrollable transcript. The
 /// capture lives on the surface so it survives virtualization of the anchor.
-pub(crate) fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::AnyElement {
+pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::AnyElement {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, cx| {

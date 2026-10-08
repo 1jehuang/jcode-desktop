@@ -154,7 +154,7 @@ impl DesktopConfig {
             .workspace
             .default_remote_host
             .as_deref()
-            .and_then(|host| crate::remote_targets::validate_host(host).ok());
+            .and_then(|host| jcode_desktop_harness::remote_targets::validate_host(host).ok());
         self.workspace.remote_hosts = normalized_remote_hosts(&self.workspace.remote_hosts);
         self.terminal.scrollback_lines = self.terminal.scrollback_lines.clamp(100, 1_000_000);
         self
@@ -176,7 +176,7 @@ pub fn account_sign_in_handled() -> bool {
     load().workspace.account_sign_in_handled
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_account_sign_in_handled() -> std::io::Result<()> {
     persist_value_at(
         &path(),
@@ -187,7 +187,7 @@ pub fn persist_account_sign_in_handled() -> std::io::Result<()> {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_account_sign_in_handled() -> std::io::Result<()> {
     Ok(())
 }
@@ -204,14 +204,14 @@ pub fn path() -> PathBuf {
 
 /// Persist one appearance value without reserializing the rest of the shared
 /// Jcode config (and thereby losing its comments or settings unknown to us).
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_theme(theme: &str) -> std::io::Result<()> {
     let path = path();
     let standalone = std::env::var_os("JCODE_DESKTOP_CONFIG").is_some();
     persist_theme_at(&path, standalone, theme)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_theme(_theme: &str) -> std::io::Result<()> {
     // UI tests exercise the production selection path without ever touching
     // the developer's real ~/.jcode/config.toml. Disk behavior is covered by
@@ -219,14 +219,14 @@ pub fn persist_theme(_theme: &str) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_layout_mode(layout_mode: LayoutMode) -> std::io::Result<()> {
     let path = path();
     let standalone = std::env::var_os("JCODE_DESKTOP_CONFIG").is_some();
     persist_layout_mode_at(&path, standalone, layout_mode)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_layout_mode(_layout_mode: LayoutMode) -> std::io::Result<()> {
     Ok(())
 }
@@ -255,7 +255,7 @@ fn persist_appearance_value_at(
     persist_value_at(path, standalone, "appearance", key, value)
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_pinned_working_dir(directory: &str) -> std::io::Result<()> {
     persist_pinned_working_dir_at(
         &path(),
@@ -264,7 +264,7 @@ pub fn persist_pinned_working_dir(directory: &str) -> std::io::Result<()> {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_pinned_working_dir(_directory: &str) -> std::io::Result<()> {
     Ok(())
 }
@@ -284,7 +284,7 @@ fn persist_pinned_working_dir_at(
 }
 
 /// Save the default SSH target, or an empty string to explicitly select local.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_default_remote_host(host: Option<&str>) -> std::io::Result<()> {
     persist_default_remote_host_at(
         &path(),
@@ -293,14 +293,14 @@ pub fn persist_default_remote_host(host: Option<&str>) -> std::io::Result<()> {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_default_remote_host(host: Option<&str>) -> std::io::Result<()> {
     // Selection tests must never write the user's real config.
     remote_host_value(host).map(|_| ())
 }
 
 /// Save normalized, deduplicated recent targets without rewriting shared settings.
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_remote_hosts(hosts: &[String]) -> std::io::Result<()> {
     persist_remote_hosts_at(
         &path(),
@@ -309,14 +309,14 @@ pub fn persist_remote_hosts(hosts: &[String]) -> std::io::Result<()> {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_remote_hosts(_hosts: &[String]) -> std::io::Result<()> {
     Ok(())
 }
 
 fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
     match host.filter(|host| !host.trim().is_empty()) {
-        Some(host) => crate::remote_targets::validate_host(host)
+        Some(host) => jcode_desktop_harness::remote_targets::validate_host(host)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error)),
         None => Ok(String::new()),
     }
@@ -325,7 +325,7 @@ fn remote_host_value(host: Option<&str>) -> std::io::Result<String> {
 fn normalized_remote_hosts(hosts: &[String]) -> Vec<String> {
     let mut result = Vec::new();
     for host in hosts {
-        if let Ok(host) = crate::remote_targets::validate_host(host) {
+        if let Ok(host) = jcode_desktop_harness::remote_targets::validate_host(host) {
             if !result.contains(&host) {
                 result.push(host);
             }
@@ -432,7 +432,7 @@ fn persist_value_at(
     fs::rename(temporary, path)
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_sounds_enabled(enabled: bool) -> std::io::Result<()> {
     persist_sounds_enabled_at(
         &path(),
@@ -441,12 +441,12 @@ pub fn persist_sounds_enabled(enabled: bool) -> std::io::Result<()> {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_sounds_enabled(_enabled: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "test-support")))]
 pub fn persist_show_account_email(show: bool) -> std::io::Result<()> {
     persist_value_at(
         &path(),
@@ -457,7 +457,7 @@ pub fn persist_show_account_email(show: bool) -> std::io::Result<()> {
     )
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn persist_show_account_email(_show: bool) -> std::io::Result<()> {
     Ok(())
 }
@@ -480,7 +480,9 @@ fn load() -> DesktopConfig {
     // Unit tests must not depend on whoever runs them. Reading the developer's
     // ~/.jcode/config.toml made theme-colour assertions pass or fail with
     // their chosen theme. Tests that need a file set JCODE_DESKTOP_CONFIG.
-    if cfg!(test) && std::env::var_os("JCODE_DESKTOP_CONFIG").is_none() {
+    if cfg!(any(test, feature = "test-support"))
+        && std::env::var_os("JCODE_DESKTOP_CONFIG").is_none()
+    {
         return DesktopConfig::default();
     }
     let path = path();

@@ -210,8 +210,8 @@ pub fn delta(
 
 /// Per-entity render counts for cache tests. Views record here, not in a
 /// workspace test module, so views do not depend on the workspace.
-#[cfg(test)]
-pub(crate) mod test_renders {
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_renders {
     use std::cell::RefCell;
     use std::collections::HashMap;
 
@@ -219,11 +219,11 @@ pub(crate) mod test_renders {
         static RENDERS: RefCell<HashMap<gpui::EntityId, usize>> = RefCell::new(HashMap::new());
     }
 
-    pub(crate) fn record(id: gpui::EntityId) {
+    pub fn record(id: gpui::EntityId) {
         RENDERS.with_borrow_mut(|renders| *renders.entry(id).or_default() += 1);
     }
 
-    pub(crate) fn count(id: gpui::EntityId) -> usize {
+    pub fn count(id: gpui::EntityId) -> usize {
         RENDERS.with_borrow(|renders| renders.get(&id).copied().unwrap_or(0))
     }
 }

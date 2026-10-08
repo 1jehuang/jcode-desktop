@@ -1,7 +1,6 @@
 //! Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions.
 
 mod ack;
-mod animation_clock;
 mod applet_host;
 mod applet_runtime;
 mod applet_surface;
@@ -11,7 +10,6 @@ mod bundled_applets;
 mod changelog;
 mod clipboard_image;
 mod commands;
-mod config;
 mod diff_block;
 mod diff_review_content;
 mod diff_view;
@@ -23,7 +21,6 @@ mod global_voice_input;
 mod global_voice_overlay;
 mod global_voice_session;
 mod html_preview;
-mod image_cache;
 mod inline_image;
 mod input;
 mod live_profile;
@@ -40,20 +37,13 @@ mod performance;
 mod persisted_history;
 mod preview_control;
 pub mod preview_state;
-mod prompt_background;
 mod publish;
-mod pulse_text;
-mod render_stats;
 mod restart_spawn;
 mod resume_content_search;
-mod scrollbar;
 mod sound_events;
 mod sounds;
 mod terminal;
-mod text_selection;
-mod theme;
 mod tool_icon;
-mod transition;
 mod ui_actions;
 mod update_notes;
 mod updates;
@@ -68,6 +58,12 @@ pub(crate) use jcode_desktop_harness::{
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;
 pub(crate) use jcode_desktop_model::{diff, diff_model, learning, pdf_render};
+// The shared UI foundation every view uses, in its own crate so feature view
+// crates can depend on it without the whole UI.
+pub(crate) use jcode_desktop_ui_core::{
+    animation_clock, config, image_cache, prompt_background, pulse_text, render_stats, scrollbar,
+    text_selection, theme, transition,
+};
 
 use gpui::{App, KeyBinding, Window};
 

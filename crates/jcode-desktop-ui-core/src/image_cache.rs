@@ -10,14 +10,14 @@ use std::sync::Arc;
 /// counters for composer and transcript images (or a restarted UI generation)
 /// alias the same decoder cache entry. Content identity is stable across all
 /// these paths and also avoids decoding the same attachment again on submit.
-pub(crate) fn encoded(format: gpui::ImageFormat, bytes: Vec<u8>) -> Arc<Image> {
+pub fn encoded(format: gpui::ImageFormat, bytes: Vec<u8>) -> Arc<Image> {
     Arc::new(Image::from_bytes(format, bytes))
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct ImageIds(jcode_desktop_api::ImageIds);
+pub struct ImageIds(jcode_desktop_api::ImageIds);
 impl ImageIds {
-    pub(crate) fn get(cx: &mut App) -> Self {
+    pub fn get(cx: &mut App) -> Self {
         Self(jcode_desktop_api::ImageIds::get(cx))
     }
 
@@ -25,7 +25,7 @@ impl ImageIds {
         self.0.next()
     }
 
-    pub(crate) fn render(&self, frames: Vec<image::Frame>) -> Arc<RenderImage> {
+    pub fn render(&self, frames: Vec<image::Frame>) -> Arc<RenderImage> {
         let mut image = RenderImage::new(frames);
         image.id = self.next();
         Arc::new(image)
@@ -209,7 +209,7 @@ struct ImagePaintTraceGlobal(std::cell::RefCell<ImagePaintTrace>);
 impl Global for ImagePaintTraceGlobal {}
 
 /// Keep asynchronous decoding/caching, but never publish library-local IDs.
-pub(crate) fn source(image: Arc<Image>) -> ImageSource {
+pub fn source(image: Arc<Image>) -> ImageSource {
     ImageSource::Custom(Arc::new(move |window, cx| {
         let result = window.use_asset::<DesktopImageDecoder>(&image, cx);
         let state = match &result {

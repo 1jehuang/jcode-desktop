@@ -16,6 +16,7 @@ jcode-desktop-api.workspace = true
 jcode-desktop-harness.workspace = true
 jcode-desktop-model.workspace = true
 jcode-desktop-motion.workspace = true
+jcode-desktop-ui-core.workspace = true
 jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
 jcode-applet-types = { path = "../../../jcode/crates/jcode-applet-types" }
 jcode-provider-core = { path = "../../../jcode/crates/jcode-provider-core" }
@@ -72,6 +73,8 @@ gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
 tempfile = "3"
 # UI tests drive panels through recording bridges.
 jcode-desktop-harness = { workspace = true, features = ["test-support"] }
+# UI tests rely on ui-core's test mode (no config writes, fixed animation epoch).
+jcode-desktop-ui-core = { workspace = true, features = ["test-support"] }
 gpui.workspace = true
 # Same features as gpui's (`profiler`) dependency, so tests reuse the build's
 # hdrhistogram and therefore its GPUI.

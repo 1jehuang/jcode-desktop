@@ -1,0 +1,33 @@
+[package]
+name = "jcode-desktop-ui-core"
+version = "0.5.0"
+edition.workspace = true
+license.workspace = true
+description = "Jcode Desktop's shared UI foundation: theme, config, text selection, scrollbars, images, render stats"
+
+# The leaves every Desktop view uses. Split out of jcode-desktop-ui so feature
+# view crates can depend on them without depending on the whole UI. Linked
+# statically into the UI cdylib, so hot reload and the host/UI ABI are
+# unchanged. Must not depend on jcode-desktop-ui.
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Test-mode behavior for downstream UI tests: config persistence is a no-op,
+# config reads ignore the user's file, animations use a fixed epoch, plus the
+# theme test lock and per-entity render counters. jcode-desktop-ui enables
+# this from its dev-dependencies only, so hot-reload builds never see it.
+test-support = []
+
+[dependencies]
+gpui.workspace = true
+jcode-desktop-api.workspace = true
+jcode-desktop-harness.workspace = true
+jcode-desktop-motion.workspace = true
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+unicode-segmentation = "1"
+
+[dev-dependencies]
+tempfile = "3"
