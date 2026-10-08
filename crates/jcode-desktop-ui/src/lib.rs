@@ -25,7 +25,6 @@ mod fps_counter;
 mod global_voice_input;
 mod global_voice_overlay;
 mod global_voice_session;
-mod harness;
 mod html_preview;
 mod image_cache;
 mod inline_image;
@@ -33,8 +32,6 @@ mod input;
 mod learning;
 mod live_profile;
 pub mod login_input;
-mod managed_cloud;
-mod managed_cloud_parity;
 mod markdown;
 mod markdown_inline_code;
 pub mod memory;
@@ -46,13 +43,11 @@ mod pdf_render;
 mod pdf_viewer;
 mod performance;
 mod persisted_history;
-mod platform;
 mod preview_control;
 pub mod preview_state;
 mod prompt_background;
 mod publish;
 mod pulse_text;
-mod remote_targets;
 mod render_stats;
 mod resume_content_search;
 mod scrollbar;
@@ -69,7 +64,17 @@ mod updates;
 mod window_caption;
 mod workspace;
 
+// The GPUI-free harness bridge and its transports live in their own crate so
+// edits there do not recompile this one. Re-exported under their old paths.
+pub(crate) use jcode_desktop_harness::{harness, managed_cloud, platform, remote_targets};
+
 use gpui::{App, KeyBinding, Window};
+
+/// Advertise this generation's display version through the harness crate,
+/// which has no access to the UI build script's metadata.
+pub(crate) fn init_harness() {
+    jcode_desktop_harness::set_client_version(build_info::VERSION);
+}
 
 pub const APP_ID: &str = "jcode-desktop";
 
@@ -83,6 +88,7 @@ pub fn run_restart_worker_if_requested() -> Option<i32> {
     {
         return None;
     }
+    init_harness();
     Some(workspace::restart::run_worker(args))
 }
 
@@ -272,6 +278,7 @@ unsafe extern "C-unwind" fn activate(
     // The versioned API is checked before this point, and the host retains all
     // generations so allocation destructors and these accessors stay callable.
     unsafe { host.install_element_arena_context() };
+    init_harness();
     let snapshot = if snapshot_len == 0 {
         // A `/restart-all` relaunch names its own saved window state.
         let restart = {

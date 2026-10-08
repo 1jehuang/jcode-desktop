@@ -45,7 +45,7 @@ mod transport {
             if host == crate::managed_cloud::HOST {
                 return crate::managed_cloud::connect(
                     progress,
-                    format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+                    format!("jcode-desktop-remote/{}", crate::client_version()),
                     crate::managed_cloud::request_connect,
                     jcode_sdk::JcodeClient::connect_ssh,
                 )
@@ -54,7 +54,7 @@ mod transport {
                 });
             }
             jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
-                client_name: format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+                client_name: format!("jcode-desktop-remote/{}", crate::client_version()),
                 connect_timeout: std::time::Duration::from_secs(20),
                 request_timeout: Some(std::time::Duration::from_secs(30)),
                 ..jcode_sdk::SshConnectOptions::new(host)
@@ -290,7 +290,7 @@ impl Bridge {
     }
 
     /// Drain every pending update without blocking (test helpers only).
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn drain(&self) -> Vec<Update> {
         self.drain_up_to(usize::MAX)
     }
@@ -408,7 +408,7 @@ pub fn screenshot_mode() -> bool {
 }
 
 /// A runtime-free bridge whose commands can be asserted by UI acceptance tests.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
     let (_update_tx, update_rx) = async_channel::unbounded::<Update>();
     let (command_tx, command_rx) = channel::<Command>();
@@ -426,7 +426,7 @@ pub fn spawn_recording() -> (Bridge, Receiver<Command>) {
 fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
     let attempt = || {
         JcodeClient::connect(ConnectOptions {
-            client_name: format!("jcode-desktop-{client_name}/{}", crate::build_info::VERSION),
+            client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
             ensure_runtime: false,
             ..Default::default()
         })
@@ -842,7 +842,7 @@ fn create_remote_session(
         if session.working_dir.as_deref().is_none_or(str::is_empty) {
             session.working_dir = working_dir;
         }
-        if managed && !screenshot_mode() && !cfg!(test) {
+        if managed && !screenshot_mode() && !cfg!(any(test, feature = "test-support")) {
             // Start on this computer's default model and effort, not the
             // cloud daemon's. A failure keeps the session on its current model.
             let defaults = crate::managed_cloud_parity::Snapshot::session_defaults();
@@ -1023,10 +1023,7 @@ pub fn unfinished_sessions(sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
     unfinished_sessions_in(&home, sessions)
 }
 
-pub(crate) fn unfinished_sessions_in(
-    home: &Path,
-    sessions: &[SessionInfo],
-) -> Vec<UnfinishedSession> {
+pub fn unfinished_sessions_in(home: &Path, sessions: &[SessionInfo]) -> Vec<UnfinishedSession> {
     let todos_dir = home.join("todos");
     sessions
         .iter()
@@ -1104,7 +1101,7 @@ pub fn live_sessions() -> Vec<LiveSession> {
     live_sessions_from(&home, presence)
 }
 
-pub(crate) fn live_sessions_from(
+pub fn live_sessions_from(
     home: &Path,
     presence: impl IntoIterator<Item = (String, bool)>,
 ) -> Vec<LiveSession> {
@@ -1281,7 +1278,7 @@ fn json_value_field(bytes: &[u8], field: &str, last: bool) -> Option<serde_json:
 /// gigabytes before the first row appears.
 const MAX_PERSISTED_SIDEBAR_SESSIONS: usize = 100;
 
-pub(crate) fn jcode_home() -> Option<PathBuf> {
+pub fn jcode_home() -> Option<PathBuf> {
     std::env::var_os("JCODE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".jcode")))
@@ -1308,7 +1305,7 @@ fn file_recency_ms(entry: &std::fs::DirEntry) -> u128 {
 /// Merge the API's live view with records on disk. This deliberately makes the
 /// desktop resilient to an older already-running bridge that only reports
 /// sessions created during its lifetime.
-pub(crate) fn merge_persisted_sessions(
+pub fn merge_persisted_sessions(
     mut sessions: Vec<SessionInfo>,
     home: Option<&Path>,
 ) -> Vec<SessionInfo> {

@@ -4282,6 +4282,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-desktop-harness"
+version = "0.5.0"
+dependencies = [
+ "async-channel",
+ "base64",
+ "jcode-applet-types",
+ "jcode-base",
+ "jcode-sdk",
+ "libc",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "jcode-desktop-motion"
 version = "0.5.0"
 
@@ -4305,6 +4322,7 @@ dependencies = [
  "jcode-base",
  "jcode-core",
  "jcode-desktop-api",
+ "jcode-desktop-harness",
  "jcode-desktop-motion",
  "jcode-fuzzy",
  "jcode-provider-core",

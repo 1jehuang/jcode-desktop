@@ -883,6 +883,7 @@ impl Workspace {
         snapshot: Option<WorkspaceSnapshot>,
     ) -> Self {
         crate::input::bind_keys(cx);
+        crate::init_harness();
         let bridge = harness::spawn();
         let accounts_feed = accounts::spawn();
         let launch = snapshot

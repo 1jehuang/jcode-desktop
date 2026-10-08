@@ -1,0 +1,43 @@
+[package]
+name = "jcode-desktop-harness"
+version = "0.5.0"
+edition.workspace = true
+license.workspace = true
+description = "Jcode Desktop's harness bridge: SDK sessions, remote and managed-cloud transports, without GPUI"
+
+# Split out of jcode-desktop-ui so edits here recompile a small crate instead of
+# the 140k-line UI crate. It is linked statically into the UI cdylib like any
+# other dependency, so hot reload and the host/UI ABI are unchanged.
+[lib]
+path = "src/lib.rs"
+
+[features]
+# Test-only bridge helpers (recording bridges, `Bridge::drain`) and the
+# test-mode guards that keep managed-cloud sync from reaching a real host.
+# jcode-desktop-ui enables this from its dev-dependencies only, so the
+# hot-reload build (`cargo build -p jcode-desktop -p jcode-desktop-ui`) never
+# sees it and keeps the host's crate identities.
+test-support = []
+
+[dependencies]
+jcode-sdk = { path = "../../../jcode/crates/jcode-sdk" }
+jcode-applet-types = { path = "../../../jcode/crates/jcode-applet-types" }
+async-channel = "2"
+base64 = "0.22"
+libc = { version = "0.2", features = ["extra_traits"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3"
+toml = "0.8"
+
+# Keep jcode-base features identical to jcode-desktop-ui's so feature
+# unification never differs between the host and the plugin builds.
+[target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
+jcode-base = { path = "../../../jcode/crates/jcode-base", features = ["voice-capture"] }
+
+[target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
+jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false, features = ["voice-capture"] }
+
+[dev-dependencies]
+tempfile = "3"

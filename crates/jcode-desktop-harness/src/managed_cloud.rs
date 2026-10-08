@@ -170,7 +170,7 @@ pub fn known_hosts_contents(address: &str, port: u16, keys: &[String]) -> String
 pub fn request_connect(account: &Account, public_key: &str) -> Result<ConnectReply, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(30))
-        .user_agent(format!("jcode-desktop/{}", crate::build_info::VERSION))
+        .user_agent(format!("jcode-desktop/{}", crate::client_version()))
         .build()
         .map_err(|e| e.to_string())?;
     let response = client
@@ -267,7 +267,7 @@ fn sync(
     options: &SshConnectOptions,
     snapshot: &crate::managed_cloud_parity::Snapshot,
 ) -> Result<(), String> {
-    if cfg!(test) || crate::harness::screenshot_mode() {
+    if cfg!(any(test, feature = "test-support")) || crate::harness::screenshot_mode() {
         return Ok(());
     }
     crate::managed_cloud_parity::apply(options, snapshot)

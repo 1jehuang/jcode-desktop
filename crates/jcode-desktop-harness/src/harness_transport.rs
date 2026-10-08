@@ -53,7 +53,7 @@ impl RemoteTransports {
             // the user's SSH config, or a personal AWS profile.
             return crate::managed_cloud::connect(
                 progress,
-                format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+                format!("jcode-desktop-remote/{}", crate::client_version()),
                 crate::managed_cloud::request_connect,
                 JcodeClient::connect_ssh,
             )
@@ -65,7 +65,7 @@ impl RemoteTransports {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
         })?;
         let options = SshConnectOptions {
-            client_name: format!("jcode-desktop-remote/{}", crate::build_info::VERSION),
+            client_name: format!("jcode-desktop-remote/{}", crate::client_version()),
             connect_timeout: Duration::from_secs(20),
             request_timeout: Some(Duration::from_secs(30)),
             ..SshConnectOptions::new(&host)
