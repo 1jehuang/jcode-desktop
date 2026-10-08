@@ -216,7 +216,7 @@ impl Workspace {
     }
 }
 
-pub(crate) const SHOWCASE_ID: &str = "jcode.showcase";
+pub(crate) use crate::applet_runtime::SHOWCASE_ID;
 
 impl Workspace {
     /// Tell providers whose manifests claim a tool call that it started or

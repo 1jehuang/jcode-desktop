@@ -145,19 +145,12 @@ mod default_directory;
 #[path = "workspace_default_directory_tests.rs"]
 mod default_directory_tests;
 
-#[derive(Clone, PartialEq, gpui::Action)]
-#[action(no_json)]
-pub(crate) struct OpenAccounts {
-    pub source: gpui::EntityId,
-    pub login_command: Option<String>,
-}
-
-/// Commit, push, release and publish Desktop from the source panel's checkout.
-#[derive(Clone, PartialEq, gpui::Action)]
-#[action(no_json)]
-pub(crate) struct PublishDesktop {
-    pub source: gpui::EntityId,
-}
+// Actions that panels dispatch to the workspace live in a leaf module so the
+// panel layer does not depend on this one.
+pub(crate) use crate::ui_actions::{
+    ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume, PublishDesktop,
+    ToggleOnboardingSimulator,
+};
 
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]
@@ -189,13 +182,10 @@ actions!(
         OpenGmail,
         OpenTodoist,
         OpenOrchestration,
-        OpenAppletShowcase,
         NewUnfinishedWork,
         OpenFolder,
-        ClosePanel,
         ToggleOverview,
         ToggleHints,
-        ToggleOnboardingSimulator,
         ToggleShowcase,
         ToggleSidebar,
         ToggleVoice,
@@ -205,8 +195,6 @@ actions!(
         EndGlobalVoiceHold,
         CycleTheme,
         NewHelpSession,
-        OpenChangelog,
-        OpenResume,
         CycleWidth,
         MaximizeWidth,
         WidthPreset1,

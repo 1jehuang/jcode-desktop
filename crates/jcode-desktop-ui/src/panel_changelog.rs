@@ -336,7 +336,7 @@ impl Panel {
             .on_key_down(
                 cx.listener(|panel, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key == "escape" {
-                        window.dispatch_action(Box::new(crate::workspace::ClosePanel), cx);
+                        window.dispatch_action(Box::new(crate::ui_actions::ClosePanel), cx);
                         cx.stop_propagation();
                     } else if event.keystroke.modifiers == gpui::Modifiers::default() {
                         let views = [View::Latest, View::History];
@@ -393,8 +393,10 @@ impl Panel {
                                 .text_color(theme.TEXT_DIM)
                                 .hover(|el| el.bg(theme.HEADER_BG).text_color(theme.TEXT))
                                 .on_click(|_, window, cx| {
-                                    window
-                                        .dispatch_action(Box::new(crate::workspace::ClosePanel), cx)
+                                    window.dispatch_action(
+                                        Box::new(crate::ui_actions::ClosePanel),
+                                        cx,
+                                    )
                                 })
                                 .child("Close"),
                         ),

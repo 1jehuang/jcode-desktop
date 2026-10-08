@@ -383,7 +383,7 @@ impl Panel {
         for index in 0..files.len() {
             let header = edit_preview::PreviewHeader {
                 intent: intent.clone(),
-                review: crate::workspace::change_review::OpenChangeReview {
+                review: crate::ui_actions::OpenChangeReview {
                     source: cx.entity_id(),
                     name: name.to_owned(),
                     input: input.to_owned(),
@@ -455,7 +455,7 @@ impl Panel {
     pub(crate) fn new_change_review(
         session_id: String,
         working_dir: Option<String>,
-        request: &crate::workspace::change_review::OpenChangeReview,
+        request: &crate::ui_actions::OpenChangeReview,
         bridge: Bridge,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -472,7 +472,7 @@ impl Panel {
 
     pub(crate) fn set_change_review(
         &mut self,
-        request: &crate::workspace::change_review::OpenChangeReview,
+        request: &crate::ui_actions::OpenChangeReview,
         cx: &mut Context<Self>,
     ) {
         let output = if request.failed { "" } else { &request.output };
@@ -516,7 +516,7 @@ impl Panel {
         if self.is_change_review() {
             self.focus_handle.focus(window, cx);
             window.dispatch_action(
-                Box::new(crate::workspace::change_review::CloseChangeReview {
+                Box::new(crate::ui_actions::CloseChangeReview {
                     panel: cx.entity_id(),
                 }),
                 cx,

@@ -643,6 +643,44 @@ pub fn logo(provider_id: &str) -> Option<&'static [u8]> {
     }
 }
 
+/// Provider display name without redundant credential words. The runtime may
+/// report a canonical id (`anthropic`, `claude-api`) or a display name that
+/// already names the method (`Anthropic API`). The method pill says how you
+/// are signed in, so the provider half stays a plain brand name.
+pub fn pretty_provider_name(provider: &str) -> String {
+    let lower = provider.to_ascii_lowercase();
+    let base = lower
+        .trim_end_matches(" api key")
+        .trim_end_matches(" api")
+        .trim_end_matches(" oauth")
+        .trim_end_matches("-api-key")
+        .trim_end_matches("-api")
+        .trim_end_matches("-oauth")
+        .trim_end_matches("-key");
+    match base {
+        "anthropic" | "claude" => "Anthropic".into(),
+        "openai" | "chatgpt" => "OpenAI".into(),
+        "openrouter" => "OpenRouter".into(),
+        "copilot" | "github copilot" | "github-copilot" => "Copilot".into(),
+        "gemini" | "google" | "code-assist" => "Gemini".into(),
+        "antigravity" => "Antigravity".into(),
+        "cursor" => "Cursor".into(),
+        "bedrock" | "aws bedrock" | "aws-bedrock" => "Bedrock".into(),
+        "xai" | "grok" => "xAI".into(),
+        "jcode" => "Jcode".into(),
+        _ => {
+            // Keep unknown names readable, but drop the credential suffix.
+            let len = base.len().min(provider.len());
+            let kept = provider[..len].trim();
+            if kept.is_empty() {
+                provider.to_string()
+            } else {
+                kept.to_string()
+            }
+        }
+    }
+}
+
 /// The lettermark for providers without a vendored logo.
 pub fn lettermark(display_name: &str) -> String {
     display_name

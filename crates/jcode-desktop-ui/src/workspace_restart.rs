@@ -19,8 +19,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-pub const WORKER_FLAG: &str = "--restart-all-worker";
-pub const NO_SERVER_FLAG: &str = "--no-server";
+// Shared with the panel's `/restart-all` command, which only spawns the worker.
+pub(crate) use crate::restart_spawn::{NO_SERVER_FLAG, WORKER_FLAG, detach};
 const RESTORE_FLAG: &str = "--restore-state=";
 const MANIFEST_INTERVAL: Duration = Duration::from_secs(1);
 /// Launch flags that described how a window was first opened, not what it
@@ -191,39 +191,6 @@ fn decode_restore(bytes: &[u8]) -> Option<WorkspaceSnapshot> {
         launch.args = strip_transient(&launch.args);
     }
     Some(snapshot)
-}
-
-/// Start the detached worker. It outlives this process, which it stops.
-pub(crate) fn spawn_worker(restart_server: bool) -> anyhow::Result<()> {
-    let executable = crate::platform::self_executable()?;
-    let mut command = Command::new(executable);
-    command.arg(WORKER_FLAG);
-    if !restart_server {
-        command.arg(NO_SERVER_FLAG);
-    }
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    detach(&mut command);
-    command.spawn()?;
-    Ok(())
-}
-
-fn detach(command: &mut Command) {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid is async-signal-safe and only affects the child.
-        unsafe {
-            command.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
-    #[cfg(not(unix))]
-    let _ = command;
 }
 
 // ---------------------------------------------------------------------------

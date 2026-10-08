@@ -98,7 +98,7 @@ pub fn bind_keys(cx: &mut App) {
     ]);
     // Must follow the composer's Alt+B/Ctrl+B word motions: later bindings win
     // at equal context depth, and the handler falls through when idle.
-    cx.bind_keys(crate::panel::shortcuts::background_tool_bindings());
+    cx.bind_keys(crate::ui_actions::background_tool_bindings());
     cx.bind_keys([
         KeyBinding::new("ctrl-shift-left", SelectWordLeft, Some("PromptInput")),
         KeyBinding::new("ctrl-shift-right", SelectWordRight, Some("PromptInput")),
@@ -920,8 +920,7 @@ impl PromptInput {
         if self.pending_session
             && self.command_completion
             && self.content.trim_start().starts_with('/')
-            && !(self.attachments.is_empty()
-                && crate::workspace::resume::is_resume_command(&self.content))
+            && !(self.attachments.is_empty() && crate::commands::is_resume_command(&self.content))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
             cx.notify();
@@ -2192,7 +2191,7 @@ impl Render for PromptInput {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("PromptInput");
         #[cfg(test)]
-        crate::workspace::panel_cache_tests::record_render(cx.entity_id());
+        crate::render_stats::test_renders::record(cx.entity_id());
         let focused = self.focus_handle.is_focused(window);
         let editor_height = (f32::from(window.viewport_size().height) * 0.25).clamp(28., 160.);
         let spacious = self.spacious

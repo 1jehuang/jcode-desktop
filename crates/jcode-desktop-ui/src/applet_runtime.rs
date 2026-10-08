@@ -26,6 +26,8 @@ use std::{
 
 /// A single provider line may carry assets. Beyond this, the line is dropped.
 const MAX_LINE_BYTES: usize = 48 * 1024 * 1024;
+/// The built-in showcase applet, trusted by default.
+pub(crate) const SHOWCASE_ID: &str = "jcode.showcase";
 
 /// `~/.jcode/applets/<id>/applet.json`: how to launch a local provider.
 #[derive(Clone, Debug, Deserialize)]
@@ -114,7 +116,7 @@ impl Default for Runtime {
     fn default() -> Self {
         let (inbound_tx, inbound_rx) = mpsc::channel();
         let mut host = AppletHost::new();
-        host.trust(crate::workspace::applets::SHOWCASE_ID);
+        host.trust(SHOWCASE_ID);
         host.trust(jcode_applet_types::agent::APPLET_ID);
         let _ = host.apply(
             jcode_applet_types::agent::APPLET_ID,

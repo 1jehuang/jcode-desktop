@@ -1,6 +1,6 @@
 //! Two-tone edit header: intent and counts above file details.
 use super::*;
-use crate::workspace::change_review::OpenChangeReview;
+use crate::ui_actions::OpenChangeReview;
 
 #[derive(Clone, PartialEq)]
 pub(crate) struct PreviewHeader {

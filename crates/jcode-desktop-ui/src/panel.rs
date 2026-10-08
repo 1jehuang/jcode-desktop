@@ -1740,16 +1740,14 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
-                        if images.is_empty()
-                            && crate::workspace::resume::is_resume_command(&content)
-                        {
-                            _window.dispatch_action(Box::new(crate::workspace::OpenResume), app);
+                        if images.is_empty() && crate::commands::is_resume_command(&content) {
+                            _window.dispatch_action(Box::new(crate::ui_actions::OpenResume), app);
                             return;
                         }
                         // First-run launch is local, including before a session connects.
                         if images.is_empty() && content.trim() == "/applets" {
                             _window.dispatch_action(
-                                Box::new(crate::workspace::OpenAppletShowcase),
+                                Box::new(crate::ui_actions::OpenAppletShowcase),
                                 app,
                             );
                             return;
@@ -1758,7 +1756,7 @@ impl Panel {
                             && matches!(content.trim(), "/onboarding-sim" | "/onboarding-preview")
                         {
                             _window.dispatch_action(
-                                Box::new(crate::workspace::ToggleOnboardingSimulator),
+                                Box::new(crate::ui_actions::ToggleOnboardingSimulator),
                                 app,
                             );
                             return;
@@ -1776,7 +1774,8 @@ impl Panel {
                             return;
                         }
                         if images.is_empty() && content.trim() == "/changelog" {
-                            _window.dispatch_action(Box::new(crate::workspace::OpenChangelog), app);
+                            _window
+                                .dispatch_action(Box::new(crate::ui_actions::OpenChangelog), app);
                             return;
                         }
                         if images.is_empty()
@@ -1785,7 +1784,7 @@ impl Panel {
                             && panel.read(app).publish_checkout().is_some()
                         {
                             _window.dispatch_action(
-                                Box::new(crate::workspace::PublishDesktop {
+                                Box::new(crate::ui_actions::PublishDesktop {
                                     source: panel.entity_id(),
                                 }),
                                 app,
@@ -1798,7 +1797,7 @@ impl Panel {
                                 && content.split_whitespace().next() == Some("/login")
                             {
                                 _window.dispatch_action(
-                                    Box::new(crate::workspace::OpenAccounts {
+                                    Box::new(crate::ui_actions::OpenAccounts {
                                         source: panel.entity_id(),
                                         login_command: Some(content),
                                     }),
@@ -2121,7 +2120,7 @@ impl Panel {
                 }
                 "/restart-all" | "/restart-all desktop" => {
                     let restart_server = trimmed == "/restart-all";
-                    self.items.push(match crate::workspace::restart::spawn_worker(restart_server) {
+                    self.items.push(match crate::restart_spawn::spawn_worker(restart_server) {
                         Ok(()) => Item::Assistant(if restart_server {
                             "Restarting the Jcode server and every Desktop window. Windows, sessions, drafts, and layout come back in a few seconds.".into()
                         } else {
@@ -4105,7 +4104,7 @@ impl Render for Panel {
         }
         self.schedule_transcript_wheel_frame(window, cx);
         #[cfg(test)]
-        crate::workspace::panel_cache_tests::record_render(cx.entity_id());
+        crate::render_stats::test_renders::record(cx.entity_id());
         if self.is_side_document() {
             return self.render_side_document(window, cx);
         }
@@ -5269,43 +5268,7 @@ fn account_method_label(provider: Option<&str>, auth_method: Option<&str>) -> St
     }
 }
 
-/// Provider display name without redundant credential words. The runtime may
-/// report a canonical id (`anthropic`, `claude-api`) or a display name that
-/// already names the method (`Anthropic API`). The method pill says how you
-/// are signed in, so the provider half stays a plain brand name.
-pub(crate) fn pretty_provider_name(provider: &str) -> String {
-    let lower = provider.to_ascii_lowercase();
-    let base = lower
-        .trim_end_matches(" api key")
-        .trim_end_matches(" api")
-        .trim_end_matches(" oauth")
-        .trim_end_matches("-api-key")
-        .trim_end_matches("-api")
-        .trim_end_matches("-oauth")
-        .trim_end_matches("-key");
-    match base {
-        "anthropic" | "claude" => "Anthropic".into(),
-        "openai" | "chatgpt" => "OpenAI".into(),
-        "openrouter" => "OpenRouter".into(),
-        "copilot" | "github copilot" | "github-copilot" => "Copilot".into(),
-        "gemini" | "google" | "code-assist" => "Gemini".into(),
-        "antigravity" => "Antigravity".into(),
-        "cursor" => "Cursor".into(),
-        "bedrock" | "aws bedrock" | "aws-bedrock" => "Bedrock".into(),
-        "xai" | "grok" => "xAI".into(),
-        "jcode" => "Jcode".into(),
-        _ => {
-            // Keep unknown names readable, but drop the credential suffix.
-            let len = base.len().min(provider.len());
-            let kept = provider[..len].trim();
-            if kept.is_empty() {
-                provider.to_string()
-            } else {
-                kept.to_string()
-            }
-        }
-    }
-}
+pub(crate) use crate::accounts::pretty_provider_name;
 
 fn pretty_auth_method(method: &str) -> String {
     match method.to_ascii_lowercase().as_str() {

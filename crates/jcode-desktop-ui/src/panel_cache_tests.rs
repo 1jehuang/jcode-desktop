@@ -1,17 +1,9 @@
 //! Count real Panel renders, not a surrogate cache implementation.
 use super::*;
-use std::cell::RefCell;
-
-thread_local! {
-    static RENDERS: RefCell<std::collections::HashMap<gpui::EntityId, usize>> = RefCell::new(Default::default());
-}
-
-pub(crate) fn record_render(id: gpui::EntityId) {
-    RENDERS.with_borrow_mut(|renders| *renders.entry(id).or_default() += 1);
-}
+use crate::render_stats::test_renders;
 
 fn count(panel: &gpui::Entity<Panel>) -> usize {
-    RENDERS.with_borrow(|renders| renders.get(&panel.entity_id()).copied().unwrap_or(0))
+    test_renders::count(panel.entity_id())
 }
 
 #[gpui::test]
@@ -157,7 +149,7 @@ fn typing_pauses_do_not_repaint_the_panel_while_the_caret_is_solid(cx: &mut gpui
 }
 
 fn count_id(id: gpui::EntityId) -> usize {
-    RENDERS.with_borrow(|renders| renders.get(&id).copied().unwrap_or(0))
+    test_renders::count(id)
 }
 
 #[gpui::test]

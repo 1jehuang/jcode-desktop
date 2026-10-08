@@ -1,30 +1,8 @@
 use super::*;
 
-gpui::actions!(
-    panel_shortcuts,
-    [JumpToLatest, JumpToLatestIfEmpty, BackgroundRunningTool]
-);
-
-/// Alt+B/Ctrl+B move the running tool to the background, matching the TUI.
-/// Both chords are also composer word-motion keys, so the handler propagates
-/// when no tool is running. Registered from `input::bind_keys` right after the
-/// composer's own bindings so it outranks them at the same context depth.
-pub(crate) fn background_tool_bindings() -> [gpui::KeyBinding; 4] {
-    [
-        gpui::KeyBinding::new("alt-b", BackgroundRunningTool, Some("ChatPanel")),
-        gpui::KeyBinding::new("ctrl-b", BackgroundRunningTool, Some("ChatPanel")),
-        gpui::KeyBinding::new(
-            "alt-b",
-            BackgroundRunningTool,
-            Some("ChatPanel > PromptInput"),
-        ),
-        gpui::KeyBinding::new(
-            "ctrl-b",
-            BackgroundRunningTool,
-            Some("ChatPanel > PromptInput"),
-        ),
-    ]
-}
+// Declared in the leaf `ui_actions` module so the composer can bind them
+// without depending on the panel.
+pub(crate) use crate::ui_actions::{BackgroundRunningTool, JumpToLatest, JumpToLatestIfEmpty};
 
 pub(crate) fn bind_keys(cx: &mut gpui::App) {
     cx.bind_keys([

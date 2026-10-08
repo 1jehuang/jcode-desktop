@@ -257,6 +257,11 @@ pub(crate) fn help_markdown() -> String {
     help
 }
 
+/// Commands that open the session browser instead of reaching the runtime.
+pub(crate) fn is_resume_command(content: &str) -> bool {
+    matches!(content.trim(), "/resume" | "/sessions" | "/session")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

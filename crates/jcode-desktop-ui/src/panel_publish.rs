@@ -127,7 +127,7 @@ impl Panel {
                     }
                     this.publish_armed_at = None;
                     window.dispatch_action(
-                        Box::new(crate::workspace::PublishDesktop {
+                        Box::new(crate::ui_actions::PublishDesktop {
                             source: cx.entity_id(),
                         }),
                         cx,

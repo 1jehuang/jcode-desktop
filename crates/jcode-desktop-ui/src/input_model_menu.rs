@@ -284,9 +284,9 @@ pub(super) fn header_parts(model: &str, details: &HashMap<String, ModelDetails>)
         };
     };
     let provider = if detail.provider.is_empty() {
-        crate::panel::pretty_provider_name(&detail.api_method)
+        crate::accounts::pretty_provider_name(&detail.api_method)
     } else {
-        crate::panel::pretty_provider_name(&detail.provider)
+        crate::accounts::pretty_provider_name(&detail.provider)
     };
     HeaderParts {
         logo: provider_logo(&detail.provider, &detail.api_method),

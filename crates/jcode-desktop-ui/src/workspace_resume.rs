@@ -100,9 +100,8 @@ fn streaming_sessions() -> HashSet<String> {
         .collect()
 }
 
-pub(crate) fn is_resume_command(content: &str) -> bool {
-    matches!(content.trim(), "/resume" | "/sessions" | "/session")
-}
+#[cfg(test)]
+use crate::commands::is_resume_command;
 
 fn filtered_sessions(
     mut sessions: Vec<jcode_sdk::SessionInfo>,

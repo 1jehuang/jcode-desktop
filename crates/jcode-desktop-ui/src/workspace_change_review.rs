@@ -1,23 +1,7 @@
 //! Read-only tool snapshots live beside their originating conversation.
 use super::*;
 
-#[derive(Clone, PartialEq, gpui::Action)]
-#[action(no_json)]
-pub(crate) struct OpenChangeReview {
-    pub source: gpui::EntityId,
-    pub name: String,
-    pub input: String,
-    pub output: String,
-    pub selected: usize,
-    pub done: bool,
-    pub failed: bool,
-}
-
-#[derive(Clone, PartialEq, gpui::Action)]
-#[action(no_json)]
-pub(crate) struct CloseChangeReview {
-    pub panel: gpui::EntityId,
-}
+pub(crate) use crate::ui_actions::{CloseChangeReview, OpenChangeReview};
 
 impl Workspace {
     pub(super) fn close_change_review(
