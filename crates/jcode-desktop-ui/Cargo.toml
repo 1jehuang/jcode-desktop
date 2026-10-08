@@ -72,5 +72,7 @@ gpui_platform = { workspace = true, features = ["x11", "font-kit"] }
 tempfile = "3"
 # UI tests drive panels through recording bridges.
 jcode-desktop-harness = { workspace = true, features = ["test-support"] }
-gpui = { workspace = true, features = ["test-support"] }
-hdrhistogram = "7.6"
+gpui.workspace = true
+# Same features as gpui's (`profiler`) dependency, so tests reuse the build's
+# hdrhistogram and therefore its GPUI.
+hdrhistogram = { version = "7.6", default-features = false }
