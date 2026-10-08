@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 14df6c06499ae5a865518b959a4a6582f5f13f95 # Desktop 0.4.0 runtime: jcode master with applet types, accounts and restart-all support
+          ref: 3a213174ab97a737e7f3df4eb574d1a6e65fe3e0 # Desktop 0.5.0 runtime: jcode master with turn retry, billing status and background tools
           path: jcode
           submodules: recursive
       - name: Validate release target and publication contracts

@@ -1,5 +1,44 @@
 ## What's new
 
+### Jcode Desktop 0.5.0
+
+An account menu, drag and drop, self-healing turns, and a faster workspace
+
+#### Themes
+
+- An in-app account menu from the sidebar account pill, with usage, monthly limit, billing, and plan changes in place.
+- Drag files into a chat, and turns that fail transiently continue on their own.
+- A faster workspace: retained GPUI rendering, smoother transcript streaming, and much less work per frame.
+
+#### Highlights
+
+- Upgrade plans through Stripe Checkout, which detects the new plan automatically, and sign in again instead of signing out.
+- Move a running tool to the background with Alt+B, Ctrl+B, or a Background pill.
+- Pin sessions from the sidebar. Running sessions show a live working timer, and hovering swaps the spinner for pin and close.
+- Composer example prompts are personalized from the open todos of closed sessions, skipping blocked and wrap-up items.
+- A native-feeling Windows caption that shares the tab row.
+
+#### Improvements
+
+- Panel status and build info move into the composer pill row, removing the bottom bar. Fresh sessions start with a single-row composer.
+- Subscription limits live in the method pill hover card instead of the composer row.
+- Switching providers picks their newest flagship model, not the alphabetically first route.
+- The sidebar keeps the account pill pinned to the bottom, shows the Jcode account instead of a provider login, and hides its email by default.
+- The change review file tree is restyled like lazygit.
+- Clicking the version pill checks for and applies updates. Hot reloads keep your place.
+
+#### Fixes
+
+- CJK IME composition no longer crashes Desktop.
+- Older macOS builds auto-update again.
+- A new thinking block starts when reasoning resumes after streamed text.
+- The transcript tail glides smoothly for every kind of growth, including very fast streams.
+- Windows uses an 8 MiB main-thread stack.
+
+Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
+
+## Previous releases
+
 ### Jcode Desktop 0.4.0
 
 Applets, a multi-account workspace, and a smoother composer
@@ -35,10 +74,6 @@ Applets, a multi-account workspace, and a smoother composer
 - Global voice holds survive kernel key-event drops during UI stalls and in-place host rebuilds.
 - Stable list scrollbars across resizes, and markdown hard line breaks and paragraph spacing render correctly.
 - macOS auto-update is validated from every published build.
-
-Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
-
-## Previous releases
 
 ### Jcode Desktop 0.3.3
 
