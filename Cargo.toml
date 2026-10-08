@@ -3,6 +3,7 @@ members = [
     ".",
     "crates/jcode-desktop-api",
     "crates/jcode-desktop-harness",
+    "crates/jcode-desktop-model",
     "crates/jcode-desktop-motion",
     "crates/jcode-desktop-ui",
 ]
@@ -21,6 +22,7 @@ gpui = { git = "https://github.com/1jehuang/gpui", rev = "424044ad7f36e5599dbaa0
 gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "424044ad7f36e5599dbaa08519b84614ff57f0db" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-harness = { path = "crates/jcode-desktop-harness" }
+jcode-desktop-model = { path = "crates/jcode-desktop-model" }
 jcode-desktop-motion = { path = "crates/jcode-desktop-motion" }
 
 [patch.crates-io]

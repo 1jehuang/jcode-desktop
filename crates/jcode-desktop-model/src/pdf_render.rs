@@ -65,13 +65,13 @@ impl Drop for CommandPermit<'_> {
 /// An immutable document whose private payload survives until the last Arc drops.
 /// Rendering is concurrency-safe: every call owns a separate output directory.
 #[derive(Debug)]
-pub(crate) struct PdfDocument {
+pub struct PdfDocument {
     directory: TempDir,
     pages: usize,
 }
 
 impl PdfDocument {
-    pub(crate) fn from_base64(payload: &str) -> Result<Self> {
+    pub fn from_base64(payload: &str) -> Result<Self> {
         ensure!(!payload.is_empty(), "PDF payload is empty");
         // Check encoded length before allocating the decoded buffer.
         ensure!(
@@ -123,12 +123,12 @@ impl PdfDocument {
         Ok(Self { directory, pages })
     }
 
-    pub(crate) fn page_count(&self) -> usize {
+    pub fn page_count(&self) -> usize {
         self.pages
     }
 
     /// Render exactly one 1-indexed page. `longest_edge` must be in 1..=4096.
-    pub(crate) fn render_page(&self, page: usize, longest_edge: u32) -> Result<Vec<u8>> {
+    pub fn render_page(&self, page: usize, longest_edge: u32) -> Result<Vec<u8>> {
         ensure!(
             (1..=self.pages).contains(&page),
             "PDF page is outside 1..={}",

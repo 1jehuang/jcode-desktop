@@ -1,6 +1,5 @@
 //! Jcode Desktop: a spatial, niri-inspired canvas of Jcode sessions.
 
-mod accounts;
 mod ack;
 mod animation_clock;
 mod applet_host;
@@ -13,9 +12,7 @@ mod changelog;
 mod clipboard_image;
 mod commands;
 mod config;
-mod diff;
 mod diff_block;
-mod diff_model;
 mod diff_review_content;
 mod diff_view;
 mod effort;
@@ -29,7 +26,6 @@ mod html_preview;
 mod image_cache;
 mod inline_image;
 mod input;
-mod learning;
 mod live_profile;
 pub mod login_input;
 mod markdown;
@@ -39,7 +35,6 @@ mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;
 mod panel;
-mod pdf_render;
 mod pdf_viewer;
 mod performance;
 mod persisted_history;
@@ -56,7 +51,6 @@ mod sounds;
 mod terminal;
 mod text_selection;
 mod theme;
-pub mod todoist;
 mod tool_icon;
 mod transition;
 mod update_notes;
@@ -66,7 +60,12 @@ mod workspace;
 
 // The GPUI-free harness bridge and its transports live in their own crate so
 // edits there do not recompile this one. Re-exported under their old paths.
-pub(crate) use jcode_desktop_harness::{harness, managed_cloud, platform, remote_targets};
+pub(crate) use jcode_desktop_harness::{
+    accounts, harness, managed_cloud, platform, remote_targets,
+};
+// GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
+pub use jcode_desktop_model::todoist;
+pub(crate) use jcode_desktop_model::{diff, diff_model, learning, pdf_render};
 
 use gpui::{App, KeyBinding, Window};
 

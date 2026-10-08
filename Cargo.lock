@@ -4299,6 +4299,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-desktop-model"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "image",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "jcode-desktop-motion"
 version = "0.5.0"
 
@@ -4323,6 +4336,7 @@ dependencies = [
  "jcode-core",
  "jcode-desktop-api",
  "jcode-desktop-harness",
+ "jcode-desktop-model",
  "jcode-desktop-motion",
  "jcode-fuzzy",
  "jcode-provider-core",

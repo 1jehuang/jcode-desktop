@@ -452,7 +452,7 @@ fn shared_poller() -> &'static Poller {
     })
 }
 
-pub(crate) fn fetch() -> Option<Vec<Account>> {
+pub fn fetch() -> Option<Vec<Account>> {
     let output = std::process::Command::new(crate::platform::companion_executable("jcode"))
         .args(["auth", "status", "--json"])
         .output()
@@ -501,8 +501,8 @@ pub fn parse(json: &str) -> Option<Vec<Account>> {
     Some(accounts)
 }
 
-#[cfg(test)]
-pub(crate) fn merge_usage_for_tests(accounts: &mut [Account], json: &str) {
+#[cfg(any(test, feature = "test-support"))]
+pub fn merge_usage_for_tests(accounts: &mut [Account], json: &str) {
     merge_usage(accounts, json)
 }
 

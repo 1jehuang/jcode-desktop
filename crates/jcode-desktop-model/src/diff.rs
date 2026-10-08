@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct FileDiff {
+pub struct FileDiff {
     pub path: String,
     pub previous_path: Option<String>,
     pub kind: String,
@@ -15,7 +15,7 @@ pub(crate) struct FileDiff {
 }
 
 impl FileDiff {
-    pub(crate) fn added(&self) -> usize {
+    pub fn added(&self) -> usize {
         // A body line such as "+++ heading" is an addition, not a file header.
         self.lines
             .iter()
@@ -23,7 +23,7 @@ impl FileDiff {
             .count()
     }
 
-    pub(crate) fn removed(&self) -> usize {
+    pub fn removed(&self) -> usize {
         self.lines
             .iter()
             .filter(|line| line.starts_with('-'))
@@ -34,7 +34,7 @@ impl FileDiff {
 /// Preview supported tools. Invalid or unrelated inputs produce no preview.
 /// `replace_all` and deletion contents cannot be resolved without filesystem
 /// access, so only the text actually supplied by the caller is displayed.
-pub(crate) fn tool_diffs(name: &str, input: &str) -> Vec<FileDiff> {
+pub fn tool_diffs(name: &str, input: &str) -> Vec<FileDiff> {
     match serde_json::from_str::<Value>(input) {
         Ok(value) => value_diffs(name, &value, 0),
         Err(_) if matches!(name, "apply_patch" | "patch") => raw_patch_diffs(input),

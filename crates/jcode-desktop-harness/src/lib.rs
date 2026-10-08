@@ -5,6 +5,7 @@
 
 use std::sync::OnceLock;
 
+pub mod accounts;
 pub mod harness;
 pub mod managed_cloud;
 pub mod managed_cloud_parity;

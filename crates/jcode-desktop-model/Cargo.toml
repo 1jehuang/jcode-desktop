@@ -1,0 +1,25 @@
+[package]
+name = "jcode-desktop-model"
+version = "0.5.0"
+edition.workspace = true
+license.workspace = true
+description = "Jcode Desktop's GPUI-free models: diff previews, the learning coach, Todoist and PDF rendering"
+
+# Split out of jcode-desktop-ui so edits here recompile and test a small crate
+# instead of the 140k-line UI crate. Linked statically into the UI cdylib like
+# any other dependency, so hot reload and the host/UI ABI are unchanged.
+# Keep this crate free of GPUI and of other Desktop crates.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.151"
+tempfile = "3"
+
+[dev-dependencies]
+# PDF tests decode the rendered PNG. Same features as jcode-desktop-ui.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
