@@ -40,6 +40,24 @@
   Use `--no-build` only when the binary is current. Read the resulting PNG with
   the image tool. Do not ask the user for a screenshot before trying this path.
 
+- Test the smallest crate that contains your change, not the UI test binary.
+  `jcode-desktop-ui` is a ~130k-line crate, and any `justrust test -p
+  jcode-desktop-ui` recompiles it (about 8-10s after a one-line edit, even
+  with a test filter). The GPUI-free crates compile in about a second:
+  - `crates/jcode-desktop-harness`: harness bridge, remote and managed-cloud
+    transports, `remote_targets`, `platform`, `accounts`.
+    Run `justrust test -p jcode-desktop-harness`.
+  - `crates/jcode-desktop-model`: `diff_model`, `diff`, `learning`, `todoist`,
+    `pdf_render`. Run `justrust test -p jcode-desktop-model`.
+  - `crates/jcode-desktop-motion`, `crates/jcode-desktop-api`: likewise.
+  The UI re-exports these modules at their old `crate::` paths, so find a
+  module's home with `ls crates/*/src/<module>.rs`. Run the UI tests only when
+  you changed UI code or a crate's public API that UI code uses, and run
+  `justrust test --workspace` once before committing.
+- Keep new GPUI-free logic in those crates, and keep the UI's view modules
+  acyclic: `workspace` may use `panel` and `input`, but non-test code in
+  `panel` and `input` must not use `workspace`. Put actions that panels
+  dispatch to the workspace in `ui_actions.rs`, not in `workspace.rs`.
 - Do not use `niri` for testing or test verification.
 - Prefer headless tests that do not open windows, steal focus, move workspaces, or otherwise interfere with the user's active desktop session.
 - Use non-`niri` test methods, such as unit tests, integration tests, CLI checks, virtual displays, or isolated test harnesses.
