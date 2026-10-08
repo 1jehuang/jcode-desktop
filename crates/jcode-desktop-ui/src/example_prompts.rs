@@ -190,15 +190,32 @@ fn actionable(line: &str) -> bool {
         return false;
     }
     const WRAP_UP: &[&str] = &[
-        "test", "tests", "run", "commit", "push", "reload", "rebuild", "build", "verify",
-        "screenshot", "screenshots", "show", "report", "review", "validate", "check",
+        "test",
+        "tests",
+        "run",
+        "commit",
+        "push",
+        "reload",
+        "rebuild",
+        "build",
+        "verify",
+        "screenshot",
+        "screenshots",
+        "show",
+        "report",
+        "review",
+        "validate",
+        "check",
     ];
     // "Test, screenshot, commit and reload": the leading verbs are all wrap-up.
     let verbs: Vec<&str> = lower
         .split(|c: char| !c.is_alphanumeric())
         .filter(|word| {
             !word.is_empty()
-                && !matches!(*word, "and" | "then" | "the" | "both" | "all" | "ci" | "user")
+                && !matches!(
+                    *word,
+                    "and" | "then" | "the" | "both" | "all" | "ci" | "user"
+                )
         })
         .take(3)
         .collect();

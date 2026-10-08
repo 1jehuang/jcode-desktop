@@ -152,12 +152,12 @@ impl Panel {
             .live_at
             .is_some_and(|at| now.saturating_duration_since(at) < LIVE_GRACE);
         // Resume from the unrounded position unless something else moved the list.
-        let current = if self.tail_glide.active() && (self.tail_glide.position - listed).abs() <= 1.0
-        {
-            self.tail_glide.position
-        } else {
-            listed
-        };
+        let current =
+            if self.tail_glide.active() && (self.tail_glide.position - listed).abs() <= 1.0 {
+                self.tail_glide.position
+            } else {
+                listed
+            };
         let gap = max - current;
         let limit = (viewport * 3.0).max(MAX_GLIDE_PX);
         if snap
@@ -481,7 +481,8 @@ mod tests {
         for _ in 0..30 {
             frame(vcx);
         }
-        let offset = |panel: &Panel| -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
+        let offset =
+            |panel: &Panel| -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
         // A very fast model: several paragraphs every frame.
         let mut previous = panel.read_with(vcx, |panel, _| offset(panel));
         let mut steps = Vec::new();
@@ -502,7 +503,10 @@ mod tests {
                 assert!(gap(panel) <= MAX_LAG_PX + 1.0, "bounded lag {}", gap(panel));
                 offset(panel)
             });
-            assert!(now + 0.5 >= previous, "never scrolls backwards: {previous} -> {now}");
+            assert!(
+                now + 0.5 >= previous,
+                "never scrolls backwards: {previous} -> {now}"
+            );
             steps.push(now - previous);
             previous = now;
         }
@@ -585,7 +589,10 @@ mod tests {
                     assert!(panel.stick_to_bottom, "still following");
                     (offset(panel), gap(panel))
                 });
-                assert!(now + 0.5 >= previous, "never scrolls backwards: {previous} -> {now}");
+                assert!(
+                    now + 0.5 >= previous,
+                    "never scrolls backwards: {previous} -> {now}"
+                );
                 glided |= gap_now > 1.0;
                 previous = now;
             }

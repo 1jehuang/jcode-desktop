@@ -1017,43 +1017,46 @@ impl Workspace {
                     )
                     .child("+"),
             )
-            .when(!crate::window_caption::enabled(), |el| el.child(
-                div()
-                    .id("tab-close-window")
-                    .debug_selector(|| "tab-close-window".into())
-                    .absolute()
-                    .right_0()
-                    .top_0()
-                    .size(px(TAB_HEIGHT))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .rounded_md()
-                    .text_size(px(20.0))
-                    .text_color(Theme::global().TEXT_DIM)
-                    .cursor_pointer()
-                    .occlude()
-                    .hover(|el| {
-                        el.bg(Theme::global().ERROR_BG)
-                            .text_color(Theme::global().ERROR)
-                    })
-                    .tooltip(|_, cx| cx.new(|_| TabTooltip("Close window".into())).into())
-                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
-                        cx.stop_propagation();
-                        window.prevent_default();
-                    })
-                    .on_click(|_, window, cx| {
-                        cx.stop_propagation();
-                        // Build the host's action rather than passing a UI-generation
-                        // Rust type across the hot-reload boundary. The host snapshots
-                        // the workspace before removing its native window.
-                        if let Ok(action) = cx.build_action("jcode_desktop_host::CloseWindow", None)
-                        {
-                            window.dispatch_action(action, cx);
-                        }
-                    })
-                    .child("×"),
-            ))
+            .when(!crate::window_caption::enabled(), |el| {
+                el.child(
+                    div()
+                        .id("tab-close-window")
+                        .debug_selector(|| "tab-close-window".into())
+                        .absolute()
+                        .right_0()
+                        .top_0()
+                        .size(px(TAB_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_md()
+                        .text_size(px(20.0))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .cursor_pointer()
+                        .occlude()
+                        .hover(|el| {
+                            el.bg(Theme::global().ERROR_BG)
+                                .text_color(Theme::global().ERROR)
+                        })
+                        .tooltip(|_, cx| cx.new(|_| TabTooltip("Close window".into())).into())
+                        .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                            cx.stop_propagation();
+                            window.prevent_default();
+                        })
+                        .on_click(|_, window, cx| {
+                            cx.stop_propagation();
+                            // Build the host's action rather than passing a UI-generation
+                            // Rust type across the hot-reload boundary. The host snapshots
+                            // the workspace before removing its native window.
+                            if let Ok(action) =
+                                cx.build_action("jcode_desktop_host::CloseWindow", None)
+                            {
+                                window.dispatch_action(action, cx);
+                            }
+                        })
+                        .child("×"),
+                )
+            })
             .into_any_element()
     }
 }

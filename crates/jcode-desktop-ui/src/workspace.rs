@@ -8135,7 +8135,11 @@ impl Render for Workspace {
         }
         if self.onboarding_launch.error.is_some() {
             window.focus(&self.focus_handle, cx);
-            return crate::window_caption::wrap(self.render_onboarding_launch_error(cx), window, true);
+            return crate::window_caption::wrap(
+                self.render_onboarding_launch_error(cx),
+                window,
+                true,
+            );
         }
         if self.account_sign_in.visible {
             self.dump_state(window, cx);
