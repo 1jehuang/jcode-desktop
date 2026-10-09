@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ConnectionStatus {
+pub enum ConnectionStatus {
     Checking,
     Testing,
     Connected,
@@ -58,9 +58,9 @@ impl ConnectionStatus {
     }
 }
 
-pub(super) type ConnectionStatuses = HashMap<String, ConnectionStatus>;
+pub type ConnectionStatuses = HashMap<String, ConnectionStatus>;
 
-pub(super) fn status_for(
+pub fn status_for(
     statuses: Option<&ConnectionStatuses>,
     id: &str,
     loading: bool,
@@ -81,7 +81,7 @@ pub(super) fn status_for(
         .unwrap_or(ConnectionStatus::Unknown)
 }
 
-pub(super) fn parse_connection_statuses(json: &str) -> Option<ConnectionStatuses> {
+pub fn parse_connection_statuses(json: &str) -> Option<ConnectionStatuses> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
     let providers = value.get("providers")?.as_array()?;
     Some(
@@ -116,7 +116,7 @@ pub(super) fn parse_connection_statuses(json: &str) -> Option<ConnectionStatuses
 
 /// No --validate: opening a panel never issues paid model requests or alters logins.
 /// Bound process lifetime and output without blocking the UI or filling a stdout pipe.
-pub(super) fn fetch_connection_statuses() -> Option<ConnectionStatuses> {
+pub fn fetch_connection_statuses() -> Option<ConnectionStatuses> {
     if crate::harness::screenshot_mode() {
         return Some(
             [
@@ -162,7 +162,7 @@ pub(super) fn fetch_connection_statuses() -> Option<ConnectionStatuses> {
 
 /// Outcome of a live smoke test for one provider.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct LiveTestResult {
+pub struct LiveTestResult {
     pub status: ConnectionStatus,
     /// Why the test failed, from the doctor's validation result.
     pub error: Option<String>,
@@ -194,7 +194,7 @@ fn parse_live_results(json: &str) -> Option<HashMap<String, LiveTestResult>> {
 /// Send a real request through each configured provider (or just `provider`)
 /// and record the result. This spends a small amount of quota or credit, so
 /// it only runs when the user presses Test.
-pub(super) fn run_live_test(provider: Option<&str>) -> Option<HashMap<String, LiveTestResult>> {
+pub fn run_live_test(provider: Option<&str>) -> Option<HashMap<String, LiveTestResult>> {
     if crate::harness::screenshot_mode() {
         return None;
     }

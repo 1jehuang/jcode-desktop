@@ -16,13 +16,13 @@ const CHECK_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// No shell commands, blocking D-Bus calls, property cache, or UI activation.
 #[cfg(target_os = "linux")]
-pub(crate) async fn permitted() -> bool {
+pub async fn permitted() -> bool {
     let check = async { check_session().await.unwrap_or(false) };
     within(check, async_io::Timer::after(CHECK_TIMEOUT)).await
 }
 
 #[cfg(not(target_os = "linux"))]
-pub(crate) async fn permitted() -> bool {
+pub async fn permitted() -> bool {
     true
 }
 

@@ -22,8 +22,7 @@ pub(crate) fn bind_keys(cx: &mut gpui::App) {
 
 #[path = "panel_voice_overlay.rs"]
 mod overlay;
-#[path = "panel_voice_tag.rs"]
-pub(crate) mod tag;
+pub(crate) use jcode_desktop_voice::tag;
 
 #[cfg(test)]
 #[path = "panel_global_voice_tests.rs"]

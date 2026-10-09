@@ -16,15 +16,10 @@ mod diff_view;
 mod effort;
 mod example_prompts;
 mod fps_counter;
-#[cfg(target_os = "linux")]
-mod global_voice_input;
-mod global_voice_overlay;
-mod global_voice_session;
 mod html_preview;
 mod inline_image;
 mod input;
 mod live_profile;
-pub mod login_input;
 mod markdown;
 mod markdown_inline_code;
 pub mod memory;
@@ -64,6 +59,11 @@ pub(crate) use jcode_desktop_ui_core::{
     animation_clock, config, image_cache, prompt_background, pulse_text, render_stats, scrollbar,
     text_selection, theme, transition,
 };
+// Feature leaves with no Panel/Workspace involvement, in their own crates.
+pub use jcode_desktop_accounts_ui::login_input;
+#[cfg(target_os = "linux")]
+pub(crate) use jcode_desktop_voice::global_voice_input;
+pub(crate) use jcode_desktop_voice::{global_voice_overlay, global_voice_session};
 
 use gpui::{App, KeyBinding, Window};
 

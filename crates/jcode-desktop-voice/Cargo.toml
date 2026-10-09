@@ -1,0 +1,23 @@
+[package]
+name = "jcode-desktop-voice"
+version = "0.5.0"
+edition.workspace = true
+license.workspace = true
+description = "Jcode Desktop's voice leaves: global Copilot-key listener, OS voice overlay pill, session check, transcription tags"
+
+# Split out of jcode-desktop-ui so voice edits recompile a small crate instead
+# of the whole UI. Linked statically into the UI cdylib, so hot reload and the
+# host/UI ABI are unchanged. Must not depend on jcode-desktop-ui.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+gpui.workspace = true
+jcode-desktop-ui-core.workspace = true
+anyhow = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Same feature set as the UI's libc, preserving shared GPUI TypeIds.
+libc = { version = "0.2", features = ["extra_traits"] }
+zbus = "5.19"
+async-io = "2.6"

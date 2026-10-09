@@ -521,7 +521,7 @@ fn allowed_device_path(path: &Path) -> bool {
             .is_some_and(|n| n.ends_with("-event-kbd")))
 }
 
-pub(crate) struct Listener {
+pub struct Listener {
     registration: Registration,
     allowlist: Vec<PathBuf>,
     eligible: bool,
@@ -536,7 +536,7 @@ pub(crate) struct Listener {
     registration_ok: bool,
 }
 impl Listener {
-    pub(crate) fn new(allowlist: &[PathBuf]) -> io::Result<Self> {
+    pub fn new(allowlist: &[PathBuf]) -> io::Result<Self> {
         for path in allowlist {
             if !allowed_device_path(path) {
                 return Err(io::Error::new(
@@ -578,7 +578,7 @@ impl Listener {
             registration_ok: false,
         })
     }
-    pub(crate) fn set_active(&mut self, active: bool) {
+    pub fn set_active(&mut self, active: bool) {
         self.registration_ok = self
             .registration
             .update(
@@ -589,7 +589,7 @@ impl Listener {
     }
     /// Call for a valid chat with no modal. Defaults false (explicit opt-in).
     /// Disabling eligibility cancels any hold on the next poll.
-    pub(crate) fn set_eligible(&mut self, eligible: bool) {
+    pub fn set_eligible(&mut self, eligible: bool) {
         self.eligible = eligible;
         self.registration_ok = self
             .registration
@@ -601,7 +601,7 @@ impl Listener {
     }
     /// Treat a Copilot key that is already down as this window's own hold.
     /// Used once by a window that Shift+Copilot just opened.
-    pub(crate) fn adopt_held_key(&mut self) {
+    pub fn adopt_held_key(&mut self) {
         self.adopt_until = Some(Instant::now() + ADOPT_WINDOW);
     }
     fn adopt(&mut self, edges: &mut Vec<Edge>) {
@@ -632,7 +632,7 @@ impl Listener {
             None => edges.push(Edge::Tap),
         }
     }
-    pub(crate) fn ready(&self) -> bool {
+    pub fn ready(&self) -> bool {
         self.eligible && self.healthy && self.registration_ok && !self.devices.is_empty()
     }
     fn release(&mut self, edges: &mut Vec<Edge>) {
@@ -687,7 +687,7 @@ impl Listener {
         }
         Ok(())
     }
-    pub(crate) fn poll(&mut self) -> Vec<Edge> {
+    pub fn poll(&mut self) -> Vec<Edge> {
         let mut edges = Vec::new();
         if Instant::now() >= self.next_scan {
             self.next_scan = Instant::now() + RETRY;

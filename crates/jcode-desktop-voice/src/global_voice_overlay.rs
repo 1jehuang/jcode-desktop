@@ -34,7 +34,7 @@ const BAR_WIDTH: f32 = 2.;
 const BAR_GAP: f32 = 1.;
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Snapshot {
+pub struct Snapshot {
     /// Visible status, including connecting, listening, transcribing or an error.
     pub title: String,
     /// The same 24 chronological RMS samples used by the panel voice meter.
@@ -44,13 +44,13 @@ pub(crate) struct Snapshot {
     pub decided: bool,
 }
 
-pub(crate) struct VoiceOverlay {
+pub struct VoiceOverlay {
     snapshot: Snapshot,
 }
 
 /// How the OS pill is realized for a given platform and GPUI backend.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Backend {
+pub enum Backend {
     /// Native Wayland layer-shell surface. Fails on compositors without it.
     LayerShell,
     /// A platform "pop-up" window that never takes focus (X11, macOS, Windows).
@@ -61,7 +61,7 @@ pub(crate) enum Backend {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Os {
+pub enum Os {
     Linux,
     MacOs,
     Windows,
@@ -69,7 +69,7 @@ pub(crate) enum Os {
 }
 
 impl Os {
-    pub(crate) const fn current() -> Self {
+    pub const fn current() -> Self {
         if cfg!(target_os = "linux") {
             Os::Linux
         } else if cfg!(target_os = "macos") {
@@ -88,7 +88,7 @@ impl Os {
 ///
 /// LayerShell code is compiled only on Linux, whose target dependencies always
 /// enable GPUI's `wayland` feature (FreeBSD builds X11 only and is excluded).
-pub(crate) fn backend_for(os: Os, compositor: &str) -> Backend {
+pub fn backend_for(os: Os, compositor: &str) -> Backend {
     match os {
         Os::Linux if compositor == "Wayland" => Backend::LayerShell,
         Os::Linux if compositor == "X11" => Backend::PopUp,
@@ -97,20 +97,20 @@ pub(crate) fn backend_for(os: Os, compositor: &str) -> Backend {
     }
 }
 
-pub(crate) fn current_backend(cx: &App) -> Backend {
+pub fn current_backend(cx: &App) -> Backend {
     backend_for(Os::current(), cx.compositor_name())
 }
 
 /// Whether an OS pill can be attempted at all. A layer-shell compositor may
 /// still reject the surface at open time, which the owner handles by
 /// disabling global capture rather than recording invisibly.
-pub(crate) fn available(cx: &App) -> bool {
+pub fn available(cx: &App) -> bool {
     current_backend(cx) != Backend::Unsupported
 }
 
 /// Error for Wayland compositors that lack `zwlr_layer_shell_v1`.
 #[derive(Debug)]
-pub(crate) struct NoLayerShell;
+pub struct NoLayerShell;
 impl std::fmt::Display for NoLayerShell {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(
@@ -121,7 +121,7 @@ impl std::fmt::Display for NoLayerShell {
 }
 impl std::error::Error for NoLayerShell {}
 
-pub(crate) fn open(snapshot: Snapshot, cx: &mut App) -> anyhow::Result<WindowHandle<VoiceOverlay>> {
+pub fn open(snapshot: Snapshot, cx: &mut App) -> anyhow::Result<WindowHandle<VoiceOverlay>> {
     let backend = current_backend(cx);
     let options = match backend {
         Backend::Unsupported => anyhow::bail!(
@@ -228,7 +228,7 @@ fn meter_height(level: f32) -> f32 {
 }
 
 impl VoiceOverlay {
-    pub(crate) fn set_snapshot(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
+    pub fn set_snapshot(&mut self, snapshot: Snapshot, cx: &mut Context<Self>) {
         if self.snapshot != snapshot {
             self.snapshot = snapshot;
             cx.notify();

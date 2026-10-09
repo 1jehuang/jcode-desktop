@@ -4270,6 +4270,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "jcode-desktop-accounts-ui"
+version = "0.5.0"
+dependencies = [
+ "gpui",
+ "jcode-desktop-harness",
+ "jcode-desktop-ui-core",
+ "jcode-sdk",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
 name = "jcode-desktop-api"
 version = "0.5.0"
 dependencies = [
@@ -4329,11 +4341,13 @@ dependencies = [
  "jcode-applet-types",
  "jcode-base",
  "jcode-core",
+ "jcode-desktop-accounts-ui",
  "jcode-desktop-api",
  "jcode-desktop-harness",
  "jcode-desktop-model",
  "jcode-desktop-motion",
  "jcode-desktop-ui-core",
+ "jcode-desktop-voice",
  "jcode-fuzzy",
  "jcode-provider-core",
  "jcode-render-core",
@@ -4373,6 +4387,18 @@ dependencies = [
  "tempfile",
  "toml 0.8.23",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "jcode-desktop-voice"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "async-io",
+ "gpui",
+ "jcode-desktop-ui-core",
+ "libc",
+ "zbus",
 ]
 
 [[package]]

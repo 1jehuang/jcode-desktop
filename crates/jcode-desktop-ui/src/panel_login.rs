@@ -5,13 +5,11 @@ use jcode_sdk::{
     AuthClient, AuthFlow, AuthInputKind, AuthOptions, AuthPrompt, LoginMethod, LoginProvider,
 };
 
-#[path = "panel_login_status.rs"]
-mod connection;
+use jcode_desktop_accounts_ui::connection;
 use connection::{ConnectionStatus, ConnectionStatuses};
 #[path = "panel_login_accounts.rs"]
 mod accounts;
-#[path = "panel_login_catalog.rs"]
-mod catalog;
+use jcode_desktop_accounts_ui::catalog;
 #[path = "panel_provider_picker.rs"]
 mod provider_picker;
 #[cfg(test)]

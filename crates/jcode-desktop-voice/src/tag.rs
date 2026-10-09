@@ -8,14 +8,14 @@ const CLOSE: &str = "</transcription>";
 
 /// Wrap a transcript for the model. The tags stay in the editable draft so
 /// the user can see and remove them before sending.
-pub(crate) fn wrap(text: &str) -> String {
+pub fn wrap(text: &str) -> String {
     format!("{OPEN}\n{}\n{CLOSE}", text.trim())
 }
 
 /// Remove transcription tags for display. Returns the visible text and
 /// whether any complete tagged segment was found. Unbalanced text is kept
 /// verbatim so an unrelated literal `<transcription>` is never hidden.
-pub(crate) fn strip(text: &str) -> (Cow<'_, str>, bool) {
+pub fn strip(text: &str) -> (Cow<'_, str>, bool) {
     if !text.contains(OPEN) || !text.contains(CLOSE) {
         return (Cow::Borrowed(text), false);
     }

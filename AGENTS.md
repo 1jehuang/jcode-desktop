@@ -53,6 +53,12 @@
     `render_stats`, `text_selection`, `prompt_background`, `scrollbar`,
     `image_cache`, `animation_clock`, `transition`, `pulse_text`.
     Run `justrust test -p jcode-desktop-ui-core`.
+  - `crates/jcode-desktop-voice` (GPUI): `global_voice_input`,
+    `global_voice_overlay`, `global_voice_session`, `tag` (the UI's
+    `panel::voice::tag`). Run `justrust test -p jcode-desktop-voice`.
+  - `crates/jcode-desktop-accounts-ui` (GPUI): `login_input`, `catalog` and
+    `connection` (the UI's `panel::login::{catalog, connection}`).
+    Run `justrust test -p jcode-desktop-accounts-ui`.
   - `crates/jcode-desktop-motion`, `crates/jcode-desktop-api`: likewise.
   The UI re-exports these modules at their old `crate::` paths, so find a
   module's home with `ls crates/*/src/<module>.rs`. Run the UI tests only when

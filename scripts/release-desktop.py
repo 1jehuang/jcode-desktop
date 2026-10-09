@@ -34,11 +34,13 @@ DOWNSTREAM = {
     "macos-public-release-verify.yml": "Accept",
     "discord-release.yml": "Announce",
 }
-MANIFESTS = ("Cargo.toml", "crates/jcode-desktop-api/Cargo.toml",
+MANIFESTS = ("Cargo.toml", "crates/jcode-desktop-accounts-ui/Cargo.toml",
+             "crates/jcode-desktop-api/Cargo.toml",
              "crates/jcode-desktop-harness/Cargo.toml",
              "crates/jcode-desktop-model/Cargo.toml",
              "crates/jcode-desktop-motion/Cargo.toml", "crates/jcode-desktop-ui/Cargo.toml",
-             "crates/jcode-desktop-ui-core/Cargo.toml")
+             "crates/jcode-desktop-ui-core/Cargo.toml",
+             "crates/jcode-desktop-voice/Cargo.toml")
 
 
 def validate_versions(sha, version):

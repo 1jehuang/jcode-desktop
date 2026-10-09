@@ -3,7 +3,7 @@ use super::connection::{ConnectionStatus, ConnectionStatuses, status_for};
 use jcode_sdk::{LoginMethod, LoginProvider};
 use std::collections::HashMap;
 
-pub(super) type MethodUsage = HashMap<String, u64>;
+pub type MethodUsage = HashMap<String, u64>;
 
 fn usage_key(provider: &LoginProvider) -> &str {
     match provider.id {
@@ -29,7 +29,7 @@ fn health_group(status: ConnectionStatus) -> u8 {
     }
 }
 
-pub(super) fn method_label(method: LoginMethod) -> &'static str {
+pub fn method_label(method: LoginMethod) -> &'static str {
     match method {
         LoginMethod::ApiKey => "API key",
         LoginMethod::OAuth => "OAuth",
@@ -37,7 +37,7 @@ pub(super) fn method_label(method: LoginMethod) -> &'static str {
     }
 }
 
-pub(super) fn filtered_providers(
+pub fn filtered_providers(
     providers: &[LoginProvider],
     query: &str,
     statuses: Option<&ConnectionStatuses>,
