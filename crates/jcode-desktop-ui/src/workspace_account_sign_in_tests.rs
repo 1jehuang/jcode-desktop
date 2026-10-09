@@ -77,7 +77,7 @@ fn email_field_sends_offline_code_and_start_over_returns(cx: &mut gpui::TestAppC
     let (workspace, vcx) = setup(cx);
     assert!(vcx.debug_bounds("account-sign-in-card").is_some());
     assert!(vcx.debug_bounds("account-sign-in-brand").is_some());
-    assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-finish").is_some());
     assert!(vcx.debug_bounds("account-sign-in-field").is_some());
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
     workspace.read_with(vcx, |w, _| {
@@ -169,7 +169,7 @@ fn typing_six_digits_signs_in_offline(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn skip_and_escape_preserve_composer_draft_and_focus(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    click(vcx, "account-sign-in-continue");
+    click(vcx, "account-sign-in-finish");
     assert_draft_and_focus(&workspace, vcx);
     workspace.update_in(vcx, |w, window, cx| w.open_account_sign_in(window, cx));
     vcx.run_until_parked();
@@ -191,10 +191,7 @@ fn choice(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) -> O
 #[gpui::test]
 fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::ThemeToggle));
-    vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Finish));
+    // Left column top to bottom: the email field and its button first.
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Field));
     // Tab puts the caret in the field, so typing and Enter go to it.
@@ -204,7 +201,7 @@ fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAp
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(w.account_sign_in.stage, Stage::Code { .. }))
     });
-    vcx.simulate_keystrokes("tab tab tab tab tab");
+    vcx.simulate_keystrokes("tab tab tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::OpenGmail));
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::StartOver));
@@ -213,11 +210,18 @@ fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAp
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(w.account_sign_in.stage, Stage::Welcome))
     });
+    window_focus(&workspace, vcx);
     vcx.simulate_keystrokes("shift-tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
-    vcx.simulate_keystrokes("enter");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Finish));
+    vcx.simulate_keystrokes("shift-tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::ThemeToggle));
+    vcx.simulate_keystrokes("tab enter");
     vcx.run_until_parked();
     assert_draft_and_focus(&workspace, vcx);
+}
+
+fn window_focus(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) {
+    workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
 }
 
 #[gpui::test]
@@ -271,7 +275,7 @@ fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppCont
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.account_sign_in.selected_imports(), vec![0])
     });
-    click(vcx, "account-sign-in-continue");
+    click(vcx, "account-sign-in-finish");
     assert_draft_and_focus(&workspace, vcx);
     workspace.read_with(vcx, |w, _| {
         assert!(w.account_sign_in.candidates.is_empty());
@@ -522,39 +526,35 @@ fn detected_emails_hidden_without_email_sign_in(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn sign_in_tab_holds_email_icon_and_skip_on_the_right_edge(cx: &mut gpui::TestAppContext) {
+fn email_sign_in_lives_in_the_left_column_and_the_demo_is_untouched(
+    cx: &mut gpui::TestAppContext,
+) {
     let (workspace, vcx) = setup(cx);
+    workspace.update(vcx, |w, cx| {
+        w.set_account_emails(vec![detected("me@home.example", vec!["Codex"])], cx)
+    });
+    vcx.run_until_parked();
+    let card = vcx.debug_bounds("account-sign-in-card").unwrap();
     let right = vcx.debug_bounds("account-sign-in-right").unwrap();
-    let tab = vcx.debug_bounds("account-sign-in-panel").unwrap();
-    // A folder tab clipped by the right edge, below the demo.
-    assert!(
-        (tab.right() - right.right()).abs() < px(1.),
-        "{tab:?} {right:?}"
-    );
-    assert!(tab.size.width < right.size.width * 0.7, "{tab:?}");
     for selector in [
+        "account-sign-in-email",
+        "account-emails",
         "account-sign-in-field",
         "account-sign-in-primary",
-        "account-sign-in-continue",
+        "account-sign-in-finish",
     ] {
         let bounds = vcx.debug_bounds(selector).expect(selector);
-        assert!(
-            tab.contains(&bounds.center()),
-            "{selector} is inside the tab: {bounds:?}"
-        );
+        assert!(bounds.right() <= card.right() + px(1.), "{selector}: {bounds:?}");
+        assert!(bounds.right() <= right.left() + px(1.), "{selector}: {bounds:?}");
     }
-    // Sign in and skip are icons, not labelled buttons.
-    for selector in ["account-sign-in-primary", "account-sign-in-continue"] {
-        let bounds = vcx.debug_bounds(selector).unwrap();
-        assert!(
-            bounds.size.width <= px(34.) && bounds.size.height <= px(34.),
-            "{selector}: {bounds:?}"
-        );
-    }
-    let card = vcx.debug_bounds("account-sign-in-card").unwrap();
-    assert!(tab.left() >= card.right());
+    // The email comes before the provider logins, right under the title.
+    let email = vcx.debug_bounds("account-sign-in-email").unwrap();
+    let theme = vcx.debug_bounds("account-theme-toggle").unwrap();
+    assert!(email.bottom() <= theme.top(), "{email:?} {theme:?}");
+    // No sign-in tab or skip icon over the demo any more.
+    assert!(vcx.debug_bounds("account-sign-in-continue").is_none());
     let demo = vcx.debug_bounds("account-sign-in-demo").unwrap();
-    assert!(demo.size.height > right.size.height * 0.7, "{demo:?}");
+    assert!(demo.size.height > right.size.height * 0.9, "{demo:?}");
     vcx.executor().advance_clock(Duration::from_secs(5));
     vcx.run_until_parked();
     let panel = workspace.read_with(vcx, |w, _| {
@@ -564,38 +564,28 @@ fn sign_in_tab_holds_email_icon_and_skip_on_the_right_edge(cx: &mut gpui::TestAp
         assert!(panel.demo);
         assert!(!panel.items.is_empty(), "the replay is actively streaming");
     });
-    click(vcx, "account-sign-in-continue");
+    // The code step replaces the picker in the same spot.
+    click(vcx, "account-sign-in-primary");
+    assert!(vcx.debug_bounds("account-emails").is_none());
+    let sent = vcx.debug_bounds("account-sign-in-sent").unwrap();
+    assert!(sent.right() <= card.right() + px(1.), "{sent:?}");
+    click(vcx, "account-sign-in-finish");
     assert_draft_and_focus(&workspace, vcx);
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.demo.is_none()));
 }
 
 #[gpui::test]
-fn typing_docks_the_tab_over_the_demo_composer(cx: &mut gpui::TestAppContext) {
+fn typing_anywhere_goes_to_the_left_email_field(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.docked.is_none()));
-    let rest = vcx.debug_bounds("account-sign-in-panel").unwrap();
-    // Typing with nothing focused keeps the keystroke and docks the tab.
-    workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
+    // Typing with nothing focused keeps the keystroke in the email field.
+    window_focus(&workspace, vcx);
     vcx.simulate_keystrokes("m e");
     workspace.read_with(vcx, |w, cx| {
-        assert!(w.account_sign_in.docked.is_some());
         assert_eq!(
             w.account_sign_in.input.as_ref().unwrap().read(cx).content,
             "me"
         );
     });
-    vcx.executor().advance_clock(Duration::from_secs(1));
-    vcx.update(|window, _| window.refresh());
-    vcx.run_until_parked();
-    let docked = vcx.debug_bounds("account-sign-in-panel").unwrap();
-    let composer = vcx
-        .debug_bounds("prompt-input")
-        .or_else(|| vcx.debug_bounds("composer"));
-    assert!(docked.top() < rest.top() - px(100.), "{docked:?} {rest:?}");
-    assert!(docked.size.width > rest.size.width, "{docked:?} {rest:?}");
-    if let Some(composer) = composer {
-        assert!(docked.intersects(&composer), "{docked:?} {composer:?}");
-    }
     vcx.simulate_input("@example.com");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
@@ -607,7 +597,7 @@ fn typing_docks_the_tab_over_the_demo_composer(cx: &mut gpui::TestAppContext) {
 #[gpui::test]
 fn settings_can_reopen_skipped_account_onboarding(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    click(vcx, "account-sign-in-continue");
+    click(vcx, "account-sign-in-finish");
     super::super::tests::click_sidebar_navigation(&workspace, vcx, "sidebar-settings-tab");
     assert!(vcx.debug_bounds("workspace-settings").is_some());
     click(vcx, "settings-account-sign-in");
@@ -638,13 +628,13 @@ fn error_and_complete_render_without_credentials(cx: &mut gpui::TestAppContext) 
     });
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("account-sign-in-primary").is_none());
-    assert!(vcx.debug_bounds("account-sign-in-continue").is_some());
+    assert!(vcx.debug_bounds("account-sign-in-status").is_some());
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
     workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::ThemeToggle));
-    vcx.simulate_keystrokes("shift-tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
+    vcx.simulate_keystrokes("tab");
+    assert_eq!(choice(&workspace, vcx), Some(Choice::Finish));
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     assert_draft_and_focus(&workspace, vcx);
@@ -672,17 +662,15 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
         });
         vcx.run_until_parked();
         let card = vcx.debug_bounds("account-sign-in-card").unwrap();
-        let proceed = vcx.debug_bounds("account-sign-in-continue").unwrap();
+        let finish = vcx.debug_bounds("account-sign-in-finish").unwrap();
         assert!(
-            proceed.left() >= px(0.) && proceed.right() <= px(360.) + px(1.),
-            "{proceed:?}"
+            finish.left() >= px(0.) && finish.right() <= px(360.) + px(1.),
+            "{finish:?}"
         );
         assert!(
-            proceed.bottom() <= px(800.) && proceed.top() >= card.bottom() - px(1.),
-            "{proceed:?}"
+            finish.bottom() <= px(800.) && finish.top() >= card.bottom() - px(1.),
+            "{finish:?}"
         );
-        let bar = vcx.debug_bounds("account-sign-in-panel").unwrap();
-        assert!(bar.bottom() <= px(800.) + px(1.), "{bar:?}");
         assert!(
             card.left() >= px(0.) && card.right() <= px(360.),
             "{card:?}"
@@ -691,18 +679,16 @@ fn compact_360px_card_and_controls_stay_within_window(cx: &mut gpui::TestAppCont
             card.top() >= px(0.) && card.bottom() <= px(800.),
             "{card:?}"
         );
+        // The email controls scroll with the left column and never overflow it.
         for selector in [
+            "account-sign-in-panel",
             "account-sign-in-primary",
             "account-sign-in-back",
             "account-sign-in-field",
         ] {
             if let Some(bounds) = vcx.debug_bounds(selector) {
                 assert!(
-                    bounds.left() >= px(0.) && bounds.right() <= px(360.),
-                    "{selector}: {bounds:?}"
-                );
-                assert!(
-                    bounds.top() >= card.bottom() - px(1.) && bounds.bottom() <= px(800.),
+                    bounds.left() >= card.left() && bounds.right() <= card.right() + px(1.),
                     "{selector}: {bounds:?}"
                 );
             }
@@ -785,7 +771,7 @@ fn skip_cancels_pending_gpui_task_before_restoring_composer(cx: &mut gpui::TestA
     vcx.run_until_parked();
     assert!(!cancelled.load(Ordering::SeqCst));
     workspace.read_with(vcx, |w, _| assert!(w.account_sign_in.task.is_some()));
-    click(vcx, "account-sign-in-continue");
+    click(vcx, "account-sign-in-finish");
     assert!(
         cancelled.load(Ordering::SeqCst),
         "Skip must drop the pending future, not just hide onboarding"
@@ -898,7 +884,7 @@ fn real_http_email_code_wrong_then_right_signs_in(cx: &mut gpui::TestAppContext)
     assert!(wire[1..].iter().all(
         |r| r.starts_with("POST /v1/auth/email/verify ") && r.contains("isolated-login-token")
     ));
-    click(vcx, "account-sign-in-continue");
+    click(vcx, "account-sign-in-finish");
     assert_draft_and_focus(&workspace, vcx);
 }
 
@@ -952,7 +938,7 @@ fn real_http_send_failure_and_expired_code_are_recoverable(cx: &mut gpui::TestAp
         );
         assert!(!w.account_sign_in.connected);
     });
-    click(vcx, "account-sign-in-continue");
+    click(vcx, "account-sign-in-finish");
     assert_draft_and_focus(&workspace, vcx);
 }
 
@@ -1007,17 +993,16 @@ fn logins_split_into_in_jcode_and_importable(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn paused_email_shows_only_continue_and_typing_forwards_to_a_panel(cx: &mut gpui::TestAppContext) {
+fn paused_email_shows_only_finish_and_typing_forwards_to_a_panel(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup_with_email(cx, false);
     assert!(vcx.debug_bounds("account-sign-in-field").is_none());
     assert!(vcx.debug_bounds("account-sign-in-primary").is_none());
-    assert!(vcx.debug_bounds("account-sign-in-continue").is_none());
+    assert!(vcx.debug_bounds("account-sign-in-email").is_none());
     assert!(vcx.debug_bounds("account-sign-in-panel").is_none());
     assert!(vcx.debug_bounds("panel-build").is_none());
     workspace.read_with(vcx, |w, _| {
         assert!(!w.account_sign_in.choices().contains(&Choice::Field));
-        assert!(!w.account_sign_in.choices().contains(&Choice::Continue));
-        assert!(!w.account_sign_in.can_dock());
+        assert!(!w.account_sign_in.field_open());
     });
 
     vcx.simulate_input(" fix the sidebar");
