@@ -166,6 +166,10 @@ fn resumed_transcript_keeps_cards_clear_of_the_composer_footer(cx: &mut gpui::Te
         let handle = vcx.update(|window, _| window.window_handle());
         vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
         vcx.run_until_parked();
+        // The composer floats over the transcript and is measured after
+        // paint. Let the list settle on that padding.
+        panel.update(vcx, |_, cx| cx.notify());
+        vcx.run_until_parked();
         let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
         let last_row = vcx.debug_bounds("transcript-row-1").unwrap();
         let footer = vcx.debug_bounds("panel-meta").unwrap();
@@ -173,8 +177,8 @@ fn resumed_transcript_keeps_cards_clear_of_the_composer_footer(cx: &mut gpui::Te
         assert!(last_row.bottom() <= viewport.bottom() + px(1.));
         let tabs = vcx.debug_bounds("composer-tabs").unwrap();
         assert!(
-            tabs.top() - viewport.bottom() >= px(8.),
-            "last card must not crowd the composer tabs: {viewport:?}, {tabs:?}"
+            tabs.top() - last_row.bottom() >= px(8.),
+            "last card must not crowd the composer tabs: {last_row:?}, {tabs:?}"
         );
         assert!(footer.top() >= input.bottom());
         assert!(input.bottom() <= px(height));

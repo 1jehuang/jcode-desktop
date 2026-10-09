@@ -46,9 +46,9 @@ impl ListGeometry {
         })
     }
 
-    fn from_list(state: &ListState) -> Option<Self> {
+    fn from_list(state: &ListState, bottom_inset: f32) -> Option<Self> {
         Self::new(
-            state.viewport_bounds().size.height.into(),
+            f32::from(state.viewport_bounds().size.height) - bottom_inset,
             state.max_offset_for_scrollbar().y.into(),
             -f32::from(state.scroll_px_offset_for_scrollbar().y),
         )
@@ -92,6 +92,7 @@ type ScrollStart = Box<dyn Fn(&mut Window, &mut App)>;
 struct InteractiveListScrollbar {
     state: ListState,
     selector: &'static str,
+    bottom_inset: f32,
     on_scroll_start: ScrollStart,
     on_scroll_finished: Rc<dyn Fn(&mut Window, &mut App)>,
 }
@@ -114,9 +115,23 @@ pub fn interactive_vertical_list(
     on_scroll_start: impl Fn(&mut Window, &mut App) + 'static,
     on_scroll_finished: impl Fn(&mut Window, &mut App) + 'static,
 ) -> AnyElement {
+    interactive_vertical_list_with_inset(state, selector, 0.0, on_scroll_start, on_scroll_finished)
+}
+
+/// [`interactive_vertical_list`] for a list whose bottom `bottom_inset` pixels
+/// are covered by a floating overlay (such as a composer). The track ends
+/// above the overlay, so the thumb stays visible at the end of the content.
+pub fn interactive_vertical_list_with_inset(
+    state: &ListState,
+    selector: &'static str,
+    bottom_inset: f32,
+    on_scroll_start: impl Fn(&mut Window, &mut App) + 'static,
+    on_scroll_finished: impl Fn(&mut Window, &mut App) + 'static,
+) -> AnyElement {
     InteractiveListScrollbar {
         state: state.clone(),
         selector,
+        bottom_inset: bottom_inset.max(0.0),
         on_scroll_start: Box::new(on_scroll_start),
         on_scroll_finished: Rc::new(on_scroll_finished),
     }
@@ -126,7 +141,8 @@ pub fn interactive_vertical_list(
 impl RenderOnce for InteractiveListScrollbar {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let drag = window.use_keyed_state((self.selector, 0usize), cx, |_, _| None::<ThumbDrag>);
-        let Some(geometry) = ListGeometry::from_list(&self.state) else {
+        let bottom_inset = self.bottom_inset;
+        let Some(geometry) = ListGeometry::from_list(&self.state, bottom_inset) else {
             drag.update(cx, |drag, _| {
                 drag.take();
             });
@@ -150,7 +166,8 @@ impl RenderOnce for InteractiveListScrollbar {
             .cursor_default()
             .on_mouse_down(MouseButton::Left, move |event, window, cx| {
                 (self.on_scroll_start)(window, cx);
-                let Some(current_geometry) = ListGeometry::from_list(&self.state) else {
+                let Some(current_geometry) = ListGeometry::from_list(&self.state, bottom_inset)
+                else {
                     return;
                 };
                 let y = f32::from(event.position.y);
@@ -401,7 +418,7 @@ mod tests {
         assert!(list.is_scrollbar_dragging());
         assert_eq!(list.scroll_px_offset_for_scrollbar().y, px(0.));
         vcx.run_until_parked();
-        let geometry = ListGeometry::from_list(&list).unwrap();
+        let geometry = ListGeometry::from_list(&list, 0.0).unwrap();
         let outside = point(px(10.), grab.y + px(30.));
         vcx.simulate_mouse_move(outside, MouseButton::Left, Default::default());
         vcx.run_until_parked();

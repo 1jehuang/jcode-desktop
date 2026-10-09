@@ -14,6 +14,11 @@ pub(super) const TAB_HEIGHT: f32 = 22.;
 const PILL_GAP: f32 = 4.;
 /// Distance from the input's right edge to the in-box voice button.
 const VOICE_INSET: f32 = 8.;
+/// Height of the soft ramp above the floating composer.
+const DOCK_FADE: f32 = 28.;
+/// Opacity of the veil behind the composer. High enough that history behind
+/// the controls is a quiet hint, never competing with the draft.
+const DOCK_VEIL_ALPHA: f32 = 0.86;
 /// Right padding the input reserves so text never runs under the voice
 /// button. Linux shows a single-glyph keycap; other platforms spell out the
 /// chord, so their button is wider.
@@ -268,6 +273,97 @@ impl Panel {
                     ),
             )
             .child(pills)
+            .into_any_element()
+    }
+
+    /// The ordinary composer, floating over the bottom of the transcript.
+    /// History scrolls beneath a translucent veil instead of stopping at a
+    /// hard edge. The veil eases from clear to mostly opaque so text behind
+    /// the controls reads as a soft, frosted hint rather than competing ink.
+    /// Its measured height pads the list so the live end clears it.
+    pub(super) fn render_composer_dock(
+        &mut self,
+        input_bounds: std::rc::Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let background = Theme::global().panel_background(self.surface_focused);
+        let veil = |alpha: f32| gpui::Rgba {
+            a: alpha,
+            ..background
+        };
+        let panel = cx.entity().downgrade();
+        div()
+            .debug_selector(|| "composer-dock".into())
+            .absolute()
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .flex()
+            .flex_col()
+            // Do not let clicks reach transcript rows hidden under the veil,
+            // but keep wheel and touchpad scrolling the transcript.
+            .block_mouse_except_scroll()
+            .child(
+                div()
+                    .debug_selector(|| "composer-veil".into())
+                    .w_full()
+                    .h(px(DOCK_FADE))
+                    .bg(gpui::linear_gradient(
+                        0.,
+                        gpui::linear_color_stop(veil(DOCK_VEIL_ALPHA), 0.),
+                        gpui::linear_color_stop(veil(0.), 1.),
+                    )),
+            )
+            .child(
+                div()
+                    .w_full()
+                    .min_w_0()
+                    .px_2()
+                    .pb_2()
+                    .bg(veil(DOCK_VEIL_ALPHA))
+                    .when(self.recovery_picker_open, |el| {
+                        el.child(self.render_recovery_model_picker(cx))
+                    })
+                    .children(self.render_voice_overlay(window, cx))
+                    .children(self.render_preview_badge(cx))
+                    .child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .children(self.render_prompt_queue(cx))
+                            .children(self.render_voice_pending())
+                            .child(self.render_composer(window, cx))
+                            .child(startup::input_marker(input_bounds)),
+                    ),
+            )
+            .child(
+                gpui::canvas(
+                    |_, _, _| (),
+                    move |bounds, _, _, cx| {
+                        // Measure after paint. The fade is see-through, so
+                        // only the solid part below it reserves list space.
+                        let height = (f32::from(bounds.size.height) - DOCK_FADE).max(0.).round();
+                        let panel = panel.clone();
+                        cx.defer(move |cx| {
+                            let Some(entity) = panel.upgrade() else {
+                                return;
+                            };
+                            if (entity.read(cx).composer_dock_height - height).abs() < 0.5 {
+                                return;
+                            }
+                            entity.update(cx, |panel, cx| {
+                                panel.composer_dock_height = height;
+                                cx.notify();
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
             .into_any_element()
     }
 

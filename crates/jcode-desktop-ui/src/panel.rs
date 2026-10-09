@@ -134,9 +134,6 @@ pub(crate) type SessionOpener =
 // Keep the last message/card clear of the composer and its metadata. This is
 // outside the scrolling list so it remains visible even while reading history.
 const TRANSCRIPT_BOTTOM_GAP: f32 = 12.0;
-/// Height of the soft veil over the transcript's bottom edge while scrolled
-/// away from the live end.
-const TRANSCRIPT_FADE_HEIGHT: f32 = 44.0;
 
 fn command_unavailable_message(input: &str) -> String {
     let name = input.split_whitespace().next().unwrap_or(input);
@@ -493,6 +490,12 @@ pub struct Panel {
     tail_glide: tail_glide::TailGlide,
     stick_to_bottom: bool,
     transcript_end_visible: bool,
+    /// Height of the floating composer dock. The transcript scrolls beneath
+    /// it, padded by this much so the live end still clears the composer.
+    composer_dock_height: f32,
+    /// Padding last applied to the final transcript row. A change must
+    /// remeasure that row, whose cached height includes it.
+    transcript_end_pad: f32,
     /// A detached reload offset cannot be applied until asynchronous history
     /// has rebuilt the scroll region. Painting the empty panel clamps it to 0.
     pending_history_scroll: Option<(f32, f32)>,
@@ -961,6 +964,8 @@ impl Panel {
             tail_glide: Default::default(),
             stick_to_bottom: true,
             transcript_end_visible: true,
+            composer_dock_height: 0.0,
+            transcript_end_pad: 0.0,
             pending_history_scroll: None,
             bridge,
             preview_state: None,
@@ -4377,7 +4382,6 @@ impl Render for Panel {
             })
             .size_full()
             .text_size(px(13.5))
-            .pb(px(TRANSCRIPT_BOTTOM_GAP))
             .overflow_hidden()
             // Clear and collect only this frame's painted leaf geometry before
             // the virtual list paints. Logical text is maintained independently.
@@ -4422,6 +4426,18 @@ impl Render for Panel {
                 layout.committed = true;
             }
         }
+        // The ordinary composer floats over the bottom of the transcript, so
+        // earlier history scrolls beneath its translucent veil instead of
+        // being cut off at a hard edge. The list pads its end by the dock.
+        let docked_composer =
+            !fresh_session && self.startup_layout.is_none() && !self.transcript_only;
+        let dock_pad = if docked_composer {
+            self.composer_dock_height + TRANSCRIPT_BOTTOM_GAP
+        } else {
+            0.0
+        };
+        let transcript_shell =
+            transcript_shell.when(!docked_composer, |el| el.pb(px(TRANSCRIPT_BOTTOM_GAP)));
         if self
             .input
             .read(cx)
@@ -4472,6 +4488,13 @@ impl Render for Panel {
             (theme.FONT_UI, theme.FONT_AI, theme.FONT_MONO),
         ) {
             self.transcript_list.remeasure_items(range);
+        }
+        if (self.transcript_end_pad - dock_pad).abs() > 0.5 {
+            self.transcript_end_pad = dock_pad;
+            if row_count > 0 {
+                self.transcript_list
+                    .remeasure_items(row_count - 1..row_count);
+            }
         }
         if row_count > 0 {
             if let Some((_, y)) = self.pending_history_scroll.take() {
@@ -4564,9 +4587,18 @@ impl Render for Panel {
                     list(
                         self.transcript_list.clone(),
                         move |row_index, window, cx| {
+                            // The last row carries the floating composer's
+                            // height as padding, so the live end scrolls clear
+                            // of it while history passes beneath its veil.
+                            let end_pad = if row_index + 1 == row_count {
+                                dock_pad
+                            } else {
+                                0.0
+                            };
                             if row_index == list_rows.len() {
                                 return div()
                                     .relative()
+                                    .pb(px(end_pad))
                                     .child(panel.read(cx).render_transcript_activity())
                                     .child(latest::end_marker(
                                         row_end_visible.clone(),
@@ -4607,6 +4639,7 @@ impl Render for Panel {
                                     .relative()
                                     .px_3()
                                     .pt(px(top_padding))
+                                    .pb(px(end_pad))
                                     .child(element)
                                     .when(row_index + 1 == row_count, |el| {
                                         el.child(latest::end_marker(
@@ -4898,75 +4931,39 @@ impl Render for Panel {
                     )
                     .child(transcript)
                     .children(self.render_pinned_prompt(window, cx))
-                    // Mirror the pinned prompt's soft top edge at the bottom
-                    // while more transcript continues below the viewport.
-                    // Hidden at the live end so the newest line stays crisp.
-                    .when(show_jump_chip && self.startup_layout.is_none(), |el| {
-                        let background = Theme::global().panel_background(self.surface_focused);
-                        let clear = gpui::Rgba {
-                            a: 0.,
-                            ..background
-                        };
-                        let half = gpui::Rgba {
-                            a: 0.55,
-                            ..background
-                        };
-                        // Two stacked ramps approximate an eased blur-like
-                        // falloff: a long soft veil, then a firmer edge
-                        // where the transcript meets the composer.
-                        el.child(
-                            div()
-                                .debug_selector(|| "transcript-bottom-fade".into())
-                                .absolute()
-                                .left_0()
-                                .bottom_0()
-                                .w_full()
-                                .h(px(TRANSCRIPT_FADE_HEIGHT))
-                                .flex()
-                                .flex_col()
-                                .child(div().w_full().flex_1().bg(gpui::linear_gradient(
-                                    0.,
-                                    gpui::linear_color_stop(half, 0.),
-                                    gpui::linear_color_stop(clear, 1.),
-                                )))
-                                .child(div().w_full().h(px(TRANSCRIPT_FADE_HEIGHT * 0.4)).bg(
-                                    gpui::linear_gradient(
-                                        0.,
-                                        gpui::linear_color_stop(background, 0.),
-                                        gpui::linear_color_stop(half, 1.),
-                                    ),
-                                )),
-                        )
+                    .when(docked_composer, |el| {
+                        el.child(self.render_composer_dock(input_bounds.clone(), window, cx))
                     })
                     .child(startup::input_marker(body_bounds.clone()))
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))
                     .child(self.tail_growth_observer(cx))
                     .when(!startup_growing, |el| {
-                        el.child(crate::scrollbar::interactive_vertical_list(
-                        &self.transcript_list,
-                        "transcript-scrollbar",
-                        {
-                            let panel = cx.entity().downgrade();
-                            move |_, cx| {
-                                let _ = panel.update(cx, |panel, cx| {
-                                    panel.cancel_transcript_momentum();
-                                    panel.release_startup_preview();
-                                    panel.stick_to_bottom = false;
-                                    cx.notify();
-                                });
-                            }
-                        },
-                        {
-                            let panel = cx.entity().downgrade();
-                            move |_, cx| {
-                                let _ = panel.update(cx, |panel, cx| {
-                                    panel.resume_transcript_follow_after_scroll(cx);
-                                    cx.notify();
-                                });
-                            }
-                        },
-                    ))
+                        el.child(crate::scrollbar::interactive_vertical_list_with_inset(
+                            &self.transcript_list,
+                            "transcript-scrollbar",
+                            dock_pad,
+                            {
+                                let panel = cx.entity().downgrade();
+                                move |_, cx| {
+                                    let _ = panel.update(cx, |panel, cx| {
+                                        panel.cancel_transcript_momentum();
+                                        panel.release_startup_preview();
+                                        panel.stick_to_bottom = false;
+                                        cx.notify();
+                                    });
+                                }
+                            },
+                            {
+                                let panel = cx.entity().downgrade();
+                                move |_, cx| {
+                                    let _ = panel.update(cx, |panel, cx| {
+                                        panel.resume_transcript_follow_after_scroll(cx);
+                                        cx.notify();
+                                    });
+                                }
+                            },
+                        ))
                     })
                     // Float catch-up activity above the composer, centered in the
                     // transcript rather than tucked into the scrollbar corner.
@@ -4982,7 +4979,7 @@ impl Render for Panel {
                                         );
                                         el.top(px((height - 32.).max(0.)))
                                     } else {
-                                        el.bottom_2()
+                                        el.bottom(px(dock_pad + 8.))
                                     }
                                 })
                                 .left_3()
@@ -5033,30 +5030,14 @@ impl Render for Panel {
                         )
                     }),
             )
-            .when(self.recovery_picker_open, |el| {
+            .when(self.recovery_picker_open && !docked_composer, |el| {
                 el.child(self.render_recovery_model_picker(cx))
             })
-            .children(self.render_voice_overlay(window, cx))
-            .children(self.render_preview_badge(cx))
-            // Input
-            .when(
-                !fresh_session && self.startup_layout.is_none() && !self.transcript_only,
-                |el| {
-                    el.child(
-                        div().flex_none().min_w_0().px_2().py_2().child(
-                            div()
-                                .relative()
-                                .flex()
-                                .flex_col()
-                                .gap_2()
-                                .children(self.render_prompt_queue(cx))
-                                .children(self.render_voice_pending())
-                                .child(self.render_composer(window, cx))
-                                .child(startup::input_marker(input_bounds.clone())),
-                        ),
-                    )
-                },
-            )
+            .when(!docked_composer, |el| {
+                el.children(self.render_voice_overlay(window, cx))
+                    .children(self.render_preview_badge(cx))
+            })
+            // The docked composer floats over the transcript body above.
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|this, _event, window, cx| {

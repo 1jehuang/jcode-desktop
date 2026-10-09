@@ -406,6 +406,77 @@ fn startup_stream_growth_does_not_flash_scrollbar(cx: &mut gpui::TestAppContext)
                 previous_height = previous_height.max(height);
             }
         }
-        assert!(seen, "history={history}: overflowing stream shows a scrollbar");
+        assert!(
+            seen,
+            "history={history}: overflowing stream shows a scrollbar"
+        );
     }
+}
+
+/// Scrolled-up history continues beneath the floating composer instead of
+/// stopping at a hard edge, while the live end still clears the composer.
+#[gpui::test]
+fn history_scrolls_beneath_floating_composer(cx: &mut gpui::TestAppContext) {
+    let (panel, vcx) = cx.add_window_view(|_, cx| {
+        let mut panel = Panel::new("dock".into(), None, None, crate::harness::spawn_inert(), cx);
+        *panel.items = (0..80)
+            .map(|n| Item::Assistant(format!("History {n}")))
+            .collect();
+        panel
+    });
+    let handle = vcx.update(|window, _| window.window_handle());
+    vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
+    vcx.run_until_parked();
+    scroll_momentum_tests::settle(vcx);
+    assert!(
+        vcx.debug_bounds("composer-dock").is_some(),
+        "composer floats"
+    );
+    let input = vcx.debug_bounds("prompt-input").unwrap();
+    let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+    assert!(
+        viewport.bottom() >= input.bottom() - px(1.),
+        "the transcript viewport extends beneath the composer: {viewport:?} {input:?}"
+    );
+    // At the live end the last row's content clears the composer entirely.
+    // The row itself carries the dock height as bottom padding.
+    let last = vcx.debug_bounds("transcript-row-79").unwrap();
+    let pad = panel.read_with(vcx, |panel, _| panel.transcript_end_pad);
+    assert!(pad > 0.0, "the last row reserves the composer's height");
+    assert!(
+        last.bottom() - px(pad) <= input.top(),
+        "{last:?} minus {pad} must clear {input:?}"
+    );
+    assert!(panel.read_with(vcx, |panel, _| panel.transcript_end_visible));
+    assert!(vcx.debug_bounds("jump-to-latest").is_none());
+    // The dock's height is measured after paint, so the scrollbar settles
+    // on the frame after it.
+    panel.update(vcx, |_, cx| cx.notify());
+    vcx.run_until_parked();
+    let thumb = vcx.debug_bounds("transcript-scrollbar").unwrap();
+    assert!(
+        thumb.bottom() <= input.top(),
+        "thumb ends above the composer"
+    );
+
+    panel.update(vcx, |panel, cx| panel.scroll_transcript_direct(400.0, cx));
+    vcx.run_until_parked();
+    scroll_momentum_tests::settle(vcx);
+    // Some history row now paints behind the composer instead of being cut.
+    let rows_under = (0..80)
+        .filter(|n| {
+            let selector: &'static str = format!("transcript-row-{n}").leak();
+            vcx.debug_bounds(selector)
+                .is_some_and(|row| row.bottom() > input.top() && row.top() < input.bottom())
+        })
+        .count();
+    assert!(rows_under > 0, "history must continue under the composer");
+    assert!(!panel.read_with(vcx, |panel, _| panel.transcript_end_visible));
+    let chip = vcx
+        .debug_bounds("jump-to-latest")
+        .expect("jump chip while scrolled up");
+    assert!(
+        chip.bottom() <= input.top(),
+        "jump chip floats above the composer"
+    );
 }
