@@ -51,7 +51,7 @@ fn assert_draft_and_focus(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualT
 
 #[test]
 fn account_offer_is_optional_and_fixture_safe() {
-    assert!(!EMAIL_SIGN_IN, "email sign-in is paused");
+    assert!(EMAIL_SIGN_IN, "email sign-in is offered");
     for handled in [false, true] {
         for connected in [false, true] {
             for fixture in [false, true] {
@@ -192,7 +192,7 @@ fn choice(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) -> O
 fn keyboard_tab_shift_tab_and_enter_follow_visible_choices(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
+    assert_eq!(choice(&workspace, vcx), Some(Choice::ThemeToggle));
     vcx.simulate_keystrokes("tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Finish));
     vcx.simulate_keystrokes("tab");
@@ -286,12 +286,17 @@ fn detected_logins_import_by_default_and_skip_per_row(cx: &mut gpui::TestAppCont
 fn finish_onboarding_pill_sits_bottom_left_and_finishes(cx: &mut gpui::TestAppContext) {
     for email in [true, false] {
         let (workspace, vcx) = setup_with_email(cx, email);
-        let finish = vcx.debug_bounds("account-sign-in-finish").expect("finish pill");
+        let finish = vcx
+            .debug_bounds("account-sign-in-finish")
+            .expect("finish pill");
         let card = vcx.debug_bounds("account-sign-in-card").unwrap();
         let page = vcx.debug_bounds("account-sign-in").unwrap();
         assert!(finish.right() <= card.right(), "left column: {finish:?}");
         assert!(finish.top() >= card.bottom() - px(1.), "below the choices");
-        assert!(finish.bottom() >= page.bottom() - px(48.), "pinned to the bottom");
+        assert!(
+            finish.bottom() >= page.bottom() - px(48.),
+            "pinned to the bottom"
+        );
         click(vcx, "account-sign-in-finish");
         assert_draft_and_focus(&workspace, vcx);
     }
@@ -335,7 +340,10 @@ fn demo_composer_shows_model_from_logins_and_imports(cx: &mut gpui::TestAppConte
     // A selected OpenAI import outranks it, and skipping it falls back.
     workspace.update(vcx, |w, cx| {
         w.set_account_import_candidates(
-            vec![ExternalAuthReviewCandidate::fixture("OpenAI/Codex", "Codex")],
+            vec![ExternalAuthReviewCandidate::fixture(
+                "OpenAI/Codex",
+                "Codex",
+            )],
             cx,
         )
     });
@@ -357,6 +365,11 @@ fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
 ) {
     let _theme = crate::theme::test_theme_lock();
     let (workspace, vcx) = setup(cx);
+    assert!(
+        vcx.debug_bounds("account-theme-grid").is_none(),
+        "themes start folded"
+    );
+    click(vcx, "account-theme-toggle");
     let original = Theme::active_preset();
     let target = crate::theme::ThemePreset::ALL
         .into_iter()
@@ -381,6 +394,7 @@ fn theme_swatches_apply_and_onboarding_has_no_telemetry_or_subscribe(
 fn theme_hover_previews_before_and_after_a_click(cx: &mut gpui::TestAppContext) {
     let _theme = crate::theme::test_theme_lock();
     let (workspace, vcx) = setup(cx);
+    click(vcx, "account-theme-toggle");
     let original = Theme::active_preset();
     let all = crate::theme::ThemePreset::ALL;
     let others: Vec<usize> = (0..all.len()).filter(|&i| all[i] != original).collect();
@@ -417,6 +431,94 @@ fn theme_hover_previews_before_and_after_a_click(cx: &mut gpui::TestAppContext) 
         assert_eq!(w.account_sign_in.theme_picked, Some(all[others[1]]))
     });
     Theme::select(original);
+}
+
+fn field_text(workspace: &Entity<Workspace>, vcx: &mut gpui::VisualTestContext) -> String {
+    workspace.read_with(vcx, |w, cx| {
+        w.account_sign_in
+            .input
+            .as_ref()
+            .map(|input| input.read(cx).content.to_string())
+            .unwrap_or_default()
+    })
+}
+
+fn detected(email: &str, sources: Vec<&'static str>) -> DetectedEmail {
+    DetectedEmail {
+        email: email.into(),
+        sources,
+    }
+}
+
+#[gpui::test]
+fn detected_emails_prefill_and_pick_the_jcode_email(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    assert!(
+        vcx.debug_bounds("account-emails").is_none(),
+        "none detected"
+    );
+    workspace.update(vcx, |w, cx| {
+        w.set_account_emails(
+            vec![
+                detected("me@home.example", vec!["Codex", "Claude Code"]),
+                detected("me@work.example", vec!["Gemini CLI"]),
+            ],
+            cx,
+        )
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("account-email-1").is_some());
+    assert_eq!(field_text(&workspace, vcx), "me@home.example");
+    click(vcx, "account-email-1");
+    assert_eq!(field_text(&workspace, vcx), "me@work.example");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.account_sign_in.picked_email, Some(1))
+    });
+    // Keyboard: the addresses are the first stops, Enter picks one.
+    vcx.simulate_keystrokes("tab enter");
+    vcx.run_until_parked();
+    assert_eq!(field_text(&workspace, vcx), "me@home.example");
+    // Editing the address by hand clears the radio.
+    type_into_field(vcx, "x");
+    assert_eq!(field_text(&workspace, vcx), "me@home.examplex");
+    workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.picked_email, None));
+    // Sending the code hides the picker.
+    click(vcx, "account-email-0");
+    click(vcx, "account-sign-in-primary");
+    workspace.read_with(vcx, |w, _| {
+        assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, .. } if email == "me@home.example"))
+    });
+    assert!(vcx.debug_bounds("account-emails").is_none());
+}
+
+#[gpui::test]
+fn detected_emails_never_overwrite_a_typed_address(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup(cx);
+    type_into_field(vcx, "typed@x.example");
+    workspace.update(vcx, |w, cx| {
+        w.set_account_emails(vec![detected("me@home.example", vec!["Codex"])], cx)
+    });
+    vcx.run_until_parked();
+    assert_eq!(field_text(&workspace, vcx), "typed@x.example");
+    workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.picked_email, None));
+}
+
+#[gpui::test]
+fn detected_emails_hidden_without_email_sign_in(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = setup_with_email(cx, false);
+    workspace.update(vcx, |w, cx| {
+        w.set_account_emails(vec![detected("me@home.example", vec!["Codex"])], cx)
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("account-emails").is_none());
+    workspace.read_with(vcx, |w, _| {
+        assert!(
+            !w.account_sign_in
+                .choices()
+                .iter()
+                .any(|c| matches!(c, Choice::Email(_)))
+        )
+    });
 }
 
 #[gpui::test]
@@ -540,7 +642,7 @@ fn error_and_complete_render_without_credentials(cx: &mut gpui::TestAppContext) 
     assert!(vcx.debug_bounds("account-sign-in-back").is_none());
     workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
     vcx.simulate_keystrokes("tab");
-    assert_eq!(choice(&workspace, vcx), Some(Choice::Theme));
+    assert_eq!(choice(&workspace, vcx), Some(Choice::ThemeToggle));
     vcx.simulate_keystrokes("shift-tab");
     assert_eq!(choice(&workspace, vcx), Some(Choice::Continue));
     vcx.simulate_keystrokes("enter");

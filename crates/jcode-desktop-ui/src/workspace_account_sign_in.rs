@@ -2,6 +2,7 @@
 use super::*;
 use crate::theme::ThemePreset;
 use jcode_base::account_login::{self as auth, EmailCodeResult, EmailLogin};
+use jcode_base::detected_emails::{self, DetectedEmail};
 use jcode_base::external_auth::{self, ExternalAuthReviewCandidate};
 use std::sync::Arc;
 
@@ -28,6 +29,13 @@ pub(super) struct State {
     detect_task: Option<gpui::Task<()>>,
     /// Outlives the page so Continue can close immediately while importing.
     import_task: Option<gpui::Task<()>>,
+    /// Addresses other AI tools are signed in with, offered as the Jcode email.
+    emails: Vec<DetectedEmail>,
+    /// Which detected address fills the field. None once the user types their own.
+    picked_email: Option<usize>,
+    emails_task: Option<gpui::Task<()>>,
+    /// Theme choice is optional, so the swatches stay folded until asked for.
+    theme_expanded: bool,
     /// The clicked theme. Hovering other swatches still previews them, and
     /// leaving the grid returns to this one.
     theme_picked: Option<ThemePreset>,
@@ -52,7 +60,9 @@ struct Demo {
 /// Keyboard stops, in reading order: left-half controls, then the right half.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Choice {
+    Email(usize),
     Login(usize),
+    ThemeToggle,
     Theme,
     Finish,
     Field,
@@ -76,9 +86,9 @@ fn rehearsal() -> bool {
     std::env::var_os("JCODE_ONBOARDING_REHEARSAL").is_some()
 }
 
-/// Email sign-in is paused for now. The onboarding page only offers login
-/// imports, the theme picker and Continue. The flow stays for when it returns.
-const EMAIL_SIGN_IN: bool = false;
+/// Email sign-in for the Jcode account. Detected addresses from Codex and
+/// Claude Code are offered first so most people only confirm one.
+const EMAIL_SIGN_IN: bool = true;
 
 /// Map a detected source's provider summary to a vendored logo id.
 fn candidate_logo(summary: &str) -> &'static str {
@@ -164,8 +174,13 @@ impl State {
     }
 
     fn choices(&self) -> Vec<Choice> {
-        let mut choices: Vec<Choice> = self.importable().into_iter().map(Choice::Login).collect();
-        choices.extend([Choice::Theme, Choice::Finish]);
+        let mut choices: Vec<Choice> = self.email_choices().map(Choice::Email).collect();
+        choices.extend(self.importable().into_iter().map(Choice::Login));
+        choices.push(Choice::ThemeToggle);
+        if self.theme_expanded {
+            choices.push(Choice::Theme);
+        }
+        choices.push(Choice::Finish);
         match self.stage {
             Stage::Complete { .. } => {}
             Stage::Code { .. } | Stage::Verifying { .. } => choices.extend([
@@ -187,6 +202,12 @@ impl State {
         self.keyboard_choice
             .and_then(|index| self.choices().get(index).copied())
             == Some(choice)
+    }
+
+    /// Detected addresses are only offered before a code is requested.
+    fn email_choices(&self) -> std::ops::Range<usize> {
+        let offered = self.email && !self.connected && matches!(self.stage, Stage::Welcome);
+        0..if offered { self.emails.len() } else { 0 }
     }
 
     /// Detected logins that would add a provider Jcode does not have yet.
@@ -265,6 +286,19 @@ impl Workspace {
             return;
         }
         if harness::screenshot_mode() {
+            self.set_account_emails(
+                vec![
+                    DetectedEmail {
+                        email: "ada@example.com".into(),
+                        sources: vec!["Codex", "Claude Code"],
+                    },
+                    DetectedEmail {
+                        email: "ada@work.example".into(),
+                        sources: vec!["Gemini CLI"],
+                    },
+                ],
+                cx,
+            );
             self.set_account_import_candidates(
                 vec![
                     ExternalAuthReviewCandidate::fixture("Claude", "Claude Code"),
@@ -276,6 +310,16 @@ impl Workspace {
             return;
         }
         self.account_sign_in.detecting = true;
+        if self.account_sign_in.email && !self.account_sign_in.connected {
+            // Only the address is read from each tool's file, never a secret.
+            let emails = cx
+                .background_executor()
+                .spawn(async { detected_emails::detected_emails() });
+            self.account_sign_in.emails_task = Some(cx.spawn(async move |this, cx| {
+                let emails = emails.await;
+                let _ = this.update(cx, |this, cx| this.set_account_emails(emails, cx));
+            }));
+        }
         let detect = cx.background_executor().spawn(async {
             external_auth::pending_external_auth_review_candidates().unwrap_or_default()
         });
@@ -285,6 +329,46 @@ impl Workspace {
                 this.set_account_import_candidates(candidates, cx)
             });
         }));
+    }
+
+    /// Prefill the field with the first detected address unless the user
+    /// already typed something.
+    fn set_account_emails(&mut self, emails: Vec<DetectedEmail>, cx: &mut Context<Self>) {
+        let typed = self
+            .account_sign_in
+            .input
+            .as_ref()
+            .is_some_and(|input| !input.read(cx).content.trim().is_empty());
+        let state = &mut self.account_sign_in;
+        state.emails = emails;
+        state.emails_task = None;
+        state.keyboard_choice = None;
+        state.picked_email = None;
+        if !typed && let Some(first) = state.emails.first() {
+            let address = first.email.clone();
+            state.picked_email = Some(0);
+            let input = self.ensure_account_input(cx);
+            input.update(cx, |input, cx| input.set_content(address, cx));
+        }
+        cx.notify();
+    }
+
+    /// Use a detected address for Jcode: it fills the sign-in field, and the
+    /// arrow beside it sends the code.
+    fn pick_account_email(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some(address) = self
+            .account_sign_in
+            .emails
+            .get(index)
+            .map(|e| e.email.clone())
+        else {
+            return;
+        };
+        self.account_sign_in.picked_email = Some(index);
+        self.account_sign_in.error = None;
+        let input = self.ensure_account_input(cx);
+        input.update(cx, |input, cx| input.set_content(address, cx));
+        cx.notify();
     }
 
     fn set_account_import_candidates(
@@ -306,6 +390,19 @@ impl Workspace {
             *checked = !*checked;
             cx.notify();
         }
+    }
+
+    fn toggle_account_theme_picker(&mut self, cx: &mut Context<Self>) {
+        let state = &mut self.account_sign_in;
+        state.theme_expanded = !state.theme_expanded;
+        // Keep keyboard focus on the toggle as the swatch stop comes and goes.
+        state.keyboard_choice = state.keyboard_choice.and(
+            state
+                .choices()
+                .iter()
+                .position(|c| *c == Choice::ThemeToggle),
+        );
+        cx.notify();
     }
 
     fn pick_account_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
@@ -378,7 +475,10 @@ impl Workspace {
             .filter(|account| account.available() && account.id != "jcode")
             .collect();
         let state = &self.account_sign_in;
-        let mut ids: Vec<&str> = connected.iter().map(|account| account.id.as_str()).collect();
+        let mut ids: Vec<&str> = connected
+            .iter()
+            .map(|account| account.id.as_str())
+            .collect();
         for index in state.selected_imports() {
             ids.extend(state.candidates[index].provider_ids());
         }
@@ -394,7 +494,11 @@ impl Workspace {
     /// Keep the demo composer's model and login pills on the real identity
     /// instead of "Choose model" and "Accounts".
     fn sync_account_demo_identity(&mut self, cx: &mut Context<Self>) {
-        let Some(panel) = self.account_sign_in.demo.as_ref().map(|demo| demo.panel.clone())
+        let Some(panel) = self
+            .account_sign_in
+            .demo
+            .as_ref()
+            .map(|demo| demo.panel.clone())
         else {
             return;
         };
@@ -507,7 +611,9 @@ impl Workspace {
             Choice::Primary => self.account_sign_in_primary(window, cx),
             Choice::OpenGmail => self.open_account_gmail(cx),
             Choice::StartOver => self.reset_account_sign_in(window, cx),
+            Choice::Email(index) => self.pick_account_email(index, cx),
             Choice::Login(index) => self.toggle_account_import(index, cx),
+            Choice::ThemeToggle => self.toggle_account_theme_picker(cx),
             Choice::Theme => self.pick_account_theme(Theme::active_preset().next(), cx),
             Choice::Finish | Choice::Continue => self.continue_account_sign_in(window, cx),
         }
@@ -524,6 +630,7 @@ impl Workspace {
         self.restore_account_theme(cx);
         self.account_sign_in.task = None;
         self.account_sign_in.detect_task = None;
+        self.account_sign_in.emails_task = None;
         self.account_sign_in.demo = None;
         self.account_sign_in.input = None;
         self.account_sign_in.stage = Stage::Welcome;
@@ -597,6 +704,18 @@ impl Workspace {
                     let _ = change.update(app, |this, cx| {
                         if this.account_sign_in.error.take().is_some() {
                             cx.notify();
+                        }
+                        // The radio follows whatever address is in the field.
+                        if matches!(this.account_sign_in.stage, Stage::Welcome) {
+                            let state = &mut this.account_sign_in;
+                            let picked = state
+                                .emails
+                                .iter()
+                                .position(|e| e.email.eq_ignore_ascii_case(text.trim()));
+                            if state.picked_email != picked {
+                                state.picked_email = picked;
+                                cx.notify();
+                            }
                         }
                         if matches!(this.account_sign_in.stage, Stage::Code { .. })
                             && code_digits(&text).len() == 6
@@ -905,28 +1024,29 @@ impl Workspace {
         let theme = Theme::global();
         let narrow = window.viewport_size().width < px(760.0);
         let padding = if narrow { 24.0 } else { LEFT_COLUMN_PADDING };
-        let finish = div()
-            .debug_selector(|| "account-sign-in-footer".into())
-            .flex_none()
-            .w_full()
-            .px(px(padding))
-            .pt_3()
-            .pb(px(if narrow { 16.0 } else { TAB_BOTTOM }))
-            .flex()
-            .justify_center()
-            .child(
-                div().w_full().max_w(px(LEFT_CONTENT_WIDTH)).flex().child(
-                    account_button(
-                        "account-sign-in-finish",
-                        "Finish onboarding",
-                        true,
-                        self.account_sign_in.focused(Choice::Finish),
-                    )
-                    .on_click(cx.listener(|this, _, window, cx| {
-                        this.continue_account_sign_in(window, cx)
-                    })),
-                ),
-            );
+        let finish =
+            div()
+                .debug_selector(|| "account-sign-in-footer".into())
+                .flex_none()
+                .w_full()
+                .px(px(padding))
+                .pt_3()
+                .pb(px(if narrow { 16.0 } else { TAB_BOTTOM }))
+                .flex()
+                .justify_center()
+                .child(
+                    div().w_full().max_w(px(LEFT_CONTENT_WIDTH)).flex().child(
+                        account_button(
+                            "account-sign-in-finish",
+                            "Finish onboarding",
+                            true,
+                            self.account_sign_in.focused(Choice::Finish),
+                        )
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.continue_account_sign_in(window, cx)
+                        })),
+                    ),
+                );
         let scroll = div()
             .id("account-sign-in-card")
             .debug_selector(|| "account-sign-in-card".into())
@@ -949,6 +1069,7 @@ impl Workspace {
                     .flex_col()
                     .gap(px(32.0))
                     .child(self.account_onboarding_header())
+                    .child(self.account_onboarding_emails(cx))
                     .child(self.account_onboarding_logins(cx))
                     .child(self.account_onboarding_theme(cx)),
             );
@@ -1102,6 +1223,91 @@ impl Workspace {
             )
     }
 
+    /// Addresses from Codex, Claude Code and Gemini CLI, as radio pills. The
+    /// picked one fills the sign-in field on the right.
+    fn account_onboarding_emails(&self, cx: &mut Context<Self>) -> gpui::Div {
+        let state = &self.account_sign_in;
+        let theme = Theme::global();
+        if state.email_choices().is_empty() {
+            return div();
+        }
+        let mut list = div()
+            .debug_selector(|| "account-emails".into())
+            .flex()
+            .flex_col()
+            .gap_1();
+        for index in state.email_choices() {
+            let detected = &state.emails[index];
+            let picked = state.picked_email == Some(index);
+            let focused = state.focused(Choice::Email(index));
+            let radio = div()
+                .size(px(16.0))
+                .flex_none()
+                .rounded_full()
+                .border_1()
+                .border_color(if picked { theme.ACCENT } else { theme.TEXT_DIM })
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(picked, |el| {
+                    el.child(div().size(px(8.0)).rounded_full().bg(theme.ACCENT))
+                });
+            list = list.child(
+                div()
+                    .id(("account-email", index))
+                    .debug_selector(move || format!("account-email-{index}"))
+                    .flex()
+                    .items_center()
+                    .gap_3()
+                    .px_4()
+                    .py(px(8.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if focused {
+                        theme.ACCENT
+                    } else {
+                        gpui::transparent_black().into()
+                    })
+                    .bg(if picked {
+                        theme.ACCENT.opacity(0.1)
+                    } else {
+                        theme.TEXT.opacity(0.04)
+                    })
+                    .cursor_pointer()
+                    .hover(|el| el.bg(theme.TEXT.opacity(0.08)))
+                    .child(radio)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(
+                                div()
+                                    .text_size(px(13.0))
+                                    .truncate()
+                                    .child(detected.email.clone()),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .text_color(theme.TEXT_DIM)
+                                    .truncate()
+                                    .child(format!("from {}", detected.sources.join(", "))),
+                            ),
+                    )
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.pick_account_email(index, cx)),
+                    ),
+            );
+        }
+        section("Email for Jcode")
+            .child(subheading(
+                "Found in your other AI tools. Pick one, or type another on the right.",
+            ))
+            .child(list)
+    }
+
     /// Two sets: what Jcode can already use, then what other tools have
     /// that Jcode could import. Logins Jcode already has are not offered again.
     fn account_onboarding_logins(&self, cx: &mut Context<Self>) -> gpui::Div {
@@ -1177,10 +1383,41 @@ impl Workspace {
         section.child(list)
     }
 
+    /// A compact pill that unfolds the swatches. Most people keep the default.
     fn account_onboarding_theme(&self, cx: &mut Context<Self>) -> gpui::Div {
         let state = &self.account_sign_in;
         let theme = Theme::global();
         let active = Theme::active_preset();
+        let expanded = state.theme_expanded;
+        let label = if expanded {
+            "Hide themes".to_string()
+        } else {
+            format!("Theme: {}", active.label())
+        };
+        let toggle = div()
+            .id("account-theme-toggle")
+            .debug_selector(|| "account-theme-toggle".into())
+            .flex_none()
+            .px_3()
+            .py(px(5.0))
+            .rounded_full()
+            .border_1()
+            .border_color(if state.focused(Choice::ThemeToggle) {
+                theme.ACCENT
+            } else {
+                gpui::transparent_black().into()
+            })
+            .bg(theme.TEXT.opacity(0.06))
+            .hover(|el| el.bg(theme.TEXT.opacity(0.1)))
+            .cursor_pointer()
+            .text_size(px(12.0))
+            .text_color(theme.TEXT_DIM)
+            .child(label)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_account_theme_picker(cx)));
+        let mut column = div().flex().flex_col().items_start().gap_3().child(toggle);
+        if !expanded {
+            return column;
+        }
         let mut grid = div()
             .id("account-theme-grid")
             .debug_selector(|| "account-theme-grid".into())
@@ -1229,7 +1466,8 @@ impl Workspace {
                     ),
             );
         }
-        section("Theme").child(grid)
+        column = column.child(grid);
+        column
     }
 
     /// The right half: the live chat replay, fully visible, with the sign-in

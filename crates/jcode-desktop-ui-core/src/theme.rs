@@ -361,7 +361,6 @@ pub enum ThemePreset {
     Forest,
     Plum,
     RoseDawn,
-    #[default]
     Parchment,
     Graphite,
     Slate,
@@ -369,6 +368,7 @@ pub enum ThemePreset {
     Silver,
     LightNeutral,
     DarkNeutral,
+    #[default]
     PureBlack,
     Glass,
 }
@@ -477,7 +477,7 @@ impl ThemePreset {
     }
 }
 
-static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(ThemePreset::Parchment.index());
+static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(ThemePreset::PureBlack.index());
 
 /// The active theme is process-global. Every unit test that selects a theme
 /// must hold this for its whole body, or parallel tests observe its palette.
@@ -1101,9 +1101,9 @@ mod tests {
             current = current.next();
         }
         assert_eq!(current, ThemePreset::WarmNeutral);
-        assert_eq!(ThemePreset::default(), ThemePreset::Parchment);
-        assert_eq!(ThemePreset::from_id("unknown"), ThemePreset::Parchment);
-        assert_eq!(ThemePreset::from_id(""), ThemePreset::Parchment);
+        assert_eq!(ThemePreset::default(), ThemePreset::PureBlack);
+        assert_eq!(ThemePreset::from_id("unknown"), ThemePreset::PureBlack);
+        assert_eq!(ThemePreset::from_id(""), ThemePreset::PureBlack);
     }
 
     #[test]
