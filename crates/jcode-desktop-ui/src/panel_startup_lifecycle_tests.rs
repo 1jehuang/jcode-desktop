@@ -191,10 +191,8 @@ fn startup_committed_layout_round_trips_reload_and_empty_history_loading_frame(
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     let committed = vcx.debug_bounds("prompt-input").unwrap();
-    // The editor stays where the welcome screen put it, and drops to the
-    // docked single-row shape as soon as the conversation starts.
-    assert_eq!(committed.origin, fresh.origin);
-    assert!(committed.size.height < fresh.size.height);
+    // The editor stays where the welcome screen put it, at the same size.
+    assert_eq!(committed, fresh);
     let fresh = committed;
     vcx.simulate_input("Unsent followup survives reload");
     let snapshot = panel.read_with(vcx, |panel, cx| panel.snapshot(cx));
@@ -328,16 +326,16 @@ fn startup_composer_keeps_docked_shape_before_transcript_fills_space(
     vcx.run_until_parked();
     let welcome = vcx.debug_bounds("prompt-input").unwrap();
     assert!(
-        welcome.size.height >= px(crate::input::SPACIOUS_MIN_HEIGHT),
-        "the welcome screen keeps the two-row composer"
+        welcome.size.height < px(crate::input::SPACIOUS_MIN_HEIGHT),
+        "the welcome screen uses the docked composer"
     );
     vcx.simulate_input("Short question");
     vcx.simulate_keystrokes("enter");
     vcx.run_until_parked();
     let short = vcx.debug_bounds("prompt-input").unwrap();
     assert!(
-        short.size.height < welcome.size.height - px(10.),
-        "a short transcript already uses the docked shape: {short:?} vs {welcome:?}"
+        (short.size.height - welcome.size.height).abs() < px(1.),
+        "a short transcript keeps the welcome shape: {short:?} vs {welcome:?}"
     );
     panel.update(vcx, |panel, cx| {
         panel.streaming_text = (0..40)

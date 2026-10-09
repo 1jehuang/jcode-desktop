@@ -4426,13 +4426,13 @@ impl Render for Panel {
         if self
             .input
             .read(cx)
-            .needs_layout_update(fresh_session, composer::VOICE_TRAILING_SPACE)
+            .needs_layout_update(false, composer::VOICE_TRAILING_SPACE)
         {
             self.input.update(cx, |input, cx| {
-                // Two rows only on the welcome screen. Once a conversation
-                // starts the composer keeps its compact docked shape, even
-                // before the transcript reaches it.
-                input.set_spacious(fresh_session, cx);
+                // The composer keeps one compact docked size everywhere,
+                // including the welcome screen, so it never changes shape
+                // when the conversation starts.
+                input.set_spacious(false, cx);
                 input.set_trailing_inset(composer::VOICE_TRAILING_SPACE, cx);
             });
         }

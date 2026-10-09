@@ -1,7 +1,7 @@
 use super::*;
 
 #[gpui::test]
-fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
+fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
     cx: &mut gpui::TestAppContext,
 ) {
     cx.update(crate::input::bind_keys);
@@ -28,9 +28,8 @@ fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
             .debug_bounds("fresh-session")
             .expect("fresh session paints");
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
-        // Two lines tall, not three.
-        assert!(input.size.height >= px(crate::input::SPACIOUS_MIN_HEIGHT));
-        assert!(input.size.height < px(100.), "{input:?}");
+        // Same compact docked shape as a started conversation.
+        assert!(input.size.height < px(crate::input::SPACIOUS_MIN_HEIGHT));
         assert!(input.size.width <= px(760.));
         assert!(input.left() >= fresh.left() && input.right() <= fresh.right());
         assert!((f32::from(input.center().x - fresh.center().x)).abs() < 1.);
@@ -51,15 +50,7 @@ fn fresh_session_composer_is_centered_spacious_and_stable_while_typing(
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("fresh-session").is_none());
     let submitted = vcx.debug_bounds("prompt-input").expect("input paints");
-    assert_eq!(
-        (submitted.origin, submitted.size.width),
-        (input.origin, input.size.width),
-        "submission must not move the editor"
-    );
-    assert!(
-        submitted.size.height < input.size.height,
-        "a started conversation uses the docked single-row shape"
-    );
+    assert_eq!(submitted, input, "submission must not move or resize the editor");
     let row = vcx.debug_bounds("transcript-row-0").expect("prompt paints");
     let transcript = vcx.debug_bounds("transcript").unwrap();
     assert!((f32::from(row.top() - transcript.top())).abs() < 1.);
@@ -117,10 +108,9 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
             cx.notify();
         });
         vcx.run_until_parked();
-        // The editor stays put but takes the docked single-row shape.
+        // The editor keeps the same position and docked shape.
         let docked = vcx.debug_bounds("prompt-input").unwrap();
-        assert_eq!(docked.origin, initial.origin);
-        assert!(docked.size.height < initial.size.height);
+        assert_eq!(docked, initial);
         let initial = docked;
         panel.update(vcx, |panel, cx| {
             panel.streaming_text = "Small response".into();
