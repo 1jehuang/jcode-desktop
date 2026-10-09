@@ -1265,10 +1265,27 @@ impl Workspace {
                 .unwrap_or(1)
                 .clamp(1, 6);
             let panel_count = if single_panel { 1 } else { panel_count };
+            let panel_titles = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES").ok();
+            let panel_title = |index: usize| {
+                panel_titles
+                    .as_deref()
+                    .and_then(|titles| titles.split(',').nth(index))
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .map(str::to_owned)
+            };
+            if let Some(title) = panel_title(0) {
+                workspace.sessions[0].title = Some(title.clone());
+                if let Some(slot) = workspace.slots.first() {
+                    slot.panel.update(cx, |panel, _| panel.title = title.into());
+                }
+            }
             for index in 1..panel_count {
                 let mut session = workspace.sessions[0].clone();
                 session.session_id = format!("screenshot-fixture-{index}");
-                session.title = Some(format!("Review folder {}", index + 1));
+                session.title = Some(
+                    panel_title(index).unwrap_or_else(|| format!("Review folder {}", index + 1)),
+                );
                 workspace.sessions.push(session.clone());
                 workspace.active = workspace.open_session(session, cx);
             }

@@ -872,14 +872,15 @@ impl Panel {
                 }
             });
         });
+        let fixture = screenshot_fixture_for(&session_id);
         let streaming_fixture = crate::harness::screenshot_mode()
             && session_id == "screenshot-fixture"
             && matches!(
                 std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref(),
                 Ok("streaming" | "mermaid")
             );
-        let usage_fixture = crate::harness::screenshot_mode()
-            && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tokens");
+        let usage_fixture =
+            crate::harness::screenshot_mode() && fixture.as_deref() == Some("tokens");
         let activity_status =
             if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
                 match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
@@ -906,7 +907,7 @@ impl Panel {
             pending_save_requests: 0,
             context_tokens: usage_fixture.then_some(100_000),
             response_stats: response_stats::Tracker::default(),
-            items: demo_items().into(),
+            items: demo_items(fixture.as_deref()).into(),
             streaming_text: if streaming_fixture {
                 "I’m checking the implementation and updating the active panel indicators as the response arrives…".into()
             } else {
@@ -993,12 +994,10 @@ impl Panel {
             code_file: None,
             side_document: None,
             applet: None,
-            todoist: (crate::harness::screenshot_mode()
-                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos"))
-            .then(|| TodoistPanelState::fixture(80)),
+            todoist: (crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos"))
+                .then(|| TodoistPanelState::fixture(80)),
             orchestration: (crate::harness::screenshot_mode()
-                && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref()
-                    == Ok("orchestration"))
+                && fixture.as_deref() == Some("orchestration"))
             .then(orchestration::State::fixture),
             recovery_picker_open: false,
             model_picker_open: false,
@@ -4488,7 +4487,11 @@ impl Render for Panel {
             }
         }
         let startup_preview = self.startup_prompt_preview();
-        if startup_preview {
+        // While the welcome viewport still grows with its content, following
+        // the tail would scroll a line up for one frame and then snap back
+        // when the composer moves down. Hold the top until the space fills.
+        if startup_preview || self.startup_growing() {
+            self.tail_glide.reset();
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
             // Ease wrapped-line growth of live text instead of jumping a line.
@@ -4672,8 +4675,14 @@ impl Render for Panel {
         };
 
         let theme = Theme::global();
-        // The tail may sit a few pixels below the fold mid-glide.
-        let show_jump_chip = row_count > 0 && !self.transcript_end_visible && !self.tail_gliding();
+        // The tail may sit a few pixels below the fold mid-glide. While the
+        // welcome layout is still growing, the end is only clipped for the
+        // frame before the composer moves down.
+        let startup_growing = self.startup_growing();
+        let show_jump_chip = row_count > 0
+            && !self.transcript_end_visible
+            && !self.tail_gliding()
+            && !startup_growing;
 
         let chat = div()
             .flex()
@@ -4933,7 +4942,8 @@ impl Render for Panel {
                     .child(self.prompt_visibility_observer(prompt_rows, first_visible_row, cx))
                     .child(self.transcript_end_observer(end_visible, row_count, cx))
                     .child(self.tail_growth_observer(cx))
-                    .child(crate::scrollbar::interactive_vertical_list(
+                    .when(!startup_growing, |el| {
+                        el.child(crate::scrollbar::interactive_vertical_list(
                         &self.transcript_list,
                         "transcript-scrollbar",
                         {
@@ -4957,6 +4967,7 @@ impl Render for Panel {
                             }
                         },
                     ))
+                    })
                     // Float catch-up activity above the composer, centered in the
                     // transcript rather than tucked into the scrollbar corner.
                     .when(show_jump_chip, |el| {
@@ -9124,13 +9135,72 @@ Goals: []"#,
     }
 }
 
+/// Transcript fixture for one screenshot panel. `JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS`
+/// (comma-separated, by panel index) overrides `JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT` so
+/// a multi-panel capture can show varied sessions instead of one repeated fixture.
+fn screenshot_fixture_for(session_id: &str) -> Option<String> {
+    let per_panel = std::env::var("JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS").ok();
+    let global = std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").ok();
+    fixture_for_panel(session_id, per_panel.as_deref(), global)
+}
+
+fn fixture_for_panel(
+    session_id: &str,
+    per_panel: Option<&str>,
+    global: Option<String>,
+) -> Option<String> {
+    let index = match session_id {
+        "screenshot-fixture" => Some(0),
+        other => other
+            .strip_prefix("screenshot-fixture-")
+            .and_then(|index| index.parse::<usize>().ok()),
+    };
+    index
+        .and_then(|index| per_panel?.split(',').nth(index))
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+        .or(global)
+}
+
+#[cfg(test)]
+mod fixture_for_panel_tests {
+    use super::fixture_for_panel;
+
+    #[test]
+    fn per_panel_list_overrides_global_by_index() {
+        let list = Some("diff-rich, ,mermaid");
+        let global = || Some("all".to_owned());
+        assert_eq!(
+            fixture_for_panel("screenshot-fixture", list, global()).as_deref(),
+            Some("diff-rich")
+        );
+        assert_eq!(
+            fixture_for_panel("screenshot-fixture-1", list, global()).as_deref(),
+            Some("all")
+        );
+        assert_eq!(
+            fixture_for_panel("screenshot-fixture-2", list, global()).as_deref(),
+            Some("mermaid")
+        );
+        assert_eq!(
+            fixture_for_panel("screenshot-fixture-3", list, global()).as_deref(),
+            Some("all")
+        );
+        assert_eq!(
+            fixture_for_panel("real-session", list, global()).as_deref(),
+            Some("all")
+        );
+        assert_eq!(fixture_for_panel("screenshot-fixture-1", None, None), None);
+    }
+}
+
 /// `JCODE_DESKTOP_DEMO_TRANSCRIPT=1` seeds one panel with a sample of every
 /// transcript shape, so rendering changes can be reviewed without driving a
 /// real session through each case.
-fn demo_items() -> Vec<Item> {
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("background-tasks")
-    {
+fn demo_items(fixture: Option<&str>) -> Vec<Item> {
+    let fixture = fixture.map(str::to_owned);
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("background-tasks") {
         return vec![
             Item::User("Run the checks in the background".into()),
             Item::BackgroundTask {
@@ -9156,9 +9226,7 @@ fn demo_items() -> Vec<Item> {
             },
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("todos-completed")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos-completed") {
         return vec![
             Item::User("Keep the task group visible after the work finishes".into()),
             Item::Todos(TodoCardPayload {
@@ -9176,29 +9244,19 @@ fn demo_items() -> Vec<Item> {
             Item::Assistant("The completed header now keeps the task group name. The green dots show that both tasks are complete.".into()),
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("prompts")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("prompts") {
         return prompt::fixture_items();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gmail-draft")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("gmail-draft") {
         return gmail_draft_card::fixture_items();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mcp-list")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("mcp-list") {
         return mcp_list_card::fixture_items();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("gmail-read")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("gmail-read") {
         return gmail_read_card::fixture_items();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-icons")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tool-icons") {
         return [
             "read",
             "write",
@@ -9232,14 +9290,10 @@ fn demo_items() -> Vec<Item> {
         })
         .collect();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tool-streaming")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tool-streaming") {
         return tool_streaming::fixture_items();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("empty")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("empty") {
         return Vec::new();
     }
     if !crate::harness::screenshot_mode()
@@ -9247,9 +9301,7 @@ fn demo_items() -> Vec<Item> {
     {
         return Vec::new();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("long-history")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("long-history") {
         return (0..10_000)
             .map(|index| {
                 let text = format!("Message {index}: **formatted** text and `inline code`.\n\nA second paragraph for layout.");
@@ -9257,14 +9309,10 @@ fn demo_items() -> Vec<Item> {
             })
             .collect();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("diff") {
         return diff_review::fixture_items();
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("diff-rich")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("diff-rich") {
         return vec![
             Item::User("Make these changes easier to review.".into()),
             Item::Assistant(format!(
@@ -9273,9 +9321,7 @@ fn demo_items() -> Vec<Item> {
             )),
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("mermaid")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("mermaid") {
         let source = std::env::var("JCODE_DESKTOP_SCREENSHOT_MERMAID_SOURCE").unwrap_or_else(|_| {
             "flowchart LR\n    A[Idea] --> B[Build]\n    B --> C[Test]\n    C -->|Pass| D[Ship]\n    C -->|Needs work| B".into()
         });
@@ -9286,9 +9332,7 @@ fn demo_items() -> Vec<Item> {
             )),
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("tokens")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("tokens") {
         let mut items = vec![Item::User(
             "Show tool output token costs instead of line counts.".into(),
         )];
@@ -9315,9 +9359,7 @@ fn demo_items() -> Vec<Item> {
         items.push(Item::ResponseStats(response_stats::fixture()));
         return items;
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("image")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("image") {
         let mut image = image_preview::fixture_image();
         image.source = jcode_sdk::RenderedImageSource::ToolResult {
             tool_name: "read".into(),
@@ -9341,9 +9383,7 @@ fn demo_items() -> Vec<Item> {
             ),
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("html")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("html") {
         return vec![
             Item::User("Show me different fonts directly in this chat.".into()),
             Item::Assistant(format!(
@@ -9352,17 +9392,13 @@ fn demo_items() -> Vec<Item> {
             )),
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("streaming")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("streaming") {
         return vec![
             Item::User("Make it easier to see which panels are still working.".into()),
             Item::Assistant("I'll add a small spinner and a subtle accent tint, while keeping the conversation easy to read.".into()),
         ];
     }
-    if crate::harness::screenshot_mode()
-        && std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() == Ok("reasoning")
-    {
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("reasoning") {
         return vec![
             Item::User("Can you make the thinking display feel quieter?".into()),
             Item::Reasoning("The content should read like part of the conversation, not another interface to manage. I'll keep it in a **dimmed font**, aligned with the answer, and remove the surrounding labels and controls.".into()),

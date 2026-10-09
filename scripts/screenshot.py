@@ -127,6 +127,14 @@ def main():
                         help="verify the self-dev control API and native recovery actions offline")
     parser.add_argument("--mermaid-source", type=Path,
                         help="custom Mermaid source file for the mermaid transcript fixture")
+    parser.add_argument("--panel-transcripts", metavar="A,B,...",
+                        help="comma-separated --transcript fixture per panel (blank entries use --transcript)")
+    parser.add_argument("--panel-titles", metavar="A,B,...",
+                        help="comma-separated session titles per panel")
+    parser.add_argument("--record", type=Path, metavar="VIDEO",
+                        help="also record a scripted demo of the real app to VIDEO (.mp4 or .webm) via ffmpeg x11grab")
+    parser.add_argument("--demo", default="tour", choices=("navigate", "overview", "map", "typing", "spawn", "tour"),
+                        help="native input script driven while --record captures")
     parser.add_argument("--size", default="1440x1000")
     parser.add_argument("--scroll-up", type=int, default=0, metavar="STEPS",
                         help="scroll the transcript upward on the private display before capture")
@@ -467,6 +475,10 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_NOTIFICATION"] = "1"
         env["JCODE_DESKTOP_CONFIG"] = str(config)
         env["JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT"] = args.transcript
+        if args.panel_transcripts:
+            env["JCODE_DESKTOP_SCREENSHOT_PANEL_TRANSCRIPTS"] = args.panel_transcripts
+        if args.panel_titles:
+            env["JCODE_DESKTOP_SCREENSHOT_PANEL_TITLES"] = args.panel_titles
         if args.applet_tab:
             env["JCODE_DESKTOP_SCREENSHOT_APPLET_TAB"] = args.applet_tab
         if args.pending_interact:
@@ -639,6 +651,9 @@ def main():
                                     str(height // 2), "click", "--repeat", str(args.scroll_up),
                                     "--delay", "40", "4"], env=env, cwd=root, check=True, timeout=30)
                     time.sleep(1)
+                if args.record is not None:
+                    from demo_recording import record
+                    record(args.record.resolve(), args.demo, env, root, width, height)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.beta_notice_interact:
