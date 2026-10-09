@@ -1,8 +1,8 @@
 ## What's new
 
-### Jcode Desktop 0.5.0
+### Jcode Desktop 0.5.1
 
-An account menu, drag and drop, self-healing turns, and a faster workspace
+An account menu, drag and drop, self-healing turns, and a faster workspace. This is the first public build of the 0.5 line, since 0.5.0 never cleared its FreeBSD release gate.
 
 #### Themes
 
@@ -34,6 +34,8 @@ An account menu, drag and drop, self-healing turns, and a faster workspace
 - A new thinking block starts when reasoning resumes after streamed text.
 - The transcript tail glides smoothly for every kind of growth, including very fast streams.
 - Windows uses an 8 MiB main-thread stack.
+- The welcome screen uses the same docked composer size as a chat.
+- FreeBSD builds again. The opt-in codemode tool is unavailable there.
 
 Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
 

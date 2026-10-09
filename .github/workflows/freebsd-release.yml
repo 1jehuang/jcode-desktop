@@ -53,7 +53,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 3a213174ab97a737e7f3df4eb574d1a6e65fe3e0 # Desktop 0.5.0 runtime: jcode master with turn retry, billing status and background tools
+          ref: 4a7400819dd1f4ed672f600ca60ce77ecefd7592 # Desktop 0.5.1 runtime: 0.5.0 runtime plus FreeBSD codemode build fix
           path: jcode
           submodules: recursive
       - name: Test FreeBSD graphical gate contracts
