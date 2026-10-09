@@ -16,6 +16,11 @@ pub struct StartupLayout {
     /// freed height can not flip it back and forth.
     #[serde(default)]
     pub(super) compact: bool,
+    /// The messages area has reached the space above the composer. Until
+    /// then its height trails the measured content by one frame, so any
+    /// overflow is transient and must not scroll or show a scrollbar.
+    #[serde(default)]
+    pub(super) filled: bool,
 }
 
 pub(super) fn input_marker(
@@ -30,6 +35,15 @@ pub(super) fn input_marker(
 }
 
 impl Panel {
+    /// Content still fits above the welcome composer, which moves down as it
+    /// grows. Its height trails measurement by a frame, so keep the first row
+    /// pinned and hide overflow chrome instead of flashing it every line.
+    pub(super) fn startup_growing(&self) -> bool {
+        self.startup_layout
+            .as_ref()
+            .is_some_and(|layout| !layout.filled)
+    }
+
     pub(super) fn release_startup_preview(&mut self) {
         if let Some(layout) = &mut self.startup_layout {
             if layout.preview && !self.items.is_empty() {
@@ -98,6 +112,7 @@ impl Panel {
                             messages_height: f32::from(input.top() - body.top()),
                             preview: true,
                             compact: false,
+                            filled: false,
                         };
                         (Some(next), false)
                     } else if let Some(mut layout) = current.clone() {
@@ -115,6 +130,11 @@ impl Panel {
                         let height = floor.max(wanted).min(available);
                         if (height - layout.messages_height).abs() > 0.5 {
                             layout.messages_height = height;
+                            notify = true;
+                        }
+                        let filled = wanted >= available - 0.5;
+                        if filled != layout.filled {
+                            layout.filled = filled;
                             notify = true;
                         }
                         (Some(layout), notify)

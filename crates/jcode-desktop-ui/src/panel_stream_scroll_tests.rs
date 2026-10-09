@@ -345,3 +345,67 @@ fn native_scrollbar_catch_up_resumes_following_streamed_output(cx: &mut gpui::Te
         });
     }
 }
+
+/// Each streamed line grows the welcome layout's messages area one frame after
+/// it is measured. That transient one-line overflow must not flash the
+/// scrollbar, the jump chip, or scroll the first row away and back.
+#[gpui::test]
+fn startup_stream_growth_does_not_flash_scrollbar(cx: &mut gpui::TestAppContext) {
+    for history in [false, true] {
+        let (panel, vcx) = cx.add_window_view(|_, cx| {
+            Panel::new("grow".into(), None, None, crate::harness::spawn_inert(), cx)
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(600.), px(500.)));
+        if history {
+            panel.update(vcx, |panel, cx| {
+                *panel.items = (0..30)
+                    .map(|n| Item::Assistant(format!("History {n}")))
+                    .collect();
+                cx.notify();
+            });
+        }
+        vcx.run_until_parked();
+        let mut seen = false;
+        let mut previous_height = 0.0;
+        for n in 0..40 {
+            panel.update(vcx, |panel, cx| {
+                panel.apply(
+                    &ApiEvent::TextDelta {
+                        message_id: None,
+                        session_id: "grow".into(),
+                        text: format!("line {n}\n\n"),
+                    },
+                    cx,
+                )
+            });
+            for frame in 0..3 {
+                vcx.executor()
+                    .advance_clock(std::time::Duration::from_millis(16));
+                vcx.update(|window, cx| window.simulate_next_frame(cx));
+                vcx.run_until_parked();
+                let present = vcx.debug_bounds("transcript-scrollbar").is_some();
+                let chip = vcx.debug_bounds("latest-pill-anchor").is_some();
+                let (height, offset) = panel.read_with(vcx, |panel, _| {
+                    (
+                        f32::from(panel.transcript_list.viewport_bounds().size.height),
+                        f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y),
+                    )
+                });
+                assert!(
+                    !(seen && !present),
+                    "history={history} line {n} frame {frame}: scrollbar disappeared"
+                );
+                assert!(!chip, "history={history} line {n}: jump chip flashed");
+                let growing = panel.read_with(vcx, |panel, _| panel.startup_growing());
+                if !history && growing && height > previous_height + 0.5 {
+                    assert!(!present, "line {n}: scrollbar shown while growing");
+                    assert_eq!(offset, 0.0, "line {n}: first row scrolled away");
+                }
+                seen |= present;
+                previous_height = previous_height.max(height);
+            }
+        }
+        assert!(seen, "history={history}: overflowing stream shows a scrollbar");
+    }
+}
