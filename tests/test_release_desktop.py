@@ -158,15 +158,16 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(monitor.call_args.args[1:3], (TAG, SHA))
 
     def test_source_versions_must_all_match(self):
-        for wrong_index in range(4):
-            manifests = ['[package]\nversion="0.3.0"\n'] * 4
+        count = len(release.MANIFESTS)
+        for wrong_index in range(count):
+            manifests = ['[package]\nversion="0.3.0"\n'] * count
             manifests[wrong_index] = '[package]\nversion="0.2.1"\n'
             with patch.object(release.policy, "git", side_effect=manifests):
                 with self.assertRaisesRegex(ValueError, "does not match requested"):
                     release.validate_versions(SHA, "0.3.0")
         with patch.object(release.policy, "git", return_value='[package]\nversion="0.3.0"\n') as git:
             release.validate_versions(SHA, "0.3.0")
-        self.assertEqual(git.call_count, 4)
+        self.assertEqual(git.call_count, count)
 
     def test_next_version_is_one_semver_step(self):
         tags = ["desktop-v0.3.2", "desktop-v0.3.2-beta.3", "desktop-v0.3.3", "desktop-v0.3.4-beta.1",
