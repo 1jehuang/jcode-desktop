@@ -52,6 +52,8 @@ mod activity;
 mod activity_state;
 #[path = "panel_scroll_motion.rs"]
 mod scroll_motion;
+#[path = "panel_steady_activity.rs"]
+mod steady_activity;
 #[path = "panel_tail_glide.rs"]
 mod tail_glide;
 use scroll_motion::WheelGlide;
@@ -493,6 +495,8 @@ pub struct Panel {
     /// Height of the floating composer dock. The transcript scrolls beneath
     /// it, padded by this much so the live end still clears the composer.
     composer_dock_height: f32,
+    /// Eased screen position of the live activity row.
+    steady_activity: steady_activity::SteadyCell,
     /// Padding last applied to the final transcript row. A change must
     /// remeasure that row, whose cached height includes it.
     transcript_end_pad: f32,
@@ -965,6 +969,7 @@ impl Panel {
             stick_to_bottom: true,
             transcript_end_visible: true,
             composer_dock_height: 0.0,
+            steady_activity: Default::default(),
             transcript_end_pad: 0.0,
             pending_history_scroll: None,
             bridge,
@@ -4535,6 +4540,12 @@ impl Render for Panel {
         let end_visible = std::rc::Rc::new(std::cell::Cell::new(false));
         let row_end_visible = end_visible.clone();
         let end_list = self.transcript_list.clone();
+        let steady_cell = self.steady_activity.clone();
+        // Smooth the spinner only while it rides the gliding tail. Manual
+        // scrolling must move it exactly with the content.
+        let steady_enabled = self.stick_to_bottom
+            && !instant_motion
+            && !crate::config::get().appearance.reduce_motion;
         let short_viewport = window.viewport_size().height < px(400.);
         let transcript = if fresh_session {
             div()
