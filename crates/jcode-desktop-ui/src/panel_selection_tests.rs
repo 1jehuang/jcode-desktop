@@ -209,11 +209,14 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
                 status: "pending".into(),
                 group: Some("Selection".into()),
                 blocked_by: vec![],
+                confidence: None,
+                completion_confidence: None,
             }],
             plan: TodoCardPlan {
                 user_intention: Some("Copy task text".into()),
                 ..Default::default()
             },
+            goals: Vec::new(),
         })];
         panel.pinned_todo_expanded = true;
         panel

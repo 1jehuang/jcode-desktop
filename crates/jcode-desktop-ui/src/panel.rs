@@ -310,11 +310,17 @@ pub struct TodoCardPayload {
     todos: Vec<TodoCardItem>,
     #[serde(default)]
     plan: TodoCardPlan,
+    /// Goal-level quality assessments, one per todo group.
+    #[serde(default)]
+    goals: Vec<jcode_base::todo::TodoGoal>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 struct TodoCardPlan {
+    #[serde(default)]
     user_intention: Option<String>,
+    #[serde(default, alias = "alignment_score", alias = "user_intention_alignment")]
+    understands_user_intent: Option<jcode_base::todo::IntentUnderstanding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -325,6 +331,10 @@ struct TodoCardItem {
     group: Option<String>,
     #[serde(default)]
     blocked_by: Vec<String>,
+    #[serde(default)]
+    confidence: Option<jcode_base::todo::ConfidenceState>,
+    #[serde(default)]
+    completion_confidence: Option<jcode_base::todo::ConfidenceState>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -955,7 +965,7 @@ impl Panel {
             offscreen_prompt: None,
             offscreen_prompt_clip: None,
             expanded_prompts: HashSet::new(),
-            pinned_todo_expanded: false,
+            pinned_todo_expanded: true,
             publish_tracker: false,
             publish_armed_at: None,
             transcript_selection,
@@ -5459,20 +5469,32 @@ fn parse_todo_tool_output(output: &str) -> Option<TodoCardPayload> {
     let mut stream =
         serde_json::Deserializer::from_str(output.trim_start()).into_iter::<Vec<TodoCardItem>>();
     let todos = stream.next()?.ok()?;
-    let remainder = output
+    let mut remainder = output
         .trim_start()
         .get(stream.byte_offset()..)?
         .trim_start();
-    let plan = remainder
-        .strip_prefix("Plan:")
+    let plan = if let Some(json) = remainder.strip_prefix("Plan:") {
+        let json = json.trim_start();
+        let mut plan_stream = serde_json::Deserializer::from_str(json).into_iter::<TodoCardPlan>();
+        let plan = plan_stream.next().and_then(Result::ok).unwrap_or_default();
+        remainder = json
+            .get(plan_stream.byte_offset()..)
+            .unwrap_or_default()
+            .trim_start();
+        plan
+    } else {
+        TodoCardPlan::default()
+    };
+    let goals = remainder
+        .strip_prefix("Goals:")
         .and_then(|json| {
             serde_json::Deserializer::from_str(json.trim_start())
-                .into_iter::<TodoCardPlan>()
+                .into_iter::<Vec<jcode_base::todo::TodoGoal>>()
                 .next()
                 .and_then(Result::ok)
         })
         .unwrap_or_default();
-    Some(TodoCardPayload { todos, plan })
+    Some(TodoCardPayload { todos, plan, goals })
 }
 
 fn todo_status_color(todo: &TodoCardItem) -> gpui::Rgba {
@@ -5524,6 +5546,184 @@ fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
         .when(todo.status == "in_progress", |marker| {
             marker.child(div().size_full().rounded_full().bg(Theme::global().ACCENT))
         })
+}
+
+/// Severity of one todo assessment value, mirroring the TUI todo card palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TodoTone {
+    Ok,
+    Warn,
+    Fail,
+}
+
+fn todo_tone_color(tone: TodoTone) -> gpui::Rgba {
+    match tone {
+        TodoTone::Ok => Theme::global().OK,
+        TodoTone::Warn => Theme::global().WARN,
+        TodoTone::Fail => Theme::global().ERROR,
+    }
+}
+
+/// One labeled gate value shown under a todo group, such as `Coverage main_paths`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TodoGateSegment {
+    label: &'static str,
+    state: String,
+    tone: TodoTone,
+}
+
+/// The goal's quality gates as the TUI shows them: only failing gates are
+/// listed, a single passing line otherwise, and delivery progress last.
+fn todo_goal_gate_segments(goal: &jcode_base::todo::TodoGoal) -> Vec<TodoGateSegment> {
+    use jcode_base::todo as t;
+    fn gate<S: Copy>(
+        label: &'static str,
+        state: Option<S>,
+        name: impl Fn(S) -> &'static str,
+        severe: impl Fn(S) -> bool,
+    ) -> TodoGateSegment {
+        match state {
+            None => TodoGateSegment {
+                label,
+                state: "missing".into(),
+                tone: TodoTone::Fail,
+            },
+            Some(state) => TodoGateSegment {
+                label,
+                state: name(state).into(),
+                tone: if severe(state) {
+                    TodoTone::Fail
+                } else {
+                    TodoTone::Warn
+                },
+            },
+        }
+    }
+
+    let mut segments = Vec::new();
+    if !t::feedback_loop_passes(goal.closed_feedback_loop) {
+        segments.push(gate(
+            "Closed feedback loop",
+            goal.closed_feedback_loop,
+            |s| s.as_str(),
+            |s| s <= t::FeedbackLoopState::Weak,
+        ));
+    }
+    if !t::feedback_loop_relevance_passes(goal) {
+        segments.push(gate(
+            "Relevance",
+            goal.feedback_loop_relevance,
+            |s| s.as_str(),
+            |s| s == t::FeedbackLoopRelevance::Indirect,
+        ));
+    }
+    if !t::feedback_loop_coverage_passes(goal) {
+        segments.push(gate(
+            "Coverage",
+            goal.feedback_loop_coverage,
+            |s| s.as_str(),
+            |s| s == t::FeedbackLoopCoverage::Narrow,
+        ));
+    }
+    if !t::feedback_loop_traceability_passes(goal) {
+        segments.push(gate(
+            "Traceability",
+            goal.feedback_loop_traceability,
+            |s| s.as_str(),
+            |s| s == t::FeedbackLoopTraceability::Unmapped,
+        ));
+    }
+    if segments.is_empty() {
+        segments.push(TodoGateSegment {
+            label: "",
+            state: "✓ All quality gates passing".into(),
+            tone: TodoTone::Ok,
+        });
+    }
+    if let Some(state) = goal.delivery_state {
+        segments.push(TodoGateSegment {
+            label: "Delivery",
+            state: state.as_str().into(),
+            tone: if state >= t::DeliveryState::WorkflowValidated {
+                TodoTone::Ok
+            } else if state == t::DeliveryState::Integrated {
+                TodoTone::Warn
+            } else {
+                TodoTone::Fail
+            },
+        });
+    }
+    segments
+}
+
+fn todo_goal_for_group<'a>(
+    goals: &'a [jcode_base::todo::TodoGoal],
+    group: Option<&str>,
+) -> Option<&'a jcode_base::todo::TodoGoal> {
+    let key = group.map(str::trim).filter(|value| !value.is_empty());
+    goals.iter().find(|goal| {
+        goal.group
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            == key
+    })
+}
+
+/// Evidence label for a todo row, matching the TUI: completed rows show how
+/// planning confidence moved, others their current confidence.
+fn todo_confidence_label(todo: &TodoCardItem) -> Option<String> {
+    if todo.status == "completed" {
+        if let (Some(planning), Some(completed)) = (todo.confidence, todo.completion_confidence)
+            && planning != completed
+        {
+            return Some(format!("{}→{}", planning.as_str(), completed.as_str()));
+        }
+        return todo
+            .completion_confidence
+            .or(todo.confidence)
+            .map(|state| state.as_str().to_string());
+    }
+    todo.confidence.map(|state| state.as_str().to_string())
+}
+
+fn render_todo_gate_row(goal: &jcode_base::todo::TodoGoal) -> impl IntoElement {
+    let theme = Theme::global();
+    div()
+        .debug_selector(|| "todo-goal-gates".into())
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap_x_1()
+        .pl(px(19.0))
+        .text_size(px(11.0))
+        .children(todo_goal_gate_segments(goal).into_iter().enumerate().map(
+            move |(index, segment)| {
+                div()
+                    .flex()
+                    .gap_1()
+                    .when(index > 0, |row| {
+                        row.child(div().text_color(theme.TEXT_FAINT).child("·"))
+                    })
+                    .when(!segment.label.is_empty(), |row| {
+                        row.child(div().text_color(theme.TEXT_DIM).child(segment.label))
+                    })
+                    .child(
+                        div()
+                            .text_color(todo_tone_color(segment.tone))
+                            .child(segment.state),
+                    )
+            },
+        ))
+}
+
+fn intent_understanding_tone(state: jcode_base::todo::IntentUnderstanding) -> TodoTone {
+    use jcode_base::todo::IntentUnderstanding as I;
+    match state {
+        I::Uncertain => TodoTone::Fail,
+        I::Partial => TodoTone::Warn,
+        I::Clear | I::Complete => TodoTone::Ok,
+    }
 }
 
 const PINNED_TODO_DOT_LIMIT: usize = 8;
@@ -5785,7 +5985,8 @@ fn render_todo_card_with_style(
             // column. Give every level an explicit width so each row's flex_1
             // text child receives space instead of collapsing to zero width.
             let mut section = div().flex().flex_col().w_full();
-            if group.is_some() || payload.todos.iter().any(|todo| todo.group.is_some()) {
+            let has_any_group = payload.todos.iter().any(|todo| todo.group.is_some());
+            if group.is_some() || has_any_group {
                 section = section.child(
                     div()
                         .flex()
@@ -5814,6 +6015,9 @@ fn render_todo_card_with_style(
                                 .child(format!("{done}/{}", todos.len())),
                         ),
                 );
+            }
+            if let Some(goal) = todo_goal_for_group(&payload.goals, group) {
+                section = section.child(render_todo_gate_row(goal));
             }
             for (todo_index, todo) in todos.into_iter().enumerate() {
                 section = section.child(
@@ -5847,7 +6051,17 @@ fn render_todo_card_with_style(
                                     window,
                                     cx,
                                 )),
-                        ),
+                        )
+                        .when_some(todo_confidence_label(todo), |row, label| {
+                            row.child(
+                                div()
+                                    .debug_selector(|| "todo-row-confidence".into())
+                                    .flex_none()
+                                    .text_size(px(10.5))
+                                    .text_color(Theme::global().TEXT_FAINT)
+                                    .child(label),
+                            )
+                        }),
                 );
             }
             body = body.child(section);
@@ -5867,15 +6081,31 @@ fn render_todo_card_with_style(
             .when_some(intention, |paper, intention| {
                 paper.child(
                     div()
+                        .flex()
+                        .gap_1()
                         .text_size(px(12.0))
-                        .text_color(Theme::global().TEXT_USER)
-                        .child(text_selection::plain(
-                            selection.clone(),
-                            format!("{key}-intention"),
-                            intention,
-                            window,
-                            cx,
-                        )),
+                        .when_some(payload.plan.understands_user_intent, |line, state| {
+                            line.child(
+                                div()
+                                    .debug_selector(|| "pinned-todo-intent-state".into())
+                                    .flex_none()
+                                    .text_color(todo_tone_color(intent_understanding_tone(state)))
+                                    .child(state.as_str()),
+                            )
+                        })
+                        .child(
+                            div()
+                                .min_w_0()
+                                .flex_1()
+                                .text_color(Theme::global().TEXT_USER)
+                                .child(text_selection::plain(
+                                    selection.clone(),
+                                    format!("{key}-intention"),
+                                    intention,
+                                    window,
+                                    cx,
+                                )),
+                        ),
                 )
             })
             .child(body)
@@ -6129,15 +6359,20 @@ mod tests {
                         status: "completed".into(),
                         group: None,
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     },
                     TodoCardItem {
                         content: "next".into(),
                         status: "pending".into(),
                         group: None,
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             }));
             assert_eq!(panel.latest_todo_progress(), Some((1, 2)));
             assert_eq!(panel.minimap_state(), MinimapSessionState::Idle);
@@ -6148,8 +6383,11 @@ mod tests {
                     status: "completed".into(),
                     group: None,
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 }],
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             }));
             assert_eq!(panel.latest_todo_progress(), Some((1, 1)));
             assert_eq!(panel.minimap_state(), MinimapSessionState::Complete);
@@ -6251,15 +6489,20 @@ mod tests {
                         status: "completed".into(),
                         group: None,
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     },
                     TodoCardItem {
                         content: "remaining".into(),
                         status: "pending".into(),
                         group: None,
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     },
                 ],
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             }));
             cx.notify();
         });
@@ -6288,8 +6531,11 @@ mod tests {
                     status: "completed".into(),
                     group: None,
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 }],
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             }));
             cx.notify();
         });
@@ -8920,12 +9166,70 @@ Goals: []"#,
     }
 
     #[test]
+    fn todo_tool_output_parses_goals_intent_and_confidence_like_the_tui() {
+        let output = r#"[{"content":"Ship","status":"completed","priority":"high","id":"1","group":"Desktop","confidence":"plausible","completion_confidence":"validated"},{"content":"Next","status":"pending","priority":"high","id":"2","group":"Desktop","confidence":"speculative"}]
+
+Plan:
+{"user_intention":"Pinned todos stay open","understands_user_intent":"partial"}
+
+Goals:
+[{"group":"Desktop","closed_feedback_loop":"usable","feedback_loop_relevance":"representative","feedback_loop_coverage":"main_paths","feedback_loop_traceability":"partial","delivery_state":"integrated"}]"#;
+        let payload = parse_todo_tool_output(output).unwrap();
+        assert_eq!(
+            payload.plan.understands_user_intent,
+            Some(jcode_base::todo::IntentUnderstanding::Partial)
+        );
+        assert_eq!(
+            todo_confidence_label(&payload.todos[0]).as_deref(),
+            Some("plausible→validated")
+        );
+        assert_eq!(
+            todo_confidence_label(&payload.todos[1]).as_deref(),
+            Some("speculative")
+        );
+        let goal = todo_goal_for_group(&payload.goals, Some("Desktop")).unwrap();
+        let labels: Vec<_> = todo_goal_gate_segments(goal)
+            .into_iter()
+            .map(|segment| (segment.label, segment.state, segment.tone))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("Closed feedback loop", "usable".into(), TodoTone::Warn),
+                ("Delivery", "integrated".into(), TodoTone::Warn),
+            ]
+        );
+
+        let passing = jcode_base::todo::TodoGoal {
+            closed_feedback_loop: Some(jcode_base::todo::FeedbackLoopState::Closed),
+            feedback_loop_relevance: Some(
+                jcode_base::todo::FeedbackLoopRelevance::AcceptanceAligned,
+            ),
+            feedback_loop_coverage: Some(
+                jcode_base::todo::FeedbackLoopCoverage::EdgeAndIntegrationPaths,
+            ),
+            feedback_loop_traceability: Some(jcode_base::todo::FeedbackLoopTraceability::Complete),
+            ..Default::default()
+        };
+        let segments = todo_goal_gate_segments(&passing);
+        assert_eq!(segments.len(), 1);
+        assert_eq!(segments[0].tone, TodoTone::Ok);
+        assert!(
+            todo_goal_gate_segments(&Default::default())
+                .iter()
+                .all(|segment| segment.state == "missing" && segment.tone == TodoTone::Fail)
+        );
+    }
+
+    #[test]
     fn pinned_todo_summary_excludes_cancelled_and_prefers_in_progress() {
         let item = |content: &str, status: &str| TodoCardItem {
             content: content.into(),
             status: status.into(),
             group: None,
             blocked_by: vec![],
+            confidence: None,
+            completion_confidence: None,
         };
         let payload = TodoCardPayload {
             todos: vec![
@@ -8935,6 +9239,7 @@ Goals: []"#,
                 item("removed", "cancelled"),
             ],
             plan: TodoCardPlan::default(),
+            goals: Vec::new(),
         };
 
         assert_eq!(
@@ -8950,6 +9255,7 @@ Goals: []"#,
         let pending_only = TodoCardPayload {
             todos: vec![item("next", "pending"), item("removed", "cancelled")],
             plan: TodoCardPlan::default(),
+            goals: Vec::new(),
         };
         assert_eq!(
             pinned_todo_summary(&pending_only),
@@ -8977,6 +9283,8 @@ Goals: []"#,
                     .into(),
                     group: None,
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 })
                 .collect();
             let summary = pinned_todo_summary(&payload);
@@ -9028,7 +9336,7 @@ Goals: []"#,
             .expect("todo card should be pinned outside the transcript");
         let summary = vcx
             .debug_bounds("pinned-todo-summary")
-            .expect("pinned todo starts as a compact summary");
+            .expect("pinned todo shows its summary header");
         assert!(
             vcx.debug_bounds("pinned-latest-prompt").is_none(),
             "a visible transcript prompt must not be duplicated above the todo card"
@@ -9062,17 +9370,8 @@ Goals: []"#,
         }
         assert!(vcx.debug_bounds("pinned-todo-dot-2").is_none());
         assert!(vcx.debug_bounds("pinned-todo-overflow").is_none());
-        assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());
         assert!(vcx.debug_bounds("tool-inline").is_none());
 
-        vcx.simulate_event(gpui::MouseDownEvent {
-            button: gpui::MouseButton::Left,
-            position: summary.center(),
-            modifiers: gpui::Modifiers::default(),
-            click_count: 1,
-            first_mouse: false,
-        });
-        vcx.run_until_parked();
         let expanded_summary = vcx.debug_bounds("pinned-todo-summary").unwrap();
         assert_eq!(
             expanded_summary, summary,
@@ -9088,7 +9387,7 @@ Goals: []"#,
         );
         let _expanded = vcx
             .debug_bounds("pinned-todo-expanded")
-            .expect("clicking the summary expands the pinned details");
+            .expect("pinned details start expanded");
 
         vcx.simulate_event(gpui::MouseDownEvent {
             button: gpui::MouseButton::Left,
@@ -9101,6 +9400,16 @@ Goals: []"#,
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("pinned-todo-expanded").is_none());
         assert!(vcx.debug_bounds("pinned-todo-summary").is_some());
+        vcx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: summary.center(),
+            modifiers: gpui::Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("pinned-todo-expanded").is_some());
+        assert!(vcx.debug_bounds("todo-row-confidence").is_some());
 
         panel.update(vcx, |panel, cx| {
             *panel.items = vec![Item::Todos(TodoCardPayload {
@@ -9110,9 +9419,12 @@ Goals: []"#,
                         status: "completed".into(),
                         group: None,
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     })
                     .collect(),
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             })];
             cx.notify();
         });
@@ -9229,9 +9541,12 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                         status: "completed".into(),
                         group: Some("Todo group header".into()),
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     })
                     .collect(),
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             }),
             Item::Assistant("The completed header now keeps the task group name. The green dots show that both tasks are complete.".into()),
         ];
@@ -9446,29 +9761,50 @@ fn demo_item_fixtures() -> Vec<Item> {
                     status: "completed".into(),
                     group: Some("Desktop".into()),
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 },
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
                     status: "in_progress".into(),
                     group: Some("Desktop".into()),
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 },
                 TodoCardItem {
                     content: "Inspect the real offline screenshot".into(),
                     status: "pending".into(),
                     group: Some("Validation".into()),
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 },
                 TodoCardItem {
                     content: "Retired task".into(),
                     status: "cancelled".into(),
                     group: None,
                     blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
                 },
             ],
             plan: TodoCardPlan {
                 user_intention: Some("See current work without losing transcript space".into()),
+                understands_user_intent: Some(jcode_base::todo::IntentUnderstanding::Clear),
             },
+            goals: vec![jcode_base::todo::TodoGoal {
+                group: Some("Desktop".into()),
+                closed_feedback_loop: Some(jcode_base::todo::FeedbackLoopState::Usable),
+                feedback_loop_relevance: Some(
+                    jcode_base::todo::FeedbackLoopRelevance::Representative,
+                ),
+                feedback_loop_coverage: Some(jcode_base::todo::FeedbackLoopCoverage::MainPaths),
+                feedback_loop_traceability: Some(
+                    jcode_base::todo::FeedbackLoopTraceability::Partial,
+                ),
+                ..Default::default()
+            }],
         }),
         Item::Assistant(
             "# Heading one\n## Heading two\n\nA paragraph with *italic*, **bold**, `inline code`, and math $e^{i\\pi}+1=0$ plus \\(n \\to \\infty\\).\n\n- top level\n  - nested item\n- [x] finished task\n- [ ] pending task\n\n1. first\n2. second\n\n> A quote line\n> continued here\n\n| block | supported |\n| --- | --- |\n| tables | yes |\n| code | yes |\n\n```rust\nfn main() {\n    // a comment\n    let name = \"world\";\n    println!(\"hello {name}\");\n}\n```\n\n$$\n\\sum_{i=0}^{n} i^2\n$$\n\n\\[ E = mc^2 \\]\n\n---\n\nDone."

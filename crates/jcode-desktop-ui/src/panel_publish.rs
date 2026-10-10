@@ -50,9 +50,12 @@ impl Panel {
                         status: status.into(),
                         group: None,
                         blocked_by: vec![],
+                        confidence: None,
+                        completion_confidence: None,
                     })
                     .collect(),
                 plan: TodoCardPlan::default(),
+                goals: Vec::new(),
             }),
             Item::Assistant(
                 "Tagged `desktop-v0.3.2` at `origin/main` and dispatched the native builds. Waiting on the macOS and cross-platform workflows.".into(),
