@@ -2075,7 +2075,7 @@ impl Panel {
                             "Automatic updates are unavailable in this build of Jcode Desktop.",
                     };
                     self.items.push(Item::Assistant(message.into()));
-                    #[cfg(target_os = "linux")]
+                    #[cfg(not(target_os = "macos"))]
                     if request == crate::updates::UpdateRequest::Checking {
                         cx.spawn(async move |this, cx| {
                             loop {
@@ -2084,6 +2084,9 @@ impl Panel {
                                 let result = match crate::updates::current() {
                                     crate::updates::UpdateState::Finished { message } => Some(Ok(message)),
                                     crate::updates::UpdateState::Failed { message } => Some(Err(message)),
+                                    crate::updates::UpdateState::ReadyToRestart { version } => Some(Ok(format!(
+                                        "Jcode Desktop {version} is installed. Run `/update` again or click the update chip to restart into it now, or it starts the next time you open Jcode Desktop."
+                                    ))),
                                     crate::updates::UpdateState::Idle => break,
                                     _ => None,
                                 };

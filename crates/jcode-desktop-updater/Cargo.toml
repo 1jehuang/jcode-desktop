@@ -1,0 +1,26 @@
+[package]
+name = "jcode-desktop-updater"
+version = "0.5.1"
+edition.workspace = true
+license.workspace = true
+description = "Jcode Desktop's self-updater for Linux, FreeBSD and Windows packages, without GPUI"
+
+# GPUI-free so the update path compiles and tests in about a second, and so the
+# headless `jcode-desktop --update` entry point and the background updater share
+# exactly one implementation. macOS updates through Sparkle instead.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+anyhow = "1"
+flate2 = "1"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+semver = "1"
+serde_json = "1.0.151"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

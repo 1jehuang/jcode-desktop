@@ -1,11 +1,10 @@
 //! Shared desktop updater state. macOS registers Sparkle callbacks. Linux
-//! rebuilds source checkouts through the host or updates managed user bundles.
+//! source checkouts rebuild through the host. Packaged Linux, FreeBSD and
+//! Windows builds update themselves through `jcode_desktop_updater`.
 
 #[cfg(target_os = "linux")]
 mod linux;
-#[cfg(target_os = "linux")]
-mod linux_package;
-mod release;
+mod packaged;
 
 use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
@@ -125,7 +124,15 @@ pub fn ensure_release_check() {
         return;
     }
     if crate::harness::screenshot_mode() {
-        // Offline screenshots must never contact the network.
+        // Offline screenshots must never contact the network, except the
+        // automatic-update acceptance test, which opts in to the live channel.
+        if std::env::var_os("JCODE_DESKTOP_LIVE_UPDATE_TEST").is_some() && packaged::supported() {
+            *state = ReleaseStatus::Checking;
+            drop(state);
+            report_active();
+            packaged::schedule();
+            return;
+        }
         *state = fixture_release_status(
             &std::env::var("JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS")
                 .unwrap_or_else(|_| "source".into()),
@@ -140,11 +147,17 @@ pub fn ensure_release_check() {
     }
     *state = ReleaseStatus::Checking;
     drop(state);
+    report_active();
+    // Packaged builds without Sparkle download updates on their own, the same
+    // way Sparkle does on macOS.
+    if CHECK_NOW.load(Ordering::Acquire).is_null() && packaged::supported() {
+        packaged::schedule();
+    }
     if let Err(error) = std::thread::Builder::new()
         .name("desktop-release-check".into())
         .spawn(|| {
             let result = std::panic::catch_unwind(|| {
-                compare_release(env!("JCODE_DESKTOP_VERSION"), release::latest()?)
+                compare_release(env!("JCODE_DESKTOP_VERSION"), jcode_desktop_updater::latest()?)
             })
             .unwrap_or_else(|_| Err(anyhow::anyhow!("Release checker unexpectedly stopped")));
             store_release_status(match result {
@@ -159,6 +172,17 @@ pub fn ensure_release_check() {
             message: format!("Could not start release checker: {error}"),
         });
     }
+}
+
+/// Anonymous fleet version telemetry for a packaged build: at most once per day
+/// per version, honoring the user's telemetry opt-out. This is how we measure
+/// whether a release actually reaches users.
+fn report_active() {
+    let _ = std::thread::Builder::new()
+        .name("desktop-active".into())
+        .spawn(|| {
+            jcode_base::telemetry::record_desktop_active(crate::update_entry::RELEASE_VERSION)
+        });
 }
 
 /// Forget the cached release result so the next render checks again.
@@ -342,22 +366,25 @@ pub fn request_now() -> UpdateRequest {
         return UpdateRequest::Checking;
     }
     #[cfg(all(target_os = "linux", not(test)))]
-    {
+    if linux::is_source_checkout() {
         let _ = previous;
         linux::start();
-        UpdateRequest::Checking
+        return UpdateRequest::Checking;
     }
-    #[cfg(any(not(target_os = "linux"), test))]
-    {
-        set(previous);
-        UpdateRequest::Unavailable
+    #[cfg(not(test))]
+    if packaged::supported() {
+        let _ = previous;
+        packaged::start();
+        return UpdateRequest::Checking;
     }
+    set(previous);
+    UpdateRequest::Unavailable
 }
 
 /// Ask the platform updater to install the staged build and relaunch.
 /// Returns whether an installer was actually available to call.
 pub fn install_now() -> bool {
-    call_action(&INSTALL_NOW)
+    call_action(&INSTALL_NOW) || (!cfg!(test) && packaged::install_now())
 }
 
 #[cfg(test)]

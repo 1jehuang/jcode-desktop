@@ -1,0 +1,184 @@
+name: Linux and Windows auto-update matrix
+run-name: Update Linux and Windows Desktop to the live release
+
+# Proves that a Jcode Desktop already on users' machines reaches the newest
+# published release on its own, on every platform and install shape we ship:
+#   Linux x86_64 and ARM64: extracted tarball, ~/.local managed install, and a
+#     root-owned system copy (what the .deb installs)
+#   Windows x64 and ARM64: the extracted zip, swapping the running executable
+# The desktop under test is this commit built as an older version, so the live
+# public channel always has something newer for it. It runs the real
+# `jcode-desktop --update`, the same updater the app runs in the background.
+# The Linux GUI job also launches the app with no input and requires it to
+# download the update itself and restart onto it.
+#
+# macOS is covered by macos-update-matrix.yml, which updates every published
+# macOS build through Sparkle.
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: ["Publish public desktop downloads"]
+    types: [completed]
+  schedule:
+    - cron: "17 10 * * *"
+  push:
+    branches: [main]
+    paths:
+      - crates/jcode-desktop-updater/**
+      - crates/jcode-desktop-ui/src/updates.rs
+      - crates/jcode-desktop-ui/src/updates/**
+      - crates/jcode-desktop-ui/src/update_entry.rs
+      - crates/jcode-desktop-ui/src/workspace_restart.rs
+      - scripts/e2e-update.*
+      - scripts/accept-linux-update.py
+      - .github/workflows/update-matrix.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Any version older than every release the channel will publish.
+  OLD_VERSION: 0.0.1
+
+jobs:
+  linux:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            gui: true
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            gui: false
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: jcode-desktop
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: 99ffe63c64f84021b796b0ae1781b6b3b688a792 # keep in step with cross-platform-release.yml
+          path: jcode
+          submodules: recursive
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: |
+            jcode-desktop
+            jcode
+          cache-on-failure: true
+          key: update-${{ matrix.target }}
+      - name: Install build and GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dri \
+            mesa-vulkan-drivers openbox xvfb xdotool imagemagick tesseract-ocr
+      - name: Updater unit tests
+        working-directory: jcode-desktop
+        run: cargo test -p jcode-desktop-updater
+      - name: Build this commit as an old release
+        working-directory: jcode-desktop
+        env:
+          JCODE_DESKTOP_VERSION: ${{ env.OLD_VERSION }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin jcode-desktop
+          cp target/${{ matrix.target }}/release/jcode-desktop "$RUNNER_TEMP/jcode-desktop-old"
+          "$RUNNER_TEMP/jcode-desktop-old" --version
+      - name: Update every install shape from the live channel
+        run: |
+          python3 jcode-desktop/scripts/e2e-update.py "$RUNNER_TEMP/jcode-desktop-old" \
+            --evidence "$RUNNER_TEMP/e2e-evidence.json"
+      - name: The app updates itself and restarts onto the update
+        if: matrix.gui
+        working-directory: jcode-desktop/scripts
+        run: |
+          for shape in tarball managed system; do
+            python3 accept-linux-update.py "$RUNNER_TEMP/gui-$shape" \
+              --binary "$RUNNER_TEMP/jcode-desktop-old" --shape "$shape"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: update-evidence-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/e2e-evidence.json
+            ${{ runner.temp }}/gui-*/*.png
+            ${{ runner.temp }}/gui-*/*.txt
+            ${{ runner.temp }}/gui-*/*.json
+            ${{ runner.temp }}/gui-*/*.log
+            ${{ runner.temp }}/gui-*/restart/restart.log
+          if-no-files-found: ignore
+
+  windows:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            arch: amd64
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: amd64_arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: jcode-desktop
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: 99ffe63c64f84021b796b0ae1781b6b3b688a792 # keep in step with cross-platform-release.yml
+          path: jcode
+          submodules: recursive
+      - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: ${{ matrix.arch }}
+      - name: Disable POSIX rustc wrapper on Windows
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_BUILD_RUSTC_WRAPPER='
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        with:
+          workspaces: |
+            jcode-desktop
+            jcode
+          cache-on-failure: true
+          key: update-${{ matrix.target }}
+      - name: Updater unit tests
+        working-directory: jcode-desktop
+        run: cargo test -p jcode-desktop-updater --target ${{ matrix.target }}
+      - name: Build this commit as an old release
+        working-directory: jcode-desktop
+        shell: pwsh
+        env:
+          JCODE_DESKTOP_VERSION: ${{ env.OLD_VERSION }}
+        run: |
+          cargo build --release --target ${{ matrix.target }} --bin jcode-desktop
+          if ($LASTEXITCODE) { throw 'build failed' }
+          Copy-Item "target/${{ matrix.target }}/release/jcode-desktop.exe" "$env:RUNNER_TEMP/jcode-desktop-old.exe"
+          & "$env:RUNNER_TEMP/jcode-desktop-old.exe" --version
+      - name: Update the zip install from the live channel
+        shell: pwsh
+        run: ./jcode-desktop/scripts/e2e-update.ps1 -Binary "$env:RUNNER_TEMP/jcode-desktop-old.exe"

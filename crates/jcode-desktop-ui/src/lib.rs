@@ -34,6 +34,7 @@ mod preview_control;
 pub mod preview_state;
 mod publish;
 mod restart_spawn;
+pub mod update_entry;
 mod resume_content_search;
 mod sound_events;
 mod sounds;

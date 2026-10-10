@@ -102,7 +102,11 @@ fn strip_transient(args: &[String]) -> Vec<String> {
 /// a hot reload retires it and the next generation's loop takes over the same
 /// file. A closed window removes its manifest.
 pub(crate) fn install(workspace: &Entity<Workspace>, window: &Window, app: &mut App) {
-    if cfg!(test) || crate::harness::screenshot_mode() {
+    // Offline screenshots never write restart state, except the live update
+    // acceptance test, which isolates JCODE_DESKTOP_RESTART_DIR and restarts.
+    let live_update_test = std::env::var_os("JCODE_DESKTOP_LIVE_UPDATE_TEST").is_some()
+        && std::env::var_os("JCODE_DESKTOP_RESTART_DIR").is_some();
+    if cfg!(test) || (crate::harness::screenshot_mode() && !live_update_test) {
         return;
     }
     let Some(dir) = manifests_dir() else { return };
@@ -221,7 +225,12 @@ fn process_alive(pid: u32) -> bool {
         .is_some_and(|state| state != "Z" && state != "X")
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    windows_process::alive(pid)
+}
+
+#[cfg(not(any(unix, windows)))]
 fn process_alive(_: u32) -> bool {
     false
 }
@@ -337,8 +346,63 @@ fn stop_processes(pids: &[u32], log: &mut Log) {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn stop_processes(pids: &[u32], log: &mut Log) {
+    // Windows has no SIGTERM. Window snapshots were flushed by the manifest
+    // loop, so terminating is safe, and crash recovery is disarmed by the
+    // restart's own restore files taking precedence.
+    for pid in pids {
+        if !windows_process::terminate(*pid) {
+            log.line(format!("could not stop pid {pid}"));
+        }
+    }
+    wait_until(Duration::from_secs(6), || {
+        pids.iter().all(|pid| !process_alive(*pid))
+    });
+}
+
+#[cfg(not(any(unix, windows)))]
 fn stop_processes(_: &[u32], _: &mut Log) {}
+
+#[cfg(windows)]
+mod windows_process {
+    type Handle = *mut std::ffi::c_void;
+    const PROCESS_TERMINATE: u32 = 0x0001;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+    const STILL_ACTIVE: u32 = 259;
+
+    unsafe extern "system" {
+        fn OpenProcess(access: u32, inherit: i32, pid: u32) -> Handle;
+        fn CloseHandle(handle: Handle) -> i32;
+        fn GetExitCodeProcess(handle: Handle, code: *mut u32) -> i32;
+        fn TerminateProcess(handle: Handle, code: u32) -> i32;
+    }
+
+    pub fn alive(pid: u32) -> bool {
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let mut code = 0;
+            let ok = GetExitCodeProcess(handle, &mut code) != 0;
+            CloseHandle(handle);
+            ok && code == STILL_ACTIVE
+        }
+    }
+
+    pub fn terminate(pid: u32) -> bool {
+        unsafe {
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if handle.is_null() {
+                return false;
+            }
+            let ok = TerminateProcess(handle, 0) != 0;
+            CloseHandle(handle);
+            ok
+        }
+    }
+}
 
 fn reload_server(log: &mut Log) {
     let jcode = crate::platform::companion_executable("jcode");
@@ -434,7 +498,13 @@ fn relaunch(executable: &Path, restore_dir: &Path, manifests: &[Manifest], log: 
 
 /// Entry point for `jcode-desktop --restart-all-worker`.
 pub fn run_worker(args: impl IntoIterator<Item = OsString>) -> i32 {
-    let restart_server = !args.into_iter().any(|arg| arg == NO_SERVER_FLAG);
+    let args: Vec<OsString> = args.into_iter().collect();
+    let restart_server = !args.iter().any(|arg| arg == NO_SERVER_FLAG);
+    let relaunch_executable = args.iter().find_map(|arg| {
+        arg.to_str()?
+            .strip_prefix(crate::restart_spawn::RELAUNCH_FLAG)
+            .map(PathBuf::from)
+    });
     let Some(root) = root() else {
         eprintln!("restart-all: no state directory");
         return 1;
@@ -468,7 +538,7 @@ pub fn run_worker(args: impl IntoIterator<Item = OsString>) -> i32 {
         manifests.len(),
         pids.len()
     ));
-    let executable = match crate::platform::self_executable() {
+    let executable = match relaunch_executable.map_or_else(crate::platform::self_executable, Ok) {
         Ok(executable) => executable,
         Err(error) => {
             log.line(format!("cannot locate desktop executable: {error}"));

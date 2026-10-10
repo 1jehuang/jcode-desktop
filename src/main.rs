@@ -514,9 +514,18 @@ fn main() {
     }
     configure_system_allocator();
     jcode_desktop_ui::memory::disable_transparent_huge_pages();
+    // A system package cannot update itself. Once an update adopted a newer
+    // per-user copy, launching the system copy runs that one instead, for
+    // `--version` and `--update` too, so they describe what actually runs.
+    jcode_desktop_ui::update_entry::redirect_to_newer_install_if_present();
     if env::args_os().any(|argument| argument == "--version" || argument == "-V") {
         println!("Jcode Desktop {}", jcode_desktop_ui::build_version());
         return;
+    }
+    // `--update` runs the same updater the app uses, without a window, so CI
+    // can prove every published build updates on every platform.
+    if let Some(code) = jcode_desktop_ui::update_entry::run_update_command_if_requested() {
+        std::process::exit(code);
     }
     // Global compositor shortcuts forward only. A missing or older host must
     // never turn a keypress into a fresh application or recovered microphone.

@@ -85,7 +85,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 4a7400819dd1f4ed672f600ca60ce77ecefd7592 # Desktop 0.5.1 runtime: 0.5.0 runtime plus FreeBSD codemode build fix
+          ref: 99ffe63c64f84021b796b0ae1781b6b3b688a792 # Desktop 0.5.1 runtime plus Desktop fleet/update telemetry (branch desktop-runtime-0.5)
           path: jcode
           submodules: recursive
       - name: Validate release target and publication contracts

@@ -1,4 +1,5 @@
-//! Linux dispatch. Source checkouts deliberately rebuild local work, not git pull.
+//! Linux source checkouts: `/update` rebuilds local work through the host's
+//! Ctrl+R reload, never a git pull. Packaged builds use `packaged.rs`.
 use std::{
     io::{Read, Write},
     os::unix::net::UnixStream,
@@ -9,6 +10,18 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use super::{UpdateState, set};
+
+/// Whether this process runs straight out of this crate's Cargo checkout.
+pub(super) fn is_source_checkout() -> bool {
+    let Ok(executable) = std::env::current_exe() else {
+        return false;
+    };
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    manifest
+        .parent()
+        .and_then(Path::parent)
+        .is_some_and(|root| source_executable(&executable, root))
+}
 
 pub(super) fn start() {
     if let Err(error) = std::thread::Builder::new()
@@ -52,7 +65,7 @@ fn update() -> Result<String> {
         request_reload(&socket_path(&args))?;
         return Ok("Requested Jcode Desktop's Ctrl+R rebuild-and-reload of the current checkout. This does not fetch Git changes or update the CLI. The current window stays open. Build and activation results are recorded in the desktop log.".into());
     }
-    super::linux_package::update()
+    bail!("not a source checkout")
 }
 
 pub(super) fn source_executable(executable: &Path, checkout: &Path) -> bool {
