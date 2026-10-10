@@ -120,6 +120,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh workflow run macos-update-matrix.yml --repo "$GITHUB_REPOSITORY" --ref main
+      - name: Trigger Linux and Windows auto-update matrix against the new release
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run update-matrix.yml --repo "$GITHUB_REPOSITORY" --ref main
       - name: Dispatch verified public Desktop Discord announcement
         id: discord_dispatch
         if: ${{ !cancelled() && steps.website_verification.outcome == 'success' }}

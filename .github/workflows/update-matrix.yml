@@ -16,10 +16,8 @@ run-name: Update Linux and Windows Desktop to the live release
 # macOS build through Sparkle.
 
 on:
+  # Dispatched by publish-public-release.yml after every public release.
   workflow_dispatch:
-  workflow_run:
-    workflows: ["Publish public desktop downloads"]
-    types: [completed]
   schedule:
     - cron: "17 10 * * *"
   push:
@@ -47,7 +45,7 @@ env:
 
 jobs:
   linux:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+
     strategy:
       fail-fast: false
       matrix:
@@ -126,7 +124,7 @@ jobs:
           if-no-files-found: ignore
 
   windows:
-    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
+
     strategy:
       fail-fast: false
       matrix:
