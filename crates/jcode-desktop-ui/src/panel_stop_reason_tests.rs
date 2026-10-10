@@ -268,9 +268,9 @@ fn active_disconnect_reports_unknown_outcome_not_a_confirmed_crash(cx: &mut gpui
         assert!(panel.prompt_queue.paused);
         let notice = notices(panel);
         assert_eq!(notice.len(), 1);
-        assert_eq!(notice[0].title, "Connection lost: response outcome unknown");
-        assert!(notice[0].detail.contains("Socket closed"));
-        assert!(notice[0].detail.contains("not a confirmed crash"));
+        assert_eq!(notice[0].title, "Connection lost. Reconnecting…");
+        assert_eq!(notice[0].detail, "The response may still be running.");
+        assert_eq!(notice[0].raw.as_deref(), Some("Socket closed"));
         assert!(!notice[0].failure);
         assert!(notice[0].provisional);
         assert_ne!(panel.status, "crashed");
@@ -287,6 +287,26 @@ fn active_disconnect_reports_unknown_outcome_not_a_confirmed_crash(cx: &mut gpui
     assert!(vcx.debug_bounds("response-stop-notice").is_some());
     assert!(vcx.debug_bounds("transcript-activity").is_none());
     assert!(vcx.debug_bounds("panel-activity-spinner").is_none());
+}
+
+#[gpui::test]
+fn stale_socket_notice_is_short_and_copies_the_raw_error(cx: &mut gpui::TestAppContext) {
+    const RAW: &str = "connect_failed: /run/user/1000/jcode-api.sock exists but refuses connections: a previous harness left a stale socket behind. Remove it and start the harness again.";
+    let (panel, vcx) = cx.add_window_view(|_, cx| active_panel(cx));
+    panel.update(vcx, |panel, cx| {
+        panel.connection_lost(RAW, cx);
+        let notice = notices(panel);
+        assert_eq!(
+            notice[0].detail,
+            "Can't reach the Jcode runtime. The response may still be running."
+        );
+    });
+    vcx.run_until_parked();
+    let copy = vcx.debug_bounds("stop-notice-copy").expect("copy pill");
+    vcx.simulate_click(copy.center(), gpui::Modifiers::default());
+    vcx.update(|_, cx| {
+        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(RAW))
+    });
 }
 
 #[gpui::test]

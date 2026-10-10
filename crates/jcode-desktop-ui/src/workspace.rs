@@ -2432,7 +2432,10 @@ impl Workspace {
             }
             Update::Disconnected { reason } => {
                 self.connected = false;
-                self.status = format!("disconnected: {reason} (retrying)");
+                self.status = format!(
+                    "{} Reconnecting…",
+                    crate::friendly_error::summarize(&reason)
+                );
             }
             Update::SessionLost { session_id, reason } => {
                 self.set_cloud_transport_connected(&session_id, false);

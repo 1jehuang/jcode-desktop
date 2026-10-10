@@ -108,8 +108,36 @@ pub(super) fn native_error_message(message: &str) -> String {
         RecoveryKind::Auth => "Account authentication failed. Log in again or choose another model.",
         RecoveryKind::Model => "This model is unavailable for the current account. Choose another model.",
         RecoveryKind::Quota => "The provider's usage or rate limit was reached. Choose another model or log in to a different account.",
-        RecoveryKind::Other => message,
+        RecoveryKind::Other => return crate::friendly_error::summarize(message),
     }.to_string()
+}
+
+/// A compact pill which copies the complete original text.
+pub(super) fn copy_pill(
+    id: &'static str,
+    index: usize,
+    text: String,
+) -> gpui::Stateful<gpui::Div> {
+    action_pill(id, index, "Copy").on_click(move |_, _, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
+        cx.stop_propagation();
+    })
+}
+
+fn action_pill(id: &'static str, index: usize, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id((id, index))
+        .debug_selector(move || id.into())
+        .flex_none()
+        .px_2p5()
+        .py(px(2.))
+        .rounded_full()
+        .bg(Theme::global().ACCENT_DIM)
+        .text_size(px(11.))
+        .text_color(Theme::global().TEXT)
+        .cursor_pointer()
+        .hover(|el| el.opacity(0.8))
+        .child(label)
 }
 
 impl Panel {
@@ -216,12 +244,10 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_2()
-            .px_2p5()
-            .py_1p5()
-            .rounded_md()
+            .px_3()
+            .py_2()
+            .rounded_xl()
             .bg(Theme::global().ERROR_BG)
-            .border_1()
-            .border_color(Theme::global().TOOL_BORDER)
             .text_size(px(12.))
             .text_color(Theme::global().ERROR)
             .child(text_selection::plain(
@@ -234,36 +260,12 @@ impl Panel {
             .child(
                 div()
                     .flex()
-                    .gap_2()
-                    .text_color(Theme::global().TEXT)
-                    .child(
-                        div()
-                            .id(("recovery-copy", index))
-                            .debug_selector(|| "recovery-copy".into())
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                            .child("Copy details")
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                    details.clone(),
-                                ));
-                                cx.stop_propagation();
-                            }),
-                    )
+                    .flex_wrap()
+                    .gap_1p5()
+                    .child(copy_pill("recovery-copy", index, details))
                     .when(kind != RecoveryKind::Other, |el| {
                         el.child(
-                            div()
-                                .id(("recovery-choose-model", index))
-                                .debug_selector(|| "recovery-choose-model".into())
-                                .px_2()
-                                .py_1()
-                                .rounded_md()
-                                .cursor_pointer()
-                                .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                .child("Choose model")
+                            action_pill("recovery-choose-model", index, "Choose model")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.open_recovery_models(cx);
                                     cx.stop_propagation();
@@ -274,15 +276,7 @@ impl Panel {
                         matches!(kind, RecoveryKind::Auth | RecoveryKind::Quota),
                         |el| {
                             el.child(
-                                div()
-                                    .id(("recovery-login", index))
-                                    .debug_selector(|| "recovery-login".into())
-                                    .px_2()
-                                    .py_1()
-                                    .rounded_md()
-                                    .cursor_pointer()
-                                    .hover(|el| el.bg(Theme::global().ACCENT_DIM))
-                                    .child("Log in")
+                                action_pill("recovery-login", index, "Log in")
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.open_login_picker(cx);
                                         cx.stop_propagation();

@@ -6,6 +6,7 @@
 
 pub mod diff;
 pub mod diff_model;
+pub mod friendly_error;
 pub mod learning;
 pub mod pdf_render;
 pub mod todoist;

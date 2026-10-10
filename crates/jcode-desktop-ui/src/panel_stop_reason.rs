@@ -9,6 +9,9 @@ pub struct StopNotice {
     provider_stop_reason: Option<String>,
     pub(super) failure: bool,
     pub(super) provisional: bool,
+    /// The complete raw text for Copy, when `detail` is a summary of it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) raw: Option<String>,
 }
 
 impl StopNotice {
@@ -31,6 +34,7 @@ impl StopNotice {
             provider_stop_reason: provider.map(str::to_owned),
             failure: *reason != TurnStopReason::Interrupted,
             provisional: false,
+            raw: None,
         }
     }
 
@@ -43,6 +47,7 @@ impl StopNotice {
             provider_stop_reason: None,
             failure: false,
             provisional: true,
+            raw: None,
         }
     }
 
@@ -63,6 +68,16 @@ impl StopNotice {
             _ => return None,
         };
         Some(Self::from_event(&reason, message, None))
+    }
+}
+
+/// The cause in plain words, unless it only restates the title.
+fn connection_lost_detail(reason: &str) -> String {
+    let cause = crate::friendly_error::summarize(reason);
+    if cause.starts_with("Lost connection") {
+        "The response may still be running.".into()
+    } else {
+        format!("{cause} The response may still be running.")
     }
 }
 
@@ -100,14 +115,15 @@ impl Panel {
     pub(crate) fn connection_lost(&mut self, reason: &str, cx: &mut Context<Self>) {
         if self.activity_active() || !self.pending_users.is_empty() {
             self.record_stop(StopNotice {
-                title: "Connection lost: response outcome unknown".into(),
-                detail: format!("{reason}. Reconnecting. The session may still be running, so this is not a confirmed crash."),
+                title: "Connection lost. Reconnecting…".into(),
+                detail: connection_lost_detail(reason),
                 provider_stop_reason: None,
                 failure: false,
                 provisional: true,
+                raw: Some(reason.to_owned()),
             });
         }
-        self.status = format!("lost: {reason}");
+        self.status = format!("lost: {}", crate::friendly_error::summarize(reason));
         cx.notify();
     }
 
@@ -123,9 +139,9 @@ impl Panel {
             .flex()
             .flex_col()
             .gap_1()
-            .px_2p5()
+            .px_3()
             .py_2()
-            .rounded_md()
+            .rounded_xl()
             .bg(Theme::global().HEADER_BG)
             .text_size(px(12.))
             .text_color(Theme::global().TEXT_DIM)
@@ -139,13 +155,21 @@ impl Panel {
                 el.child(self.render_recovery_error(index, &notice.detail, window, cx))
             })
             .when(!notice.failure, |el| {
-                el.child(text_selection::plain(
-                    self.transcript_selection.clone(),
-                    format!("{index}-stop-reason"),
-                    notice.detail.clone(),
-                    window,
-                    cx,
-                ))
+                let copy = notice.raw.clone().unwrap_or_else(|| notice.detail.clone());
+                el.child(
+                    div()
+                        .flex()
+                        .items_start()
+                        .gap_2()
+                        .child(div().flex_1().min_w_0().child(text_selection::plain(
+                            self.transcript_selection.clone(),
+                            format!("{index}-stop-reason"),
+                            notice.detail.clone(),
+                            window,
+                            cx,
+                        )))
+                        .child(super::recovery::copy_pill("stop-notice-copy", index, copy)),
+                )
             })
             .children(
                 notice
