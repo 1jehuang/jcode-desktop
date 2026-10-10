@@ -120,6 +120,12 @@ fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: boo
         }
     };
     match item {
+        Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
+            push(
+                format!("{index}-auto-poke"),
+                super::queue::auto_poke_notice_text(text),
+            );
+        }
         Item::User(text) => {
             let (text, _) = super::voice::tag::strip(text);
             let visible = if prompt_expanded {

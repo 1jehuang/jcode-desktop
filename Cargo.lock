@@ -4184,6 +4184,7 @@ dependencies = [
  "jcode-telemetry-core",
  "jcode-terminal-image",
  "jcode-terminal-launch",
+ "jcode-todo-policy",
  "jcode-tool-core",
  "jcode-tool-types",
  "jcode-transport",
@@ -4419,6 +4420,7 @@ dependencies = [
  "jcode-applet-types",
  "jcode-session-types",
  "jcode-side-panel-types",
+ "jcode-todo-policy",
  "jcode-usage-types",
  "serde",
  "serde_json",
@@ -4649,6 +4651,7 @@ dependencies = [
  "jcode-applet-types",
  "jcode-harness-api",
  "jcode-provider-metadata",
+ "jcode-todo-policy",
  "jcode-transport",
  "jsonschema",
  "libc",
@@ -4742,6 +4745,16 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
+]
+
+[[package]]
+name = "jcode-todo-policy"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "jcode-task-types",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

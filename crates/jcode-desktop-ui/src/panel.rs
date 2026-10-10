@@ -1963,6 +1963,14 @@ impl Panel {
         if self.login_command(trimmed, cx) {
             return true;
         }
+        if let Some(command) = queue::parse_poke_command(trimmed) {
+            match command {
+                Ok(command) => self.handle_poke_command(command, cx),
+                Err(usage) => self.items.push(Item::Error(usage)),
+            }
+            cx.notify();
+            return true;
+        }
         if let Some(model) = trimmed
             .strip_prefix("/model ")
             .map(str::trim)
@@ -3470,6 +3478,9 @@ impl Panel {
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
             Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
+            Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
+                self.render_auto_poke_notice(index, text, window, cx)
+            }
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
                 if self.image_pane_open {

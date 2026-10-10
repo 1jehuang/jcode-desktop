@@ -132,6 +132,12 @@ pub enum Update {
         effort: String,
         error: Option<String>,
     },
+    /// Reply to `Command::TodoState`. `None` when the runtime cannot serve
+    /// todo state (an older bridge) or the read failed.
+    TodoState {
+        session_id: String,
+        state: Option<jcode_sdk::todo::TodoSnapshot>,
+    },
     /// A per-session connection died.
     SessionLost {
         session_id: String,
@@ -208,6 +214,16 @@ pub enum Command {
     Fork {
         session_id: String,
     },
+    /// Read the session's todo state for the auto-poke/quality-gate policy.
+    /// Answered with `Update::TodoState`.
+    TodoState {
+        session_id: String,
+    },
+    /// Apply the persistent effects of a follow-up decision.
+    AckTodoFollowUp {
+        session_id: String,
+        effects: jcode_sdk::todo::TodoEffects,
+    },
     SetModel {
         session_id: String,
         model: String,
@@ -254,6 +270,8 @@ pub enum SessionOperation {
 
 enum SessionCommand {
     RefreshRuntime,
+    TodoState,
+    AckTodoFollowUp(jcode_sdk::todo::TodoEffects),
     AuthChanged(String),
     Send {
         content: String,
@@ -778,6 +796,25 @@ fn run_with_transports(
                         .spawn(move || set_saved_detached(session_id, saved, updates, transports))
                         .expect("spawn pin worker");
                 }
+            }
+            Command::TodoState { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::TodoState,
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::AckTodoFollowUp {
+                session_id,
+                effects,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::AckTodoFollowUp(effects),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
             }
             Command::Fork { session_id } => {
                 send_to_session_worker(
@@ -1825,6 +1862,21 @@ fn session_worker_with_connector(
                                     auth_method: info.auth_method,
                                 },
                             });
+                        }
+                    }
+                    SessionCommand::TodoState => {
+                        let state = client
+                            .supports("todo_state")
+                            .then(|| client.todo_state(real_id).ok())
+                            .flatten();
+                        let _ = updates.send(Update::TodoState {
+                            session_id: session_id.clone(),
+                            state,
+                        });
+                    }
+                    SessionCommand::AckTodoFollowUp(effects) => {
+                        if client.supports("todo_state") {
+                            let _ = client.ack_todo_follow_up(real_id, effects);
                         }
                     }
                     SessionCommand::AuthChanged(provider) => {

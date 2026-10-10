@@ -3,6 +3,7 @@ use super::*;
 
 #[path = "panel_auto_poke.rs"]
 mod auto_poke;
+pub(in crate::panel) use auto_poke::{PokeCommand, auto_poke_notice_text, parse_poke_command};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct PromptQueue {
@@ -25,7 +26,8 @@ struct QueuedPrompt {
 impl Panel {
     pub(super) fn pause_queue_for_stop(&mut self) {
         self.prompt_queue.paused = true;
-        self.prompt_queue.auto_poke = Default::default();
+        // Keep the session's /poke on|off choice; only end this cycle.
+        self.prompt_queue.auto_poke.stop();
     }
 
     pub(crate) fn submit_or_queue(

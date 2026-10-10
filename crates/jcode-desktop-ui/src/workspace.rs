@@ -2388,6 +2388,16 @@ impl Workspace {
                 // Undo the optimistic sidebar state from a pin click.
                 self.bridge.send(Command::RefreshSessions);
             }
+            Update::TodoState { session_id, state } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel.update(cx, |panel, cx| {
+                            panel.todo_state_received(state, cx);
+                        });
+                        break;
+                    }
+                }
+            }
             Update::EffortSettled {
                 session_id,
                 effort,

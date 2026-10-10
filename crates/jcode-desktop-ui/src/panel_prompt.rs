@@ -120,7 +120,9 @@ pub(super) fn is_pinnable_prompt(item: &Item) -> bool {
     let text = text.trim();
     // Background notifications can arrive in restored history as user-role
     // markdown. Keep them in the transcript, never in the pinned reminder.
+    // Auto-poke and quality-gate continuations are not prompts either.
     !text.is_empty()
+        && !jcode_sdk::todo::is_auto_poke_message(text)
         && ![
             "**Background task** `",
             "**Background task started** `",
