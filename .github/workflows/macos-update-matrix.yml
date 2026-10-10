@@ -120,18 +120,36 @@ jobs:
 
           # Every updater-enabled build checks at launch and, with
           # SUAutomaticallyUpdate, downloads and prepares the installer in the
-          # background. Wait until Sparkle has an installer staged.
+          # background. Autoupdate starting is not enough: it then extracts the
+          # archive and validates EdDSA and code signatures, and a quit before
+          # that finishes makes Sparkle abandon the install ("installation is
+          # not close enough to completion"). Wait for the extracted bundle of
+          # the advertised build, then for Sparkle's validation to settle.
+          installation="$HOME/Library/Caches/$BUNDLE_ID/org.sparkle-project.Sparkle/Installation"
           staged=0
           for i in {1..150}; do
-            if pgrep -fl 'Autoupdate|Updater.app' >/dev/null 2>&1 \
-               || ls "$HOME/Library/Caches/$BUNDLE_ID/org.sparkle-project.Sparkle/Installation" >/dev/null 2>&1; then
-              staged=1
-              break
-            fi
+            while IFS= read -r plist; do
+              version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$plist" 2>/dev/null || true)
+              if [[ "$version" == "$EXPECTED_BUILD" ]]; then
+                staged=1
+                break
+              fi
+            done < <(find "$installation" -path '*/Jcode.app/Contents/Info.plist' 2>/dev/null)
+            [[ "$staged" == 1 ]] && break
             sleep 2
           done
-          echo "Installer staged: $staged after $((i * 2))s"
-          sleep 10
+          echo "Extracted build $EXPECTED_BUILD staged: $staged after $((i * 2))s"
+          if [[ "$staged" != 1 ]]; then
+            echo "::error::Sparkle never extracted build $EXPECTED_BUILD for $TAG"
+            exit 1
+          fi
+          # Signature validation takes a few seconds after extraction. Waiting
+          # for the unified log line keeps this deterministic, with a cap.
+          for _ in {1..30}; do
+            grep -q 'EdDSA signature is correct' "$RUNNER_TEMP/sparkle.log" && break
+            sleep 1
+          done
+          sleep 20
 
           # The same Apple Event as Cmd+Q, not a signal.
           osascript -e "tell application id \"$BUNDLE_ID\" to quit" || true
