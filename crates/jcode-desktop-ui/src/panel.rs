@@ -2958,10 +2958,10 @@ impl Panel {
         let now = Instant::now();
         let text = self
             .text_reveal
-            .tick(self.streaming_text.len(), now, instant);
+            .tick(&self.streaming_text, now, instant);
         let reasoning = self
             .reasoning_reveal
-            .tick(self.streaming_reasoning.len(), now, instant);
+            .tick(&self.streaming_reasoning, now, instant);
         if text || reasoning {
             window.request_animation_frame();
         }
@@ -3546,9 +3546,9 @@ impl Panel {
                 .text_color(Theme::global().TEXT)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX {
-                        self.text_reveal.fading(&self.streaming_text)
+                        self.text_reveal.fade(&self.streaming_text)
                     } else {
-                        0
+                        markdown::StreamFade::default()
                     },
                     || {
                         markdown::render_interactive(
@@ -3576,9 +3576,9 @@ impl Panel {
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
-                        self.reasoning_reveal.fading(&self.streaming_reasoning)
+                        self.reasoning_reveal.fade(&self.streaming_reasoning)
                     } else {
-                        0
+                        markdown::StreamFade::default()
                     },
                     || {
                         markdown::render_interactive(
@@ -4625,7 +4625,12 @@ impl Render for Panel {
                                 return div()
                                     .relative()
                                     .pb(px(end_pad))
-                                    .child(panel.read(cx).render_transcript_activity())
+                                    .child(steady_activity::steady_row(
+                                        panel.read(cx).render_transcript_activity(),
+                                        steady_cell.clone(),
+                                        steady_enabled,
+                                        end_pad,
+                                    ))
                                     .child(latest::end_marker(
                                         row_end_visible.clone(),
                                         end_list.clone(),

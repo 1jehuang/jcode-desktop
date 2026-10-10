@@ -1,13 +1,15 @@
 //! Keeps the live activity row steady while the transcript tail glides.
 //!
 //! The activity row is the last virtual row, so its laid-out position follows
-//! the transcript's end. While a fast stream wraps lines, that end jumps down a
-//! line at a time and the tail follower then eases the view back up. Text
-//! rides this sawtooth unnoticed, but a lone spinner visibly bobs. This
-//! wrapper paints its child at a smoothed screen position that eases toward
-//! the laid-out one, so the spinner drifts instead of bouncing. Layout itself
-//! is untouched, and when the reader scrolls manually the row tracks the
-//! content exactly.
+//! the transcript's end. When a streamed block is released, that end jumps
+//! down by the block's height and the tail follower then eases the view back
+//! up. Text rides this step unnoticed, but a lone spinner visibly bobs. While
+//! the transcript follows its tail, this wrapper therefore pins the row at its
+//! resting place just above the composer: the row is never painted below the
+//! spot the follower is about to bring it back to. Layout itself is
+//! untouched, and when the reader scrolls manually the row tracks the content
+//! exactly. Other position changes (the composer resizing, short transcripts
+//! growing) ease rather than jump.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -58,14 +60,28 @@ pub(super) struct SteadyRow {
     child: AnyElement,
     cell: SteadyCell,
     enabled: bool,
+    /// Space the list reserves below this row for the floating composer.
+    end_pad: f32,
 }
 
-pub(super) fn steady_row(child: impl IntoElement, cell: SteadyCell, enabled: bool) -> SteadyRow {
+pub(super) fn steady_row(
+    child: impl IntoElement,
+    cell: SteadyCell,
+    enabled: bool,
+    end_pad: f32,
+) -> SteadyRow {
     SteadyRow {
         child: child.into_any_element(),
         cell,
         enabled,
+        end_pad,
     }
+}
+
+/// Where a following row should paint: never below its resting place at the
+/// bottom of the viewport, which is where the tail follower is heading.
+fn pinned(target: f32, rest: f32) -> f32 {
+    target.min(rest)
 }
 
 impl IntoElement for SteadyRow {
@@ -114,8 +130,15 @@ impl Element for SteadyRow {
     ) {
         // The list prepaints rows inside its viewport mask. Reading the list
         // state here would re-borrow it mid-layout.
-        let viewport = f32::from(window.content_mask().bounds.top());
-        let target = f32::from(bounds.top()) - viewport;
+        let mask = window.content_mask().bounds;
+        let viewport = f32::from(mask.top());
+        let laid_out = f32::from(bounds.top()) - viewport;
+        let target = if self.enabled {
+            let rest = f32::from(mask.size.height) - self.end_pad - f32::from(bounds.size.height);
+            pinned(laid_out, rest)
+        } else {
+            laid_out
+        };
         let now = Instant::now();
         // A stale sample (a previous turn, a hidden row) is not motion.
         let fresh = |previous: &Steady| now.saturating_duration_since(previous.at) < STALE;
@@ -138,7 +161,7 @@ impl Element for SteadyRow {
             window.request_animation_frame();
         }
         let scale = window.scale_factor().max(1.0);
-        let shift = ((y - target) * scale).round() / scale;
+        let shift = ((y - laid_out) * scale).round() / scale;
         window.with_element_offset(point(px(0.), px(shift)), |window| {
             self.child.prepaint(window, cx);
         });
@@ -161,6 +184,24 @@ impl Element for SteadyRow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn block_steps_do_not_move_a_following_row() {
+        // A released block pushes the laid-out row 66px below its resting
+        // place, then the tail follower brings it back. Pinned, the painted
+        // row stays put the whole time.
+        let rest = 400.0f32;
+        let dt = 1.0 / 60.0;
+        let mut y = rest;
+        for frame in 0..90 {
+            let offset = 66.0 * (-(frame % 30) as f32 / 4.0).exp();
+            let target = pinned(rest + offset, rest);
+            y = ease(y, target, dt);
+            assert_eq!(y, rest, "frame {frame}");
+        }
+        // A short transcript sits above its resting place and follows layout.
+        assert_eq!(pinned(120.0, rest), 120.0);
+    }
 
     #[test]
     fn line_jumps_are_softened_and_bounded() {

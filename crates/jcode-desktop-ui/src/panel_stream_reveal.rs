@@ -1,252 +1,284 @@
-//! Paced reveal for live reasoning and response text.
+//! Chunked reveal for live reasoning and response text.
 //!
-//! Providers deliver text in bursts: several words, a pause, then a paragraph.
-//! Painting each burst verbatim makes the transcript jump. Instead the visible
-//! prefix chases the received text at a rate proportional to the backlog, so
-//! bursts become a steady flow that never falls far behind. A trailing window
-//! of freshly revealed bytes fades in, and it finishes fading shortly after the
-//! stream pauses so the text settles to full opacity.
+//! Providers deliver text a few tokens at a time. Painting every token, or
+//! pacing a word-by-word reveal, keeps the transcript in constant motion: each
+//! word nudges the line, each wrap pushes everything below it down. Instead
+//! the received text is released in whole blocks at natural boundaries:
+//!
+//! * as soon as a line or paragraph completes,
+//! * after a short hold, up to the last sentence (or word) of a long line,
+//! * and immediately once the stream pauses.
+//!
+//! Releases are rate limited, so the transcript changes a few times per second
+//! at most, and each released block fades in as a unit.
 
 use std::time::{Duration, Instant};
 
-/// Time constant of the reveal. The visible prefix covers most of any backlog
-/// in about this long, which keeps latency imperceptible while smoothing bursts.
-const CATCH_UP: f64 = 0.14;
-/// Minimum reveal speed so short trailing fragments do not crawl.
-const MIN_RATE: f64 = 90.0;
+use crate::markdown::StreamFade;
+
+/// Minimum time between two releases. Bounds how often the transcript moves.
+const MIN_INTERVAL: Duration = Duration::from_millis(140);
+/// How long unreleased text without a line break may wait before the reveal
+/// settles for a sentence or word boundary instead.
+const HOLD: Duration = Duration::from_millis(260);
+/// The stream has paused when nothing arrived for this long. Release it all.
+const IDLE: Duration = Duration::from_millis(160);
+/// How long a released block takes to fade in.
+const FADE: Duration = Duration::from_millis(220);
+/// Opacity deficit a block starts its fade at.
+const FADE_FROM: f32 = 0.85;
 /// Larger backlogs (history restores, reconnect recovery) appear immediately.
 const SNAP_BACKLOG: usize = 6_000;
-/// Longest fading tail, in bytes. Keeps fast streams legible.
-const MAX_FADE: f64 = 48.0;
-/// How quickly the fading tail settles once the reveal stops advancing.
-const SETTLE: f64 = 0.22;
-/// Ignore pathological frame gaps (suspend, debugger) so the reveal does not leap.
-const MAX_STEP: Duration = Duration::from_millis(100);
-/// Reveal whole words: a partial word at the end of a line would otherwise be
-/// painted there first, then reflow onto the next line once it stops fitting.
-/// Longer runs (URLs, hashes) are revealed in chunks of at most this many bytes.
-const MAX_WORD: usize = 40;
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct StreamReveal {
-    /// Visible prefix length in bytes, kept fractional for smooth low rates.
-    shown: f64,
-    /// Bytes before this point are fully opaque. Trails `shown`.
-    settled: f64,
+    /// Released prefix length in bytes, always on a char boundary.
+    shown: usize,
+    /// Start of the newest released block, which fades in.
+    fade_from: usize,
+    /// Current fade of the newest block, 0 when fully opaque.
+    fade: f32,
     target: usize,
-    last_tick: Option<Instant>,
-    /// Only a rendered, animating stream is paced. Until then (tests, reduced
-    /// motion, rows read outside a frame) the full received text is shown.
+    released_at: Option<Instant>,
+    /// When the oldest unreleased byte arrived.
+    pending_since: Option<Instant>,
+    /// When the received text last grew.
+    grew_at: Option<Instant>,
+    /// Only a rendered, animating stream is chunked. Until then (tests,
+    /// reduced motion, rows read outside a frame) the full text is shown.
     engaged: bool,
 }
 
 impl StreamReveal {
     /// Show `len` bytes immediately, for text that did not arrive as a live stream.
     pub(super) fn snap(&mut self, len: usize) {
-        self.shown = len as f64;
-        self.settled = len as f64;
-        self.target = len;
-        self.last_tick = None;
-        self.engaged = false;
+        *self = Self {
+            shown: len,
+            fade_from: len,
+            target: len,
+            ..Self::default()
+        };
     }
 
-    /// Advance toward `len` received bytes. Returns true while still animating.
-    pub(super) fn tick(&mut self, len: usize, now: Instant, instant: bool) -> bool {
-        if len < self.target || len == 0 {
+    /// Advance toward the received `text`. Returns true while still animating.
+    pub(super) fn tick(&mut self, text: &str, now: Instant, instant: bool) -> bool {
+        let len = text.len();
+        if len < self.target || len == 0 || self.shown > len {
             // Cleared or replaced: the live row starts over.
             self.snap(0);
         }
+        if len > self.target {
+            self.grew_at = Some(now);
+        }
         self.target = len;
-        if instant || len - (self.shown as usize).min(len) > SNAP_BACKLOG {
+        if instant || len - self.shown > SNAP_BACKLOG {
             self.snap(len);
             return false;
         }
         self.engaged = true;
-        let dt = self
-            .last_tick
-            .map(|last| now.saturating_duration_since(last).min(MAX_STEP))
-            .unwrap_or(Duration::from_millis(16))
-            .as_secs_f64();
-        self.last_tick = Some(now);
 
-        let target = len as f64;
-        let backlog = target - self.shown;
-        if backlog > 0.0 {
-            let rate = (backlog / CATCH_UP).max(MIN_RATE);
-            self.shown = (self.shown + rate * dt).min(target);
+        if self.shown < len {
+            let pending_since = *self.pending_since.get_or_insert(now);
+            let rested = self
+                .released_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= MIN_INTERVAL);
+            if rested {
+                let paused = self
+                    .grew_at
+                    .is_none_or(|at| now.saturating_duration_since(at) >= IDLE);
+                let held = now.saturating_duration_since(pending_since) >= HOLD;
+                if let Some(cut) = release_point(text, self.shown, paused, held) {
+                    self.fade_from = self.shown;
+                    self.shown = cut;
+                    self.released_at = Some(now);
+                    self.pending_since = (cut < len).then_some(now);
+                }
+            }
         }
-        let gap = self.shown - self.settled;
-        if gap > 0.0 {
-            let rate = (gap / SETTLE).max(MIN_RATE * 0.5);
-            self.settled = (self.settled + rate * dt).min(self.shown);
-            self.settled = self.settled.max(self.shown - MAX_FADE);
-        }
-        let animating = self.shown < target || self.settled < self.shown;
-        if !animating {
-            self.last_tick = None;
-        }
-        animating
+
+        let progress = self.released_at.map_or(1.0, |at| {
+            now.saturating_duration_since(at).as_secs_f32() / FADE.as_secs_f32()
+        });
+        self.fade = if progress >= 1.0 || self.fade_from >= self.shown {
+            0.0
+        } else {
+            // Ease out: most of the block is legible almost at once.
+            FADE_FROM * (1.0 - progress).powi(2)
+        };
+        self.shown < len || self.fade > 0.0
     }
 
-    /// Visible length in bytes of `text`: the paced prefix extended to the end
-    /// of the word it is inside, so words never reflow while they appear.
-    fn visible_len(&self, text: &str) -> usize {
-        let cut = text.floor_char_boundary(self.shown as usize);
-        if cut == 0 || cut >= text.len() {
-            return cut;
-        }
-        let before = text[..cut].chars().next_back();
-        if before.is_none_or(char::is_whitespace) {
-            return cut;
-        }
-        let rest = &text[cut..];
-        let end = rest
-            .find(char::is_whitespace)
-            .map(|offset| cut + offset)
-            .unwrap_or(text.len());
-        if end - cut > MAX_WORD { cut } else { end }
-    }
-
-    /// The revealed prefix, on a char boundary.
+    /// The released prefix.
     pub(super) fn visible<'a>(&self, text: &'a str) -> &'a str {
         if !self.engaged {
             return text;
         }
-        &text[..self.visible_len(text)]
+        &text[..self.shown.min(text.len())]
     }
 
     /// Bytes at the end of the visible prefix of `text` still fading in.
     pub(super) fn fading(&self, text: &str) -> usize {
-        if !self.engaged {
+        if !self.engaged || self.fade <= 0.0 {
             return 0;
         }
-        let settled = (self.settled.max(0.0).round() as usize).min(text.len());
-        self.visible_len(text).saturating_sub(settled)
+        self.shown.min(text.len()).saturating_sub(self.fade_from)
     }
 
+    /// The fade applied to the newest block of `text` when painting it.
+    pub(super) fn fade(&self, text: &str) -> StreamFade {
+        StreamFade {
+            bytes: self.fading(text),
+            amount: self.fade,
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn shown_len(&self) -> usize {
         if !self.engaged {
             return self.target;
         }
-        self.shown as usize
+        self.shown
     }
+}
+
+/// Where to cut the next release of `text` beyond `from`, if anywhere yet.
+fn release_point(text: &str, from: usize, paused: bool, held: bool) -> Option<usize> {
+    let pending = &text[from..];
+    if pending.is_empty() {
+        return None;
+    }
+    if paused {
+        return Some(text.len());
+    }
+    // A completed line or paragraph is a block: release it right away.
+    if let Some(newline) = pending.rfind('\n') {
+        return Some(from + newline + 1);
+    }
+    if !held {
+        return None;
+    }
+    // A long line is still arriving. Settle for its last full sentence, else
+    // its last full word, so the line grows in phrases rather than letters.
+    let sentence = pending
+        .match_indices([' ', '\t'])
+        .rev()
+        .find(|(at, _)| {
+            pending[..*at]
+                .chars()
+                .next_back()
+                .is_some_and(|c| matches!(c, '.' | '!' | '?' | ':' | ';'))
+        })
+        .map(|(at, _)| at + 1);
+    let word = pending.rfind([' ', '\t']).map(|at| at + 1);
+    sentence.or(word).map(|cut| from + cut).filter(|&cut| cut > from)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn run(reveal: &mut StreamReveal, len: usize, start: Instant, frames: u32) -> Instant {
-        let mut now = start;
-        for _ in 0..frames {
-            now += Duration::from_millis(16);
-            reveal.tick(len, now, false);
-        }
-        now
-    }
+    const FRAME: Duration = Duration::from_millis(16);
 
     #[test]
-    fn bursts_are_revealed_gradually_then_settle_opaque() {
+    fn completed_lines_are_released_as_whole_blocks() {
         let mut reveal = StreamReveal::default();
         let start = Instant::now();
-        assert!(reveal.tick(400, start, false));
-        let after_one = start + Duration::from_millis(16);
-        reveal.tick(400, after_one, false);
-        let shown = reveal.shown_len();
-        assert!(
-            shown > 0 && shown < 400,
-            "first frames reveal part of a burst: {shown}"
-        );
-        assert!(reveal.fading(&"x".repeat(400)) > 0);
-
-        let now = run(&mut reveal, 400, after_one, 90);
-        assert_eq!(reveal.shown_len(), 400);
-        assert_eq!(reveal.fading(&"x".repeat(400)), 0);
-        assert!(!reveal.tick(400, now + Duration::from_millis(16), false));
+        let text = "First paragraph is done.\n\nSecond is still arr";
+        assert!(reveal.tick(text, start, false));
+        assert_eq!(reveal.visible(text), "First paragraph is done.\n\n");
+        assert!(reveal.fading(text) > 0, "the new block fades in");
+        assert!(reveal.fade(text).amount > 0.5);
     }
 
     #[test]
-    fn reveal_keeps_up_with_a_steady_stream() {
+    fn partial_lines_wait_then_release_at_a_sentence() {
         let mut reveal = StreamReveal::default();
         let mut now = Instant::now();
-        let mut len = 0;
-        // 300 bytes per second in 30-byte bursts every 100 ms.
-        for frame in 0..300 {
-            if frame % 6 == 0 {
-                len += 30;
+        let mut text = String::new();
+        // A steady stream with no line break: tokens every frame.
+        let words = "This sentence ends here. And this one keeps going on and on ".repeat(3);
+        let mut first_release = None;
+        for (frame, word) in words.split_inclusive(' ').enumerate() {
+            text.push_str(word);
+            reveal.tick(&text, now, false);
+            if first_release.is_none() && reveal.shown_len() > 0 {
+                first_release = Some((frame, reveal.visible(&text).to_owned()));
             }
-            now += Duration::from_millis(16);
-            reveal.tick(len, now, false);
+            now += FRAME;
         }
+        let (frame, shown) = first_release.expect("released while streaming");
+        assert!(frame as u32 * 16 >= HOLD.as_millis() as u32, "held first");
         assert!(
-            len - reveal.shown_len() <= 60,
-            "lag {}",
-            len - reveal.shown_len()
+            shown.ends_with(". ") || shown.ends_with(' '),
+            "cut at a boundary: {shown:?}"
         );
-        let text = "word ".repeat(len / 5 + 1);
-        let text = &text[..len];
-        // Whole-word reveal may extend the fading tail by at most one word.
-        assert!(reveal.fading(text) as f64 <= MAX_FADE + MAX_WORD as f64);
+    }
+
+    #[test]
+    fn releases_are_rate_limited() {
+        let mut reveal = StreamReveal::default();
+        let mut now = Instant::now();
+        let mut text = String::new();
+        let mut releases = 0;
+        let mut previous = 0;
+        // A new line every frame for a second.
+        for n in 0..60 {
+            text.push_str(&format!("line {n}\n"));
+            reveal.tick(&text, now, false);
+            if reveal.shown_len() != previous {
+                releases += 1;
+                previous = reveal.shown_len();
+            }
+            now += FRAME;
+        }
+        assert!(releases <= 8, "{releases} releases in a second");
+        assert!(text.len() - reveal.shown_len() < 80, "kept up eagerly");
+    }
+
+    #[test]
+    fn a_paused_stream_releases_everything_and_settles_opaque() {
+        let mut reveal = StreamReveal::default();
+        let start = Instant::now();
+        let text = "no boundary at all yet";
+        assert!(reveal.tick(text, start, false));
+        assert_eq!(reveal.shown_len(), 0);
+        let mut now = start;
+        for _ in 0..60 {
+            now += FRAME;
+            reveal.tick(text, now, false);
+        }
+        assert_eq!(reveal.visible(text), text);
+        assert_eq!(reveal.fading(text), 0);
+        assert!(!reveal.tick(text, now + FRAME, false));
     }
 
     #[test]
     fn clears_restores_and_reduced_motion_snap() {
         let mut reveal = StreamReveal::default();
         let now = Instant::now();
-        reveal.tick(100, now, false);
-        assert!(!reveal.tick(0, now, false));
+        reveal.tick(&"x".repeat(100), now, false);
+        assert!(!reveal.tick("", now, false));
         assert_eq!(reveal.shown_len(), 0);
 
-        assert!(!reveal.tick(SNAP_BACKLOG + 1, now, false));
+        let big = "y".repeat(SNAP_BACKLOG + 1);
+        assert!(!reveal.tick(&big, now, false));
         assert_eq!(reveal.shown_len(), SNAP_BACKLOG + 1);
 
         let mut reduced = StreamReveal::default();
-        assert!(!reduced.tick(50, now, true));
-        assert_eq!(
-            (reduced.shown_len(), reduced.fading(&"x".repeat(50))),
-            (50, 0)
-        );
+        let text = "x".repeat(50);
+        assert!(!reduced.tick(&text, now, true));
+        assert_eq!((reduced.shown_len(), reduced.fading(&text)), (50, 0));
+        assert_eq!(reduced.visible(&text), text, "unengaged passes text through");
     }
 
     #[test]
-    fn partial_words_are_revealed_whole() {
-        let text = "alpha bravo charlie";
-        let mut reveal = StreamReveal {
-            shown: 7.0,
-            engaged: true,
-            ..Default::default()
-        };
-        assert_eq!(reveal.visible(text), "alpha bravo");
-        reveal.shown = 6.0;
-        assert_eq!(reveal.visible(text), "alpha ");
-        reveal.shown = 2.0;
-        assert_eq!(reveal.visible(text), "alpha");
-        assert_eq!(reveal.fading(text), 5);
-        let long = format!("see {}", "x".repeat(MAX_WORD + 10));
-        reveal.shown = 6.0;
-        assert_eq!(reveal.visible(&long).len(), 6, "long runs stay chunked");
-    }
-
-    #[test]
-    fn visible_prefix_respects_char_boundaries() {
-        let mut reveal = StreamReveal {
-            shown: 2.0,
-            engaged: true,
-            ..Default::default()
-        };
-        assert_eq!(reveal.visible("α βγ"), "α");
-        reveal.shown = 6.0;
-        assert_eq!(
-            reveal.visible("α βγ"),
-            "α βγ",
-            "mid-char cut completes the word"
-        );
-        reveal.snap(3);
-        assert_eq!(
-            reveal.visible("αβγ"),
-            "αβγ",
-            "unengaged reveal passes text through"
-        );
+    fn release_points_respect_char_boundaries() {
+        let text = "αβ γδ. εζ";
+        let cut = release_point(text, 0, false, true).unwrap();
+        assert!(text.is_char_boundary(cut));
+        assert_eq!(&text[..cut], "αβ γδ. ");
+        assert_eq!(release_point("αβγ", 0, false, true), None);
+        assert_eq!(release_point("αβγ", 0, true, false), Some("αβγ".len()));
     }
 }
 
@@ -268,8 +300,18 @@ mod panel_tests {
             })
     }
 
+    fn frames(vcx: &mut gpui::VisualTestContext, count: usize) {
+        for _ in 0..count {
+            vcx.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            vcx.run_until_parked();
+            std::thread::sleep(std::time::Duration::from_millis(8));
+        }
+    }
+
     #[gpui::test]
-    fn streamed_bursts_flow_in_and_settle(cx: &mut gpui::TestAppContext) {
+    fn streamed_blocks_appear_whole_and_settle(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -277,27 +319,24 @@ mod panel_tests {
             workspace
         });
         let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
-        let reasoning = "Weighing the options before answering. ".repeat(6);
-        let answer = "Here is a considered, paragraph-sized burst of response text. ".repeat(6);
+        let reasoning = "Weighing the options.\n\nStill weigh";
+        let answer = "Here is a considered paragraph.\n\nAnd a second one still arriv";
         panel.update(vcx, |panel, cx| {
             panel.animate_stream_in_tests = true;
             panel.items.clear();
             panel.apply(
                 &ApiEvent::ReasoningDelta {
                     session_id: panel.session_id.clone(),
-                    text: reasoning.clone(),
+                    text: reasoning.into(),
                 },
                 cx,
             );
         });
         vcx.run_until_parked();
-        let partial = panel.read_with(vcx, |panel, _| live_text(panel, usize::MAX - 1));
-        let partial = partial.expect("live reasoning row");
-        assert!(
-            !partial.is_empty() && partial.len() < reasoning.len(),
-            "{}",
-            partial.len()
-        );
+        let partial = panel
+            .read_with(vcx, |panel, _| live_text(panel, usize::MAX - 1))
+            .expect("live reasoning row");
+        assert_eq!(partial, "Weighing the options.\n\n", "whole block first");
         assert!(panel.read_with(vcx, |panel, _| {
             panel.reasoning_reveal.fading(&panel.streaming_reasoning) > 0
         }));
@@ -307,7 +346,7 @@ mod panel_tests {
                 &ApiEvent::TextDelta {
                     message_id: None,
                     session_id: panel.session_id.clone(),
-                    text: answer.clone(),
+                    text: answer.into(),
                 },
                 cx,
             );
@@ -318,18 +357,9 @@ mod panel_tests {
             .expect("live response row");
         assert!(partial.len() < answer.len());
 
-        for _ in 0..120 {
-            vcx.update(|window, cx| {
-                window.simulate_next_frame(cx);
-            });
-            vcx.run_until_parked();
-            std::thread::sleep(std::time::Duration::from_millis(8));
-        }
+        frames(vcx, 60);
         panel.read_with(vcx, |panel, _| {
-            assert_eq!(
-                live_text(panel, usize::MAX).as_deref(),
-                Some(answer.as_str())
-            );
+            assert_eq!(live_text(panel, usize::MAX).as_deref(), Some(answer));
             assert_eq!(panel.text_reveal.fading(&panel.streaming_text), 0);
         });
     }

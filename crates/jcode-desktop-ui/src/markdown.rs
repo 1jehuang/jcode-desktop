@@ -914,61 +914,100 @@ fn styled_line_with_avatar(
     styled_line_layout(source, selection, key, _window, cx, avatar).0
 }
 
-thread_local! {
-    /// Bytes of freshly streamed text still fading in, for the document being
-    /// rendered. Set by the panel around a live row and consumed by the last
-    /// prose block, so the tail of a streaming response eases into view.
-    static STREAM_FADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// The fade handed to the next inline text leaf of the final block.
-    static LEAF_FADE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+/// The newest streamed block of a live row, fading in as one unit.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct StreamFade {
+    /// Trailing bytes of the markdown source in the fading block.
+    pub(crate) bytes: usize,
+    /// How transparent the block still is, 0 (opaque) to 1.
+    pub(crate) amount: f32,
 }
 
-/// Render `f` with the trailing `bytes` of its markdown fading in.
-pub(crate) fn with_stream_fade<R>(bytes: usize, f: impl FnOnce() -> R) -> R {
-    STREAM_FADE.set(bytes);
+impl StreamFade {
+    fn active(self) -> bool {
+        self.bytes > 0 && self.amount > 0.0
+    }
+
+    fn with_bytes(self, bytes: usize) -> Self {
+        Self { bytes, ..self }
+    }
+}
+
+thread_local! {
+    /// The fading block of the document being rendered. Set by the panel
+    /// around a live row and spread over the trailing prose blocks, so a
+    /// freshly released chunk of a streaming response eases into view.
+    static STREAM_FADE: std::cell::Cell<StreamFade> =
+        const { std::cell::Cell::new(StreamFade { bytes: 0, amount: 0.0 }) };
+    /// The fade handed to the next inline text leaf.
+    static LEAF_FADE: std::cell::Cell<StreamFade> =
+        const { std::cell::Cell::new(StreamFade { bytes: 0, amount: 0.0 }) };
+}
+
+/// Render `f` with the trailing block of its markdown fading in.
+pub(crate) fn with_stream_fade<R>(fade: StreamFade, f: impl FnOnce() -> R) -> R {
+    STREAM_FADE.set(fade);
     let result = f();
-    STREAM_FADE.set(0);
-    LEAF_FADE.set(0);
+    STREAM_FADE.set(StreamFade::default());
+    LEAF_FADE.set(StreamFade::default());
     result
 }
 
-/// Steps of the fading tail. More steps read as a smoother gradient, while
-/// each step is only a highlight run, so layout and shaping are unaffected.
-const FADE_STEPS: usize = 8;
-
-/// Alpha ramp over the trailing `fade` bytes of `text`: oldest bytes almost
-/// opaque, newest nearly transparent. Ranges fall on char boundaries.
+/// One uniform fade over the trailing `fade.bytes` of `text`. The whole block
+/// shares one alpha, so it appears as a unit rather than letter by letter.
+/// The range falls on a char boundary and leaves layout untouched.
 pub(crate) fn fade_tail_highlights(
     text: &str,
-    fade: usize,
+    fade: StreamFade,
 ) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
-    let fade = fade.min(text.len());
-    if fade == 0 {
+    let bytes = fade.bytes.min(text.len());
+    if bytes == 0 || fade.amount <= 0.0 {
         return Vec::new();
     }
-    let start = text.floor_char_boundary(text.len() - fade);
-    let span = text.len() - start;
-    let mut ranges = Vec::with_capacity(FADE_STEPS);
-    let mut from = start;
-    for step in 0..FADE_STEPS {
-        let to = if step + 1 == FADE_STEPS {
-            text.len()
-        } else {
-            text.floor_char_boundary(start + span * (step + 1) / FADE_STEPS)
-        };
-        if to > from {
-            let progress = (step as f32 + 1.0) / FADE_STEPS as f32;
-            ranges.push((
-                from..to,
-                HighlightStyle {
-                    fade_out: Some(0.9 * progress * progress),
-                    ..Default::default()
-                },
-            ));
-            from = to;
+    let start = text.floor_char_boundary(text.len() - bytes);
+    vec![(
+        start..text.len(),
+        HighlightStyle {
+            fade_out: Some(fade.amount.clamp(0.0, 1.0)),
+            ..Default::default()
+        },
+    )]
+}
+
+/// Approximate source length of a block's prose, for spreading a fade.
+fn block_prose_len(block: &Block) -> Option<usize> {
+    match block {
+        Block::Heading(_, text) | Block::Paragraph(text) => Some(text.len()),
+        Block::Bullet { text, .. } | Block::Numbered { text, .. } => Some(text.len()),
+        Block::Quote(lines) => lines.last().map(String::len),
+        _ => None,
+    }
+}
+
+/// Fade budget of each block: the trailing prose blocks that lie inside the
+/// fading source bytes fade, earlier ones and non-prose blocks stay opaque.
+fn block_fades(blocks: &[Block], fade: StreamFade) -> Vec<StreamFade> {
+    let mut fades = vec![StreamFade::default(); blocks.len()];
+    if !fade.active() {
+        return fades;
+    }
+    let mut remaining = fade.bytes;
+    for (index, block) in blocks.iter().enumerate().rev() {
+        if remaining == 0 {
+            break;
+        }
+        match block_prose_len(block) {
+            Some(len) => {
+                fades[index] = fade.with_bytes(remaining.min(len));
+                // Markers and the blank line between blocks.
+                remaining = remaining.saturating_sub(len + 2);
+            }
+            // Code, tables, and diagrams keep full contrast and end the
+            // fading run: anything above them was released earlier.
+            None => break,
         }
     }
-    ranges
+    fades
 }
 
 /// Retain the native layout alongside the interactive leaf, so geometry tests
@@ -1812,24 +1851,11 @@ fn render_document_with_prompt_background(
     };
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
-    let stream_fade = STREAM_FADE.take();
-    let last_block = blocks.len().saturating_sub(1);
+    let fades = block_fades(&blocks, STREAM_FADE.take());
 
     for (block_index, block) in blocks.into_iter().enumerate() {
         // Only prose leaves fade. Table cells and code keep full contrast.
-        let prose = matches!(
-            block,
-            Block::Heading(..)
-                | Block::Paragraph(..)
-                | Block::Bullet { .. }
-                | Block::Numbered { .. }
-                | Block::Quote(..)
-        );
-        LEAF_FADE.set(if prose && block_index == last_block {
-            stream_fade
-        } else {
-            0
-        });
+        LEAF_FADE.set(fades[block_index]);
         let block = match block {
             Block::Paragraph(ref text) if reasoning => reasoning_section_title(text)
                 .map(|title| Block::Heading(3, title.to_owned()))
@@ -2010,7 +2036,11 @@ fn render_document_with_prompt_background(
                                 .into_iter()
                                 .enumerate()
                                 .map(move |(line_index, line)| {
-                                    LEAF_FADE.set(if line_index == last_line { fade } else { 0 });
+                                    LEAF_FADE.set(if line_index == last_line {
+                                        fade
+                                    } else {
+                                        StreamFade::default()
+                                    });
                                     div().child(styled_line_with_avatar(
                                         line,
                                         selection,
@@ -2051,7 +2081,7 @@ fn render_document_with_prompt_background(
                 .into_any_element(),
         };
         // Code, tables, and diagrams do not consume the fade. Never leak it.
-        LEAF_FADE.set(0);
+        LEAF_FADE.set(StreamFade::default());
         // Blank-line block breaks need visibly more room than a wrapped line,
         // while consecutive list items stay tight. A uniform flex gap made
         // paragraphs read as one run of text.

@@ -1,26 +1,17 @@
 //! Smooth tail following for streamed text.
 //!
 //! Snapping to the end on every frame is correct for structural changes, but a
-//! live row that wraps onto another line grows by a whole line height at once.
-//! Pinned to the bottom, the transcript would lurch up by that line in one
-//! frame while the text itself flows in smoothly. Instead, while text streams,
-//! the scroll position is held for the layout pass that measures the growth,
-//! then eased toward the new end so each new line glides into view.
+//! live row that grows by a block would lurch the transcript up in one frame.
+//! Instead, while text streams, the scroll position is held for the layout
+//! pass that measures the growth, then eased toward the new end.
 //!
-//! A pure spring toward the end works for slow streams but not fast ones. It
-//! always lags the tail, so when lines arrive faster than it settles the gap
-//! keeps growing until the old "too far, snap" escape hatch fires, and every
-//! line restarts an accelerate/decelerate cycle. Fast output then reads as a
-//! stutter of glides and jumps. The follower is therefore a velocity tracker:
-//!
-//! * it estimates how fast the content is growing (px/s, low-pass filtered),
-//! * aims to scroll at that rate plus a term that closes the remaining gap,
-//! * and eases its actual velocity toward that aim.
-//!
-//! Steady streams then scroll at a near-constant speed regardless of how
-//! bursty the line wraps are, instead of a sawtooth. The lag is bounded so the
-//! newest line never falls far below the fold, but bounding moves the view by
-//! the overflow rather than snapping all the way to the end.
+//! Streamed text is released in whole blocks a few times per second (see
+//! `panel_stream_reveal`), so the follower deliberately does not try to scroll
+//! continuously at the stream's pace. Each growth step gets one short ease-out
+//! to the new end and then the view rests. Reading a still transcript that
+//! occasionally steps forward is calmer than one in constant motion. The lag
+//! is bounded so the newest line never falls far below the fold, but bounding
+//! moves the view by the overflow rather than snapping all the way to the end.
 //!
 //! Positions are tracked as floats and painted on whole device pixels. Glyphs
 //! are rasterised on the vertical pixel grid while quads are not, so a
@@ -29,13 +20,10 @@
 
 use super::*;
 
-/// Time constant for closing the remaining gap on top of the growth rate.
-const CATCH_UP: f32 = 0.12;
-/// How quickly the scroll velocity adopts a new aim. Small enough to hide the
-/// line-sized steps of wrapping text, large enough to start promptly.
-const VELOCITY_EASE: f32 = 0.06;
-/// Smoothing of the content growth estimate.
-const GROWTH_EASE: f32 = 0.3;
+/// Duration of the ease-out that brings each growth step into view. Shorter
+/// than the reveal's release interval, so the view comes to rest between
+/// streamed blocks instead of drifting continuously.
+const GLIDE: f32 = 0.12;
 /// The least the live tail may trail the true end while streaming. The bound
 /// scales up with the viewport so one tall card glides instead of jumping.
 const MAX_LAG_PX: f32 = 240.0;
@@ -55,12 +43,10 @@ pub(super) struct TailGlide {
     at: Option<Instant>,
     /// Unrounded scroll position, px from the top.
     position: f32,
-    /// Scroll velocity, px/s.
-    velocity: f32,
-    /// Filtered content growth rate, px/s.
-    growth: f32,
-    /// Maximum scroll offset seen on the previous frame.
-    last_max: Option<f32>,
+    /// Start, end and progress (seconds) of the current ease-out.
+    from: f32,
+    to: f32,
+    elapsed: f32,
     /// The previous frame held still at the end, possibly for a long time.
     held: bool,
     /// Last frame the turn was producing output. Growth right after a turn
@@ -86,26 +72,28 @@ impl TailGlide {
         if dt <= 0.0 {
             return current;
         }
-        let grown = self.last_max.map_or(0.0, |last| (target - last).max(0.0));
-        self.last_max = Some(target);
-        let growth_now = grown / dt;
-        self.growth += (growth_now - self.growth) * (1.0 - (-dt / GROWTH_EASE).exp());
-
         let gap = (target - current).max(0.0);
-        // Never aim faster than would cover the gap in a few frames, so a
-        // stale growth estimate cannot carry the view into the end and stop
-        // abruptly after the stream pauses.
-        let feed = self.growth.min(gap / 0.05);
-        let aim = feed + gap / CATCH_UP;
-        self.velocity += (aim - self.velocity) * (1.0 - (-dt / VELOCITY_EASE).exp());
-        self.velocity = self.velocity.max(0.0);
-        let mut next = (current + self.velocity * dt).min(target);
+        if gap <= 0.5 {
+            return target;
+        }
+        // New growth (or something else moved the view) starts a fresh ease
+        // from where the view is now.
+        if (target - self.to).abs() > 0.5 || (current - self.position).abs() > 1.0 {
+            self.from = current;
+            self.to = target;
+            self.elapsed = 0.0;
+        }
+        self.elapsed += dt;
+        let t = (self.elapsed / GLIDE).min(1.0);
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let mut next = (self.from + (self.to - self.from) * eased).clamp(current, target);
         if target - next > max_lag {
             next = target - max_lag;
         }
-        if target - next <= 0.25 {
+        if target - next <= 0.5 {
             next = target;
         }
+        self.position = next;
         next
     }
 }
@@ -180,13 +168,6 @@ impl Panel {
                 let glide = &mut self.tail_glide;
                 glide.held = true;
                 glide.position = max;
-                glide.last_max = Some(max);
-                // Keep the growth estimate and timestamp warm between lines so
-                // the next line starts at the stream's pace, not from rest.
-                glide.velocity = glide.velocity.min(glide.growth);
-                if glide.at.is_none() {
-                    glide.growth = 0.0;
-                }
                 glide.at = Some(now);
                 // Streamed text grows every frame. Other growth (tool cards,
                 // tool output) is noticed after paint by
@@ -212,9 +193,6 @@ impl Panel {
             .unwrap_or(FIRST_STEP)
             .as_secs_f32();
         self.tail_glide.held = false;
-        if self.tail_glide.at.is_none() {
-            self.tail_glide.last_max = Some(current);
-        }
         self.tail_glide.at = Some(now);
         let max_lag = (viewport * 0.6).max(MAX_LAG_PX);
         let next = self.tail_glide.step(current, max, dt, max_lag);
@@ -269,29 +247,18 @@ impl Panel {
 mod tests {
     use super::*;
 
-    /// Simulate a stream adding `line` px at random-ish intervals averaging
-    /// `per_second` lines and return the per-frame scroll steps.
-    fn simulate(per_second: f32, frames: usize) -> (Vec<f32>, f32) {
+    /// Simulate blocks of `lines` 22px lines released every `interval` frames
+    /// and return the per-frame scroll steps and the worst lag.
+    fn simulate(lines: f32, interval: usize, frames: usize) -> (Vec<f32>, f32) {
         let mut glide = TailGlide::default();
         let dt = 1.0 / 60.0;
-        let line = 22.0;
         let mut target = 0.0f32;
         let mut position = 0.0f32;
-        let mut debt = 0.0f32;
-        let mut seed = 0x2545_f491u32;
         let mut steps = Vec::new();
         let mut max_lag = 0.0f32;
-        glide.last_max = Some(0.0);
-        for _ in 0..frames {
-            // Bursty arrivals: a deterministic pseudo-random fraction of the
-            // average per frame, so some frames add several lines.
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            debt += per_second * dt * 2.0 * (seed % 1000) as f32 / 1000.0;
-            while debt >= 1.0 {
-                target += line;
-                debt -= 1.0;
+        for frame in 0..frames {
+            if frame % interval == 0 {
+                target += lines * 22.0;
             }
             let next = glide.step(position, target, dt, MAX_LAG_PX);
             assert!(next <= target && next >= position, "monotonic, bounded");
@@ -302,73 +269,45 @@ mod tests {
         (steps, max_lag)
     }
 
-    fn variation(steps: &[f32]) -> f32 {
-        let mean = steps.iter().sum::<f32>() / steps.len() as f32;
-        let var = steps.iter().map(|s| (s - mean).powi(2)).sum::<f32>() / steps.len() as f32;
-        var.sqrt() / mean.max(0.01)
-    }
-
     #[test]
-    fn fast_streams_scroll_at_a_steady_pace_without_jumps() {
-        for per_second in [20.0, 50.0, 80.0, 150.0] {
-            let (steps, max_lag) = simulate(per_second, 600);
-            let steady = &steps[120..];
-            let mean = steady.iter().sum::<f32>() / steady.len() as f32;
-            let expected = per_second * 22.0 / 60.0;
-            assert!(
-                (mean - expected).abs() < expected * 0.25,
-                "{per_second}/s keeps pace: {mean} vs {expected}"
-            );
-            assert!(max_lag <= MAX_LAG_PX + 0.5, "{per_second}/s lag {max_lag}");
-            // A single frame never moves more than a few lines' worth beyond
-            // the average, so there are no catch-up snaps.
-            let peak = steady.iter().cloned().fold(0.0, f32::max);
-            assert!(
-                peak < expected * 3.0 + 10.0,
-                "{per_second}/s peak step {peak} vs mean {expected}"
-            );
-            assert!(
-                variation(steady) < 0.9,
-                "{per_second}/s smooth: {}",
-                variation(steady)
+    fn block_releases_step_forward_then_rest() {
+        // A block of three lines every 150 ms, a typical chunked stream.
+        let (steps, max_lag) = simulate(3.0, 9, 540);
+        for (block, frames) in steps.chunks(9).enumerate() {
+            assert_eq!(
+                frames[8], 0.0,
+                "block {block} settled before the next: {frames:?}"
             );
         }
+        assert!(max_lag <= 3.0 * 22.0 + 0.5, "lag {max_lag}");
     }
 
     #[test]
-    fn a_single_line_eases_in_and_settles() {
-        let mut glide = TailGlide {
-            last_max: Some(0.0),
-            ..Default::default()
-        };
+    fn a_single_block_eases_in_and_settles() {
+        let mut glide = TailGlide::default();
         let mut position = 0.0;
         let mut steps = Vec::new();
-        for _ in 0..60 {
-            let next = glide.step(position, 22.0, 1.0 / 60.0, MAX_LAG_PX);
-            assert!(next <= 22.0 && next >= position);
+        for _ in 0..30 {
+            let next = glide.step(position, 66.0, 1.0 / 60.0, MAX_LAG_PX);
+            assert!(next <= 66.0 && next >= position);
             steps.push(next - position);
             position = next;
         }
-        assert!(steps[0] < 6.0, "gentle start: {}", steps[0]);
-        assert_eq!(position, 22.0, "settles exactly on the tail");
+        assert!(steps[0] < 66.0 * 0.4, "eased, not snapped: {}", steps[0]);
+        assert!(
+            steps.windows(2).all(|pair| pair[1] <= pair[0] + 0.5),
+            "decelerates: {steps:?}"
+        );
+        assert_eq!(position, 66.0, "settles exactly on the tail");
+        let settle = steps.iter().position(|step| *step == 0.0).unwrap();
+        assert!(settle <= 9, "settled in {settle} frames");
     }
 
     #[test]
-    fn stops_promptly_when_the_stream_pauses() {
+    fn lag_is_bounded_without_snapping_to_the_end() {
         let mut glide = TailGlide::default();
-        glide.last_max = Some(0.0);
-        let mut target = 0.0;
-        let mut position = 0.0;
-        for _ in 0..120 {
-            target += 15.0;
-            position = glide.step(position, target, 1.0 / 60.0, MAX_LAG_PX);
-        }
-        let mut frames = 0;
-        while position < target {
-            position = glide.step(position, target, 1.0 / 60.0, MAX_LAG_PX);
-            frames += 1;
-            assert!(frames < 60, "caught up within a second");
-        }
+        let next = glide.step(0.0, 1_000.0, 1.0 / 60.0, MAX_LAG_PX);
+        assert_eq!(next, 1_000.0 - MAX_LAG_PX);
     }
 
     fn gap(panel: &Panel) -> f32 {
@@ -483,7 +422,8 @@ mod tests {
         }
         let offset =
             |panel: &Panel| -f32::from(panel.transcript_list.scroll_px_offset_for_scrollbar().y);
-        // A very fast model: several paragraphs every frame.
+        // A very fast model: several paragraphs every frame. The reveal
+        // releases them in blocks, so the view steps forward block by block.
         let mut previous = panel.read_with(vcx, |panel, _| offset(panel));
         let mut steps = Vec::new();
         for n in 0..90 {
@@ -500,7 +440,10 @@ mod tests {
             frame(vcx);
             let now = panel.read_with(vcx, |panel, _| {
                 assert!(panel.stick_to_bottom, "still following");
-                assert!(gap(panel) <= MAX_LAG_PX + 1.0, "bounded lag {}", gap(panel));
+                // Lag stays within the follower's bound plus the block
+                // that was just released below it.
+                let bound = MAX_LAG_PX + 400.0;
+                assert!(gap(panel) <= bound, "bounded lag {}", gap(panel));
                 offset(panel)
             });
             assert!(
@@ -512,12 +455,7 @@ mod tests {
         }
         let moving: Vec<f32> = steps[20..].to_vec();
         let mean = moving.iter().sum::<f32>() / moving.len() as f32;
-        let peak = moving.iter().cloned().fold(0.0, f32::max);
         assert!(mean > 1.0, "scrolled with the stream: {steps:?}");
-        assert!(
-            peak <= mean * 4.0 + 12.0,
-            "no catch-up snaps: peak {peak} mean {mean} {steps:?}"
-        );
     }
 
     #[gpui::test]
