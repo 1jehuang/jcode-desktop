@@ -98,7 +98,8 @@ mod tests {
             assert!(super::refresh_after(&event));
         }
         assert!(super::refresh_after(&jcode_sdk::ApiEvent::TurnDone {
-            session_id: "session".into()
+            session_id: "session".into(),
+            pending_soft_interrupts: None,
         }));
         assert!(!super::refresh_after(&jcode_sdk::ApiEvent::TextDelta {
             message_id: None,

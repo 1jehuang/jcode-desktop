@@ -274,6 +274,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     });
     server.event(ApiEvent::TurnDone {
         session_id: "same-id".into(),
+        pending_soft_interrupts: None,
     });
     wait_update(&updates, |u| {
         matches!(

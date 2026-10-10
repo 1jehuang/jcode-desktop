@@ -828,6 +828,7 @@ mod tests {
                 ApiEvent::SessionStatus {
                     session_id: "tail-test".into(),
                     status: "thinking".into(),
+                    pending_soft_interrupts: None,
                 },
                 ApiEvent::ReasoningDelta {
                     session_id: "tail-test".into(),
@@ -872,6 +873,7 @@ mod tests {
                 "done" => panel.apply(
                     &ApiEvent::TurnDone {
                         session_id: "tail-test".into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 ),
@@ -887,6 +889,7 @@ mod tests {
                     &ApiEvent::SessionStatus {
                         session_id: "tail-test".into(),
                         status: terminal.into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 ),
@@ -961,6 +964,7 @@ mod tests {
             panel.apply(
                 &ApiEvent::TurnDone {
                     session_id: "activity-test".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
@@ -979,6 +983,7 @@ mod tests {
                     &ApiEvent::SessionStatus {
                         session_id: "activity-test".into(),
                         status: status.into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );
@@ -1035,6 +1040,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "activity-test".into(),
                     status: "idle".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );

@@ -248,6 +248,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "stats".into(),
                     status: "processing".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
@@ -274,12 +275,14 @@ mod tests {
             panel.apply(
                 &ApiEvent::TurnDone {
                     session_id: "stats".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
             panel.apply(
                 &ApiEvent::TurnDone {
                     session_id: "stats".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
@@ -287,6 +290,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "stats".into(),
                     status: "idle".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
@@ -380,6 +384,7 @@ mod tests {
                     &ApiEvent::SessionStatus {
                         session_id: "stats-history".into(),
                         status: "idle".into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );
@@ -403,6 +408,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "stats-history".into(),
                     status: "idle".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );

@@ -31,8 +31,10 @@ pub(super) struct State {
     import_task: Option<gpui::Task<()>>,
     /// Addresses other AI tools are signed in with, offered as the Jcode email.
     emails: Vec<DetectedEmail>,
-    /// Which detected address fills the field. None once the user types their own.
+    /// The detected address the sign-in email went to, for its row's status.
     picked_email: Option<usize>,
+    /// Show the typed-email field even though addresses were detected.
+    other_email: bool,
     emails_task: Option<gpui::Task<()>>,
     /// Theme choice is optional, so the swatches stay folded until asked for.
     theme_expanded: bool,
@@ -57,6 +59,7 @@ struct Demo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Choice {
     Email(usize),
+    OtherEmail,
     Field,
     Primary,
     OpenGmail,
@@ -176,6 +179,7 @@ impl State {
                 Choice::StartOver,
             ]),
             _ if self.connected || !self.email => {}
+            _ if !self.shows_field() => choices.push(Choice::OtherEmail),
             _ => choices.extend([Choice::Field, Choice::Primary]),
         }
         choices.extend(self.importable().into_iter().map(Choice::Login));
@@ -197,6 +201,12 @@ impl State {
     fn email_choices(&self) -> std::ops::Range<usize> {
         let offered = self.email && !self.connected && matches!(self.stage, Stage::Welcome);
         0..if offered { self.emails.len() } else { 0 }
+    }
+
+    /// The typed-email field: always when nothing was detected, otherwise
+    /// only after "Use another email". The code step always has it.
+    fn shows_field(&self) -> bool {
+        !matches!(self.stage, Stage::Welcome) || self.emails.is_empty() || self.other_email
     }
 
     /// Detected logins that would add a provider Jcode does not have yet.
@@ -269,17 +279,23 @@ impl Workspace {
             return;
         }
         if harness::screenshot_mode() {
+            let no_emails =
+                std::env::var("JCODE_DESKTOP_SCREENSHOT_ACCOUNT_NO_EMAILS").as_deref() == Ok("1");
             self.set_account_emails(
-                vec![
-                    DetectedEmail {
-                        email: "ada@example.com".into(),
-                        sources: vec!["Codex", "Claude Code"],
-                    },
-                    DetectedEmail {
-                        email: "ada@work.example".into(),
-                        sources: vec!["Gemini CLI"],
-                    },
-                ],
+                if no_emails {
+                    Vec::new()
+                } else {
+                    vec![
+                        DetectedEmail {
+                            email: "ada@example.com".into(),
+                            sources: vec!["Codex", "Claude Code"],
+                        },
+                        DetectedEmail {
+                            email: "ada@work.example".into(),
+                            sources: vec!["Gemini CLI"],
+                        },
+                    ]
+                },
                 cx,
             );
             self.set_account_import_candidates(
@@ -317,28 +333,17 @@ impl Workspace {
     /// Prefill the field with the first detected address unless the user
     /// already typed something.
     fn set_account_emails(&mut self, emails: Vec<DetectedEmail>, cx: &mut Context<Self>) {
-        let typed = self
-            .account_sign_in
-            .input
-            .as_ref()
-            .is_some_and(|input| !input.read(cx).content.trim().is_empty());
         let state = &mut self.account_sign_in;
         state.emails = emails;
         state.emails_task = None;
         state.keyboard_choice = None;
         state.picked_email = None;
-        if !typed && let Some(first) = state.emails.first() {
-            let address = first.email.clone();
-            state.picked_email = Some(0);
-            let input = self.ensure_account_input(cx);
-            input.update(cx, |input, cx| input.set_content(address, cx));
-        }
         cx.notify();
     }
 
-    /// Use a detected address for Jcode: it fills the sign-in field, and the
-    /// arrow beside it sends the code.
-    fn pick_account_email(&mut self, index: usize, cx: &mut Context<Self>) {
+    /// Clicking a detected address sends the sign-in email to it right away.
+    fn pick_account_email(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let busy = !matches!(self.account_sign_in.stage, Stage::Welcome);
         let Some(address) = self
             .account_sign_in
             .emails
@@ -347,10 +352,18 @@ impl Workspace {
         else {
             return;
         };
+        if busy {
+            return;
+        }
         self.account_sign_in.picked_email = Some(index);
-        self.account_sign_in.error = None;
-        let input = self.ensure_account_input(cx);
-        input.update(cx, |input, cx| input.set_content(address, cx));
+        self.start_account_sign_in(address, window, cx);
+    }
+
+    fn show_other_account_email(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.account_sign_in.other_email = true;
+        self.account_sign_in.picked_email = None;
+        self.account_sign_in.keyboard_choice = None;
+        self.focus_account_input(window, cx);
         cx.notify();
     }
 
@@ -594,7 +607,8 @@ impl Workspace {
             Choice::Primary => self.account_sign_in_primary(window, cx),
             Choice::OpenGmail => self.open_account_gmail(cx),
             Choice::StartOver => self.reset_account_sign_in(window, cx),
-            Choice::Email(index) => self.pick_account_email(index, cx),
+            Choice::Email(index) => self.pick_account_email(index, window, cx),
+            Choice::OtherEmail => self.show_other_account_email(window, cx),
             Choice::Login(index) => self.toggle_account_import(index, cx),
             Choice::ThemeToggle => self.toggle_account_theme_picker(cx),
             Choice::Theme => self.pick_account_theme(Theme::active_preset().next(), cx),
@@ -687,18 +701,6 @@ impl Workspace {
                     let _ = change.update(app, |this, cx| {
                         if this.account_sign_in.error.take().is_some() {
                             cx.notify();
-                        }
-                        // The radio follows whatever address is in the field.
-                        if matches!(this.account_sign_in.stage, Stage::Welcome) {
-                            let state = &mut this.account_sign_in;
-                            let picked = state
-                                .emails
-                                .iter()
-                                .position(|e| e.email.eq_ignore_ascii_case(text.trim()));
-                            if state.picked_email != picked {
-                                state.picked_email = picked;
-                                cx.notify();
-                            }
                         }
                         if matches!(this.account_sign_in.stage, Stage::Code { .. })
                             && code_digits(&text).len() == 6
@@ -1217,7 +1219,8 @@ impl Workspace {
             _ if state.connected => Some("Signed in to Jcode".to_string()),
             _ => None,
         };
-        let mut section = section("Jcode account").debug_selector(|| "account-sign-in-email".into());
+        let mut section =
+            section("Jcode account").debug_selector(|| "account-sign-in-email".into());
         if let Some(status) = signed_in {
             return section.child(
                 div()
@@ -1238,12 +1241,17 @@ impl Workspace {
             None if state.emails.is_empty() => {
                 subheading("Optional. Sign in to sync sessions and settings.")
             }
-            None => subheading("Found in your coding agent logins. Pick one, or type another."),
+            None => {
+                subheading("Found in your coding agent logins. Pick one and we'll email it a code.")
+            }
         });
+        let state_shows_field = state.shows_field();
         if code.is_none() {
             section = section.children(self.account_onboarding_detected_emails(cx));
         }
-        section = section.child(self.account_onboarding_field(cx));
+        if state_shows_field {
+            section = section.child(self.account_onboarding_field(cx));
+        }
         let state = &self.account_sign_in;
         if let Some(email) = code {
             section = section
@@ -1281,9 +1289,9 @@ impl Workspace {
                             .text_size(px(12.0))
                             .px_3()
                             .py_1()
-                            .on_click(cx.listener(|this, _, window, cx| {
-                                this.reset_account_sign_in(window, cx)
-                            })),
+                            .on_click(cx.listener(
+                                |this, _, window, cx| this.reset_account_sign_in(window, cx),
+                            )),
                         ),
                 );
         }
@@ -1300,13 +1308,15 @@ impl Workspace {
         section
     }
 
-    /// Detected addresses as radio pills. Picking one fills the field below.
+    /// Detected addresses as pill rows. Clicking one emails it a sign-in
+    /// code straight away, so most people never type an address.
     fn account_onboarding_detected_emails(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let state = &self.account_sign_in;
         let theme = Theme::global();
         if state.email_choices().is_empty() {
             return None;
         }
+        let sending = matches!(state.stage, Stage::Sending);
         let mut list = div()
             .debug_selector(|| "account-emails".into())
             .flex()
@@ -1316,27 +1326,22 @@ impl Workspace {
             let detected = &state.emails[index];
             let picked = state.picked_email == Some(index);
             let focused = state.focused(Choice::Email(index));
-            let radio = div()
-                .size(px(16.0))
-                .flex_none()
-                .rounded_full()
-                .border_1()
-                .border_color(if picked { theme.ACCENT } else { theme.TEXT_DIM })
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(picked, |el| {
-                    el.child(div().size(px(8.0)).rounded_full().bg(theme.ACCENT))
-                });
+            let action = if sending && picked {
+                "Sending…"
+            } else {
+                "Send code"
+            };
             list = list.child(
                 div()
                     .id(("account-email", index))
                     .debug_selector(move || format!("account-email-{index}"))
+                    .group("account-email")
                     .flex()
                     .items_center()
                     .gap_3()
-                    .px_4()
-                    .py(px(8.0))
+                    .pl_4()
+                    .pr(px(6.0))
+                    .py(px(6.0))
                     .rounded_full()
                     .border_1()
                     .border_color(if focused {
@@ -1344,14 +1349,12 @@ impl Workspace {
                     } else {
                         gpui::transparent_black().into()
                     })
-                    .bg(if picked {
-                        theme.ACCENT.opacity(0.1)
-                    } else {
-                        theme.TEXT.opacity(0.04)
+                    .bg(theme.TEXT.opacity(0.05))
+                    .when(sending && !picked, |el| el.opacity(0.5))
+                    .when(!sending, |el| {
+                        el.cursor_pointer()
+                            .hover(|el| el.bg(theme.TEXT.opacity(0.09)))
                     })
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.TEXT.opacity(0.08)))
-                    .child(radio)
                     .child(
                         div()
                             .flex_1()
@@ -1372,36 +1375,75 @@ impl Workspace {
                                     .child(format!("from {}", detected.sources.join(", "))),
                             ),
                     )
-                    .on_click(
-                        cx.listener(move |this, _, _, cx| this.pick_account_email(index, cx)),
-                    ),
+                    .child(
+                        div()
+                            .flex_none()
+                            .px_3()
+                            .py(px(5.0))
+                            .rounded_full()
+                            .text_size(px(12.0))
+                            .when(picked && sending, |el| {
+                                el.bg(theme.ACCENT).text_color(theme.BG)
+                            })
+                            .when(!(picked && sending), |el| {
+                                el.bg(theme.TEXT.opacity(0.08))
+                                    .text_color(theme.TEXT)
+                                    .group_hover("account-email", |el| {
+                                        el.bg(theme.ACCENT).text_color(theme.BG)
+                                    })
+                            })
+                            .child(action),
+                    )
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.pick_account_email(index, window, cx)
+                    })),
             );
+        }
+        if !state.shows_field() {
+            list =
+                list.child(
+                    div().pt_1().flex().child(
+                        account_button(
+                            "account-sign-in-other",
+                            "Use another email",
+                            false,
+                            state.focused(Choice::OtherEmail),
+                        )
+                        .text_size(px(12.0))
+                        .px_3()
+                        .py_1()
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.show_other_account_email(window, cx)
+                        })),
+                    ),
+                );
         }
         Some(list)
     }
 
-    /// The email (then code) field with its send/verify button, as one pill.
+    /// The email (then code) field with a round send/verify arrow, as one pill.
     fn account_onboarding_field(&mut self, cx: &mut Context<Self>) -> gpui::Div {
         let input = self.ensure_account_input(cx);
         let theme = Theme::global();
         let state = &self.account_sign_in;
         let busy = matches!(state.stage, Stage::Sending | Stage::Verifying { .. });
+        let primary_focused = state.focused(Choice::Primary);
         div()
             .debug_selector(|| "account-sign-in-panel".into())
             .flex()
             .items_center()
             .gap(px(6.0))
-            .pl(px(6.0))
-            .pr(px(6.0))
+            .pl(px(8.0))
+            .pr(px(5.0))
             .h(px(FIELD_HEIGHT))
             .rounded_full()
             .border_1()
             .border_color(if state.focused(Choice::Field) {
                 theme.ACCENT
             } else {
-                theme.PANEL_BORDER
+                theme.TEXT.opacity(0.12)
             })
-            .bg(theme.PANEL_BG)
+            .bg(theme.TEXT.opacity(0.04))
             .child(
                 div()
                     .id("account-sign-in-field")
@@ -1412,20 +1454,34 @@ impl Workspace {
                     .child(input),
             )
             .child(
-                account_button(
-                    "account-sign-in-primary",
-                    state.primary_label(),
-                    true,
-                    state.focused(Choice::Primary),
-                )
-                .flex_none()
-                .text_size(px(13.0))
-                .px_3()
-                .py(px(6.0))
-                .when(busy, |el| el.opacity(0.6))
-                .on_click(
-                    cx.listener(|this, _, window, cx| this.account_sign_in_primary(window, cx)),
-                ),
+                div()
+                    .id("account-sign-in-primary")
+                    .debug_selector(|| "account-sign-in-primary".into())
+                    .flex_none()
+                    .size(px(FIELD_HEIGHT - 12.0))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .bg(theme.ACCENT)
+                    .border_1()
+                    .border_color(if primary_focused {
+                        theme.TEXT
+                    } else {
+                        gpui::transparent_black().into()
+                    })
+                    .cursor_pointer()
+                    .hover(|el| el.opacity(0.9))
+                    .when(busy, |el| el.opacity(0.5))
+                    .child(
+                        gpui::svg()
+                            .data(include_bytes!("../../../assets/icons/arrow-right.svg"))
+                            .size(px(15.0))
+                            .text_color(theme.BG),
+                    )
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.account_sign_in_primary(window, cx)),
+                    ),
             )
     }
 

@@ -95,6 +95,7 @@ impl Panel {
                 self.apply(
                     &ApiEvent::TurnDone {
                         session_id: self.session_id.clone(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );
@@ -112,6 +113,7 @@ impl Panel {
                     &ApiEvent::SessionStatus {
                         session_id: self.session_id.clone(),
                         status: "processing".into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );
@@ -145,6 +147,7 @@ impl Panel {
                         &ApiEvent::SessionStatus {
                             session_id: self.session_id.clone(),
                             status: "disconnected".into(),
+                            pending_soft_interrupts: None,
                         },
                         cx,
                     );

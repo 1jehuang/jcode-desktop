@@ -41,6 +41,7 @@ fn interrupted_session_continues_once_without_composer_input() {
     worker.wait_for(|update| matches!(update, Update::Event { event: ApiEvent::SessionStatus { status, .. }, .. } if status == "running"));
     worker.event(ApiEvent::TurnDone {
         session_id: "s1".into(),
+        pending_soft_interrupts: None,
     });
     worker.event(recovery_event("s1"));
     recovery_fence(&worker);
@@ -56,6 +57,7 @@ fn completed_session_and_other_sessions_recovery_remain_idle() {
     worker.event(ApiEvent::SessionStatus {
         session_id: "s1".into(),
         status: "idle".into(),
+        pending_soft_interrupts: None,
     });
     worker.event(recovery_event("other-session"));
     recovery_fence(&worker);
@@ -68,13 +70,16 @@ fn already_running_or_completed_turn_suppresses_stale_recovery() {
         ApiEvent::SessionStatus {
             session_id: "s1".into(),
             status: "running".into(),
+            pending_soft_interrupts: None,
         },
         ApiEvent::TurnDone {
             session_id: "s1".into(),
+            pending_soft_interrupts: None,
         },
         ApiEvent::SessionStatus {
             session_id: "s1".into(),
             status: "cancelled".into(),
+            pending_soft_interrupts: None,
         },
     ] {
         let worker = Worker::new(|_| panic!("stale recovery must not send"));
@@ -110,6 +115,7 @@ fn user_submission_supersedes_automatic_continuation() {
     );
     worker.event(ApiEvent::TurnDone {
         session_id: "s1".into(),
+        pending_soft_interrupts: None,
     });
     worker.event(recovery_event("s1"));
     recovery_fence(&worker);

@@ -25,6 +25,7 @@ fn reconnect_turn_completion_reconciles_idle_and_active_history(cx: &mut gpui::T
             panel.apply(&ApiEvent::SessionStatus {
                 session_id: panel.session_id.clone(),
                 status: if active { "running" } else { "idle" }.into(),
+                pending_soft_interrupts: None,
             }, cx);
             assert_eq!(panel.activity_active(), active);
             assert_eq!(panel.sidebar_activity().is_some(), active);
@@ -40,9 +41,10 @@ fn reconnect_turn_completion_reconciles_idle_and_active_history(cx: &mut gpui::T
             // Transport events cannot replace the authoritative turn state.
             panel.apply(&ApiEvent::SessionStatus {
                 session_id: panel.session_id.clone(), status: "attached".into(),
+                pending_soft_interrupts: None,
             }, cx);
             assert_eq!(panel.activity_active(), active);
-            panel.apply(&ApiEvent::TurnDone { session_id: panel.session_id.clone() }, cx);
+            panel.apply(&ApiEvent::TurnDone { session_id: panel.session_id.clone(), pending_soft_interrupts: None }, cx);
             assert_eq!(panel.status_line(), "Ready");
             assert!(!panel.activity_active());
         });

@@ -1536,6 +1536,7 @@ mod tests {
                         event: jcode_sdk::ApiEvent::SessionStatus {
                             session_id: "activity-tab".into(),
                             status: status.into(),
+                            pending_soft_interrupts: None,
                         },
                     },
                     cx,

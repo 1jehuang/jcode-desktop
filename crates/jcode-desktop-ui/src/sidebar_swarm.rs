@@ -425,6 +425,7 @@ mod tests {
                         event: jcode_sdk::ApiEvent::SessionStatus {
                             session_id: "child".into(),
                             status: "running".into(),
+                            pending_soft_interrupts: None,
                         },
                     },
                     cx,

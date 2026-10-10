@@ -6,6 +6,7 @@ fn todo(status: &str) -> TodoCardItem {
 fn done(state: &mut AutoPoke) {
     state.observe(&ApiEvent::TurnDone {
         session_id: "poke-test".into(),
+        pending_soft_interrupts: None,
     });
 }
 
@@ -105,12 +106,14 @@ fn auto_poke_real_panel_completion_is_once_and_user_queue_wins(cx: &mut gpui::Te
         p.apply(
             &ApiEvent::TurnDone {
                 session_id: p.session_id.clone(),
+                pending_soft_interrupts: None,
             },
             cx,
         );
         p.apply(
             &ApiEvent::TurnDone {
                 session_id: p.session_id.clone(),
+                pending_soft_interrupts: None,
             },
             cx,
         );
@@ -130,6 +133,7 @@ fn auto_poke_real_panel_completion_is_once_and_user_queue_wins(cx: &mut gpui::Te
         p.apply(
             &ApiEvent::TurnDone {
                 session_id: p.session_id.clone(),
+                pending_soft_interrupts: None,
             },
             cx,
         );
@@ -169,6 +173,7 @@ fn auto_poke_panel_suppresses_stale_todos_cancel_and_send_failure(cx: &mut gpui:
         p.apply(
             &ApiEvent::TurnDone {
                 session_id: p.session_id.clone(),
+                pending_soft_interrupts: None,
             },
             cx,
         );
@@ -191,6 +196,7 @@ fn auto_poke_panel_suppresses_stale_todos_cancel_and_send_failure(cx: &mut gpui:
             p.apply(
                 &ApiEvent::TurnDone {
                     session_id: p.session_id.clone(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );

@@ -144,6 +144,7 @@ pub(crate) fn run_showcase(
                                 panel.demo_event(
                                     ApiEvent::TurnDone {
                                         session_id: session_id.clone(),
+                                        pending_soft_interrupts: None,
                                     },
                                     cx,
                                 )
@@ -159,6 +160,7 @@ pub(crate) fn run_showcase(
                                     ApiEvent::SessionStatus {
                                         session_id: session_id.clone(),
                                         status: "processing".into(),
+                                        pending_soft_interrupts: None,
                                     },
                                     cx,
                                 );
@@ -262,6 +264,7 @@ pub(crate) fn run_showcase(
                 panel.demo_event(
                     ApiEvent::TurnDone {
                         session_id: session_id.clone(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 )

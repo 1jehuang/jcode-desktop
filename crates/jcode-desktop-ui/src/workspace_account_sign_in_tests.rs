@@ -455,11 +455,15 @@ fn detected(email: &str, sources: Vec<&'static str>) -> DetectedEmail {
 }
 
 #[gpui::test]
-fn detected_emails_prefill_and_pick_the_jcode_email(cx: &mut gpui::TestAppContext) {
+fn clicking_a_detected_email_sends_it_the_code(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     assert!(
         vcx.debug_bounds("account-emails").is_none(),
         "none detected"
+    );
+    assert!(
+        vcx.debug_bounds("account-sign-in-field").is_some(),
+        "type one instead"
     );
     workspace.update(vcx, |w, cx| {
         w.set_account_emails(
@@ -471,40 +475,46 @@ fn detected_emails_prefill_and_pick_the_jcode_email(cx: &mut gpui::TestAppContex
         )
     });
     vcx.run_until_parked();
+    // Detected addresses replace the field until "Use another email".
     assert!(vcx.debug_bounds("account-email-1").is_some());
-    assert_eq!(field_text(&workspace, vcx), "me@home.example");
+    assert!(vcx.debug_bounds("account-sign-in-field").is_none());
     click(vcx, "account-email-1");
-    assert_eq!(field_text(&workspace, vcx), "me@work.example");
     workspace.read_with(vcx, |w, _| {
-        assert_eq!(w.account_sign_in.picked_email, Some(1))
+        assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, .. } if email == "me@work.example"));
+        assert_eq!(w.account_sign_in.picked_email, Some(1));
     });
-    // Keyboard: the addresses are the first stops, Enter picks one.
+    assert!(vcx.debug_bounds("account-emails").is_none());
+    // Back from the code step offers the addresses again.
+    click(vcx, "account-sign-in-back");
+    assert!(vcx.debug_bounds("account-email-0").is_some());
+    // Keyboard: the addresses are the first stops, Enter sends.
+    workspace.update_in(vcx, |w, window, cx| window.focus(&w.focus_handle, cx));
     vcx.simulate_keystrokes("tab enter");
     vcx.run_until_parked();
-    assert_eq!(field_text(&workspace, vcx), "me@home.example");
-    // Editing the address by hand clears the radio.
-    type_into_field(vcx, "x");
-    assert_eq!(field_text(&workspace, vcx), "me@home.examplex");
-    workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.picked_email, None));
-    // Sending the code hides the picker.
-    click(vcx, "account-email-0");
-    click(vcx, "account-sign-in-primary");
     workspace.read_with(vcx, |w, _| {
         assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, .. } if email == "me@home.example"))
     });
-    assert!(vcx.debug_bounds("account-emails").is_none());
 }
 
 #[gpui::test]
-fn detected_emails_never_overwrite_a_typed_address(cx: &mut gpui::TestAppContext) {
+fn use_another_email_reveals_the_field(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
-    type_into_field(vcx, "typed@x.example");
     workspace.update(vcx, |w, cx| {
         w.set_account_emails(vec![detected("me@home.example", vec!["Codex"])], cx)
     });
     vcx.run_until_parked();
-    assert_eq!(field_text(&workspace, vcx), "typed@x.example");
-    workspace.read_with(vcx, |w, _| assert_eq!(w.account_sign_in.picked_email, None));
+    click(vcx, "account-sign-in-other");
+    assert!(vcx.debug_bounds("account-sign-in-other").is_none());
+    assert!(
+        vcx.debug_bounds("account-email-0").is_some(),
+        "still one click away"
+    );
+    type_into_field(vcx, "typed@x.example");
+    click(vcx, "account-sign-in-primary");
+    workspace.read_with(vcx, |w, _| {
+        assert!(matches!(&w.account_sign_in.stage, Stage::Code { email, .. } if email == "typed@x.example"));
+        assert_eq!(w.account_sign_in.picked_email, None);
+    });
 }
 
 #[gpui::test]
@@ -526,9 +536,7 @@ fn detected_emails_hidden_without_email_sign_in(cx: &mut gpui::TestAppContext) {
 }
 
 #[gpui::test]
-fn email_sign_in_lives_in_the_left_column_and_the_demo_is_untouched(
-    cx: &mut gpui::TestAppContext,
-) {
+fn email_sign_in_lives_in_the_left_column_and_the_demo_is_untouched(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = setup(cx);
     workspace.update(vcx, |w, cx| {
         w.set_account_emails(vec![detected("me@home.example", vec!["Codex"])], cx)
@@ -539,13 +547,19 @@ fn email_sign_in_lives_in_the_left_column_and_the_demo_is_untouched(
     for selector in [
         "account-sign-in-email",
         "account-emails",
-        "account-sign-in-field",
-        "account-sign-in-primary",
+        "account-email-0",
+        "account-sign-in-other",
         "account-sign-in-finish",
     ] {
         let bounds = vcx.debug_bounds(selector).expect(selector);
-        assert!(bounds.right() <= card.right() + px(1.), "{selector}: {bounds:?}");
-        assert!(bounds.right() <= right.left() + px(1.), "{selector}: {bounds:?}");
+        assert!(
+            bounds.right() <= card.right() + px(1.),
+            "{selector}: {bounds:?}"
+        );
+        assert!(
+            bounds.right() <= right.left() + px(1.),
+            "{selector}: {bounds:?}"
+        );
     }
     // The email comes before the provider logins, right under the title.
     let email = vcx.debug_bounds("account-sign-in-email").unwrap();
@@ -565,7 +579,7 @@ fn email_sign_in_lives_in_the_left_column_and_the_demo_is_untouched(
         assert!(!panel.items.is_empty(), "the replay is actively streaming");
     });
     // The code step replaces the picker in the same spot.
-    click(vcx, "account-sign-in-primary");
+    click(vcx, "account-email-0");
     assert!(vcx.debug_bounds("account-emails").is_none());
     let sent = vcx.debug_bounds("account-sign-in-sent").unwrap();
     assert!(sent.right() <= card.right() + px(1.), "{sent:?}");

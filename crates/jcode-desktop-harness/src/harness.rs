@@ -2096,6 +2096,7 @@ fn session_worker_with_connector(
                                 event: ApiEvent::SessionStatus {
                                     session_id: session_id.clone(),
                                     status: "running".into(),
+                                    pending_soft_interrupts: None,
                                 },
                             });
                         }
@@ -2226,7 +2227,7 @@ fn event_session_id(event: &ApiEvent) -> Option<&str> {
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
-        | ApiEvent::TurnDone { session_id }
+        | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
@@ -2265,7 +2266,7 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::WakeRequested { session_id, .. }
         | ApiEvent::SessionRecovery { session_id, .. }
         | ApiEvent::TokenUsage { session_id, .. }
-        | ApiEvent::TurnDone { session_id }
+        | ApiEvent::TurnDone { session_id, .. }
         | ApiEvent::TurnStopped { session_id, .. }
         | ApiEvent::BackgroundProgress { session_id, .. }
         | ApiEvent::MessageAccepted { session_id }
@@ -2942,6 +2943,7 @@ mod tests {
         let event = ApiEvent::SessionStatus {
             session_id: "other-session".into(),
             status: "generating".into(),
+            pending_soft_interrupts: None,
         };
         assert_eq!(event_session_id(&event), Some("other-session"));
         assert_ne!(event_session_id(&event), Some("this-session"));
@@ -3136,6 +3138,7 @@ mod tests {
             &ApiEvent::SessionStatus {
                 session_id: "s1".into(),
                 status: "attached".into(),
+                pending_soft_interrupts: None,
             },
             &mut active,
         );
@@ -3153,6 +3156,7 @@ mod tests {
             &ApiEvent::SessionStatus {
                 session_id: "s1".into(),
                 status: "idle".into(),
+                pending_soft_interrupts: None,
             },
             &mut active,
         );
@@ -3165,6 +3169,7 @@ mod tests {
         update_turn_activity(
             &ApiEvent::TurnDone {
                 session_id: "s1".into(),
+                pending_soft_interrupts: None,
             },
             &mut active,
         );
@@ -3213,6 +3218,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "s1".into(),
                     status: "processing".into(),
+                    pending_soft_interrupts: None,
                 },
                 &mut active,
             );
@@ -3221,6 +3227,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "s1".into(),
                     status: "attached".into(),
+                    pending_soft_interrupts: None,
                 },
                 &mut active,
             );
@@ -3229,6 +3236,7 @@ mod tests {
                 &ApiEvent::SessionStatus {
                     session_id: "s1".into(),
                     status: status.into(),
+                    pending_soft_interrupts: None,
                 },
                 &mut active,
             );
@@ -3292,6 +3300,7 @@ mod stop_reason_routing_tests {
                 &ApiEvent::SessionStatus {
                     session_id: "legacy".into(),
                     status: status.into(),
+                    pending_soft_interrupts: None,
                 },
                 &mut active,
             );
@@ -3364,6 +3373,7 @@ mod stop_reason_routing_tests {
                     &ApiEvent::SessionStatus {
                         session_id: "session_one".into(),
                         status: "attached".into(),
+                        pending_soft_interrupts: None,
                     },
                     &mut active,
                 );

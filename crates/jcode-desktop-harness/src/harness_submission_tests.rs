@@ -248,7 +248,7 @@ mod socket_tests {
         expected_images: Vec<(String, String)>,
     ) {
         assert!(
-            matches!(request, ApiRequest::SoftInterrupt { session_id, content, images, urgent }
+            matches!(request, ApiRequest::SoftInterrupt { session_id, content, images, urgent, .. }
             if session_id == "s1" && content == expected && images == expected_images && urgent)
         );
     }
@@ -336,6 +336,7 @@ mod socket_tests {
         assert_steering(worker.request(), "already delivered", images());
         worker.event(ApiEvent::TurnDone {
             session_id: "s1".into(),
+            pending_soft_interrupts: None,
         });
         worker.wait_for(|update| {
             matches!(

@@ -46,6 +46,7 @@ pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Ta
                         jcode_sdk::ApiEvent::SessionStatus {
                             session_id,
                             status: "processing".into(),
+                            pending_soft_interrupts: None,
                         },
                         cx,
                     ),
@@ -124,6 +125,7 @@ pub(super) fn spawn(session_id: String, cx: &mut Context<Workspace>) -> gpui::Ta
             if !send(
                 jcode_sdk::ApiEvent::TurnDone {
                     session_id: session_id.clone(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             ) {

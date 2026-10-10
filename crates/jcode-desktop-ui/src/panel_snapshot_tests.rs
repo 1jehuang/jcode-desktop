@@ -26,6 +26,7 @@ fn idle(panel: &mut Panel, cx: &mut Context<Panel>) {
         &ApiEvent::SessionStatus {
             session_id: "reload-test".into(),
             status: "idle".into(),
+            pending_soft_interrupts: None,
         },
         cx,
     );

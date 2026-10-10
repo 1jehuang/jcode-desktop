@@ -162,6 +162,7 @@ mod tests {
                     &ApiEvent::SessionStatus {
                         session_id: "latest-activity".into(),
                         status: status.into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );
@@ -211,6 +212,7 @@ mod tests {
                     &ApiEvent::SessionStatus {
                         session_id: "latest-activity".into(),
                         status: "thinking".into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );
@@ -221,6 +223,7 @@ mod tests {
                 let event = match terminal {
                     "done" => ApiEvent::TurnDone {
                         session_id: "latest-activity".into(),
+                        pending_soft_interrupts: None,
                     },
                     "error" => ApiEvent::Error {
                         code: jcode_sdk::api::ErrorCode::Internal,
@@ -229,6 +232,7 @@ mod tests {
                     status => ApiEvent::SessionStatus {
                         session_id: "latest-activity".into(),
                         status: status.into(),
+                        pending_soft_interrupts: None,
                     },
                 };
                 panel.apply(&event, cx);

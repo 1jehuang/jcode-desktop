@@ -13,6 +13,7 @@ recent transcripts from other harnesses are linked read-only for the preview.
 Pass --blank to rehearse a machine with no other tools installed.
 """
 import argparse
+import base64
 import ctypes
 import json
 import math
@@ -109,6 +110,58 @@ def mirror_logins(real_home, external):
         with os.fdopen(fd, "w") as out:
             json.dump(redact(data), out)
         mirrored.append(relative)
+    mirrored.extend(mirror_login_emails(real_home, external))
+    return mirrored
+
+
+def jwt_email(token):
+    """The `email` claim of a JWT, or None. Signature and other claims are dropped."""
+    try:
+        payload = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except (AttributeError, IndexError, ValueError):
+        return None
+    email = claims.get("email") if isinstance(claims, dict) else None
+    return email if isinstance(email, str) else None
+
+
+def unsigned_jwt(claims):
+    body = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"e30.{body}.{REDACTED}"
+
+
+def write_private_json(target, data):
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as out:
+        json.dump(data, out)
+
+
+def mirror_login_emails(real_home, external):
+    """Keep the account email each tool is signed in with, so onboarding can
+    offer it for Jcode. Only the address survives: Codex gets an unsigned id
+    token carrying just `email`, Claude Code a config with just the address."""
+    mirrored = []
+    codex = external / ".codex/auth.json"
+    try:
+        real = json.loads((real_home / ".codex/auth.json").read_text() or "{}")
+        email = jwt_email(real.get("tokens", {}).get("id_token"))
+    except (OSError, ValueError, AttributeError):
+        email = None
+    if email and codex.is_file():
+        data = json.loads(codex.read_text())
+        if isinstance(data.get("tokens"), dict):
+            data["tokens"]["id_token"] = unsigned_jwt({"email": email})
+            write_private_json(codex, data)
+    claude = real_home / ".claude.json"
+    try:
+        account = json.loads(claude.read_text() or "{}").get("oauthAccount") or {}
+        email = account.get("emailAddress")
+    except (OSError, ValueError, AttributeError):
+        email = None
+    if isinstance(email, str) and email and not claude.is_symlink():
+        write_private_json(external / ".claude.json", {"oauthAccount": {"emailAddress": email}})
+        mirrored.append(".claude.json")
     return mirrored
 
 

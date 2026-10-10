@@ -113,6 +113,7 @@ fn all_stop_categories_preserve_partial_output_settle_tools_and_pause_queue(
             panel.apply(
                 &ApiEvent::TurnDone {
                     session_id: "stop-test".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
@@ -120,6 +121,7 @@ fn all_stop_categories_preserve_partial_output_settle_tools_and_pause_queue(
                 &ApiEvent::SessionStatus {
                     session_id: "stop-test".into(),
                     status: "idle".into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );
@@ -151,6 +153,7 @@ fn natural_done_preserves_output_without_a_stop_notice(cx: &mut gpui::TestAppCon
         panel.apply(
             &ApiEvent::TurnDone {
                 session_id: "stop-test".into(),
+                pending_soft_interrupts: None,
             },
             cx,
         );
@@ -240,6 +243,7 @@ fn legacy_cancelled_and_crashed_statuses_record_explicit_stops(cx: &mut gpui::Te
             let event = ApiEvent::SessionStatus {
                 session_id: "stop-test".into(),
                 status: status.into(),
+                pending_soft_interrupts: None,
             };
             panel.apply(&event, cx);
             panel.apply(&event, cx);
@@ -377,6 +381,7 @@ fn compatibility_status_and_later_disconnect_preserve_confirmed_stop_details(
                 &ApiEvent::SessionStatus {
                     session_id: "stop-test".into(),
                     status: status.into(),
+                    pending_soft_interrupts: None,
                 },
                 cx,
             );

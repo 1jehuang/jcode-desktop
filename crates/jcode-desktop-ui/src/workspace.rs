@@ -10159,6 +10159,7 @@ mod tests {
                     jcode_sdk::ApiEvent::SessionStatus {
                         session_id: "sidebar-activity".into(),
                         status: "idle".into(),
+                        pending_soft_interrupts: None,
                     },
                     event,
                 ] {
@@ -10180,6 +10181,7 @@ mod tests {
                         session_id: "sidebar-activity".into(),
                         event: jcode_sdk::ApiEvent::TurnDone {
                             session_id: "sidebar-activity".into(),
+                            pending_soft_interrupts: None,
                         },
                     },
                     cx,
@@ -11611,6 +11613,7 @@ mod tests {
                     session_id: "active".into(),
                     event: jcode_sdk::ApiEvent::TurnDone {
                         session_id: "active".into(),
+                        pending_soft_interrupts: None,
                     },
                 },
                 cx,

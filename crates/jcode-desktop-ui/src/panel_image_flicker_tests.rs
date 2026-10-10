@@ -153,6 +153,7 @@ async fn encoded_image_asset_and_geometry_survive_streaming_and_history_reconstr
                                 &ApiEvent::SessionStatus {
                                     session_id: "image-stability".into(),
                                     status: "idle".into(),
+                                    pending_soft_interrupts: None,
                                 },
                                 cx,
                             );
@@ -258,6 +259,7 @@ fn settled_html_preview_keeps_its_instance_across_streaming_ancestor_changes(
                     &ApiEvent::SessionStatus {
                         session_id: "html-image-stability".into(),
                         status: "idle".into(),
+                        pending_soft_interrupts: None,
                     },
                     cx,
                 );

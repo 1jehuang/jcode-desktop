@@ -44,6 +44,8 @@ def main():
                         help="render an offline Desktop release status in the workspace top bar")
     parser.add_argument("--account-sign-in", action="store_true",
                         help="show optional first-launch account sign-in without network access")
+    parser.add_argument("--account-sign-in-no-emails", action="store_true",
+                        help="with --account-sign-in, detect no emails so the typed field shows")
     parser.add_argument("--account-menu", nargs="?", const="subscribed", choices=("subscribed", "none"),
                         help="open the in-app Jcode account menu with an offline signed-in fixture "
                              "(none: no plan yet, shows the upgrade choices)")
@@ -485,6 +487,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_CLOUD_STARTUP"] = args.cloud_startup
         if args.account_sign_in or args.account_sign_in_interact:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_SIGN_IN"] = "1"
+        if args.account_sign_in_no_emails:
+            env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_NO_EMAILS"] = "1"
         if args.account_menu:
             env["JCODE_DESKTOP_SCREENSHOT_ACCOUNT_MENU"] = "1"
             if args.account_menu == "none":

@@ -48,6 +48,31 @@ class EnvironmentTests(unittest.TestCase):
             self.assertEqual(json.loads(codex.read_text())["tokens"]["access_token"], "REAL-A")
             self.assertFalse((external / ".gemini").exists(), "unparseable files are never copied")
 
+    def test_mirrored_logins_keep_only_the_account_email(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, external = Path(tmp, "home"), Path(tmp, "external")
+            claims = {"email": "me@example.com", "sub": "REAL-SUB", "auth": "REAL-AUTH"}
+            body = launcher.base64.urlsafe_b64encode(json.dumps(claims).encode()).decode().rstrip("=")
+            codex = home / ".codex/auth.json"
+            codex.parent.mkdir(parents=True)
+            codex.write_text(json.dumps({"tokens": {
+                "id_token": f"REALHEAD.{body}.REALSIG", "access_token": "REAL-A"}}))
+            (home / ".claude.json").write_text(json.dumps({
+                "oauthAccount": {"emailAddress": "me@work.example", "accountUuid": "REAL-UUID"},
+                "projects": {"REAL-PROJECT": {}}}))
+            mirrored = launcher.mirror_logins(home, external)
+            self.assertIn(".claude.json", mirrored)
+            for relative in (".codex/auth.json", ".claude.json"):
+                text = (external / relative).read_text()
+                self.assertNotIn("REAL", text)
+                self.assertEqual((external / relative).stat().st_mode & 0o777, 0o600)
+            token = json.loads((external / ".codex/auth.json").read_text())["tokens"]["id_token"]
+            self.assertEqual(launcher.jwt_email(token), "me@example.com")
+            self.assertEqual(
+                json.loads((external / ".claude.json").read_text()),
+                {"oauthAccount": {"emailAddress": "me@work.example"}},
+            )
+
     def test_mirrored_transcripts_are_recent_links_with_paths_preserved(self):
         with tempfile.TemporaryDirectory() as tmp:
             home, external = Path(tmp, "home"), Path(tmp, "external")

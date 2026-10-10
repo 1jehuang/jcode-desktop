@@ -41,6 +41,7 @@ fn fail_turn(server: &Server, message: &str) {
     });
     server.event(ApiEvent::TurnDone {
         session_id: "same-id".into(),
+        pending_soft_interrupts: None,
     });
 }
 
