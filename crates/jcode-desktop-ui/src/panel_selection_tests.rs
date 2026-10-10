@@ -218,7 +218,6 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
             },
             goals: Vec::new(),
         })];
-        panel.pinned_todo_expanded = true;
         panel
     });
     assert_eq!(
@@ -233,7 +232,6 @@ fn pinned_task_selection_copies_without_collapsing_card(cx: &mut gpui::TestAppCo
         drag_copy(vcx, "selectable-text-pinned-todo-intention"),
         "Copy task text"
     );
-    assert!(panel.read_with(vcx, |panel, _| panel.pinned_todo_expanded));
 }
 
 #[gpui::test]

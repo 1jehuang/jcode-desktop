@@ -1484,10 +1484,7 @@ mod tests {
             assert_eq!(vcx.debug_bounds("pinned-prompt-fade").unwrap(), fade);
         }
 
-        panel.update(vcx, |panel, cx| {
-            panel.pinned_todo_expanded = true;
-            cx.notify();
-        });
+        panel.update(vcx, |_, cx| cx.notify());
         vcx.run_until_parked();
         let todos = vcx.debug_bounds("pinned-todo-card").unwrap();
         let prompt = vcx.debug_bounds("pinned-latest-prompt").unwrap();
