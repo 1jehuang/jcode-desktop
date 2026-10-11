@@ -518,8 +518,13 @@ fn pending_editor_accepts_input_during_motion_and_settles_visible_from_full_widt
                         "Visible while starting"
                     );
                 });
-                // Production tweens use Instant, not the executor's clock.
-                std::thread::sleep(transition::policy(Transition::PanelOpen).duration * 2);
+                // Production tweens use Instant, not the executor's clock. The
+                // tween started before this sleep, so one duration plus a
+                // frame always finishes it (twice the duration cost 3.6s).
+                std::thread::sleep(
+                    transition::policy(Transition::PanelOpen).duration
+                        + std::time::Duration::from_millis(16),
+                );
                 workspace.update(vcx, |_, cx| cx.notify());
                 vcx.run_until_parked();
                 let canvas = vcx.debug_bounds("workspace-canvas").unwrap();

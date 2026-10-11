@@ -37,10 +37,11 @@ fn startup_tall_preview_manual_down_scroll_detaches_without_jumping_to_tail(
 ) {
     for discrete in [false, true] {
         let (panel, vcx) = focused_startup_panel(cx);
-        vcx.simulate_input(&format!(
-            "FIRST LINE\n\n{}LAST LINE",
-            "middle line\n\n".repeat(100)
-        ));
+        // About scrolling, not typing: commit the 1300-char prompt at once.
+        crate::test_input::commit_text(
+            vcx,
+            &format!("FIRST LINE\n\n{}LAST LINE", "middle line\n\n".repeat(100)),
+        );
         vcx.simulate_keystrokes("enter");
         // Long prompts collapse by default. This covers an expanded tall one.
         panel.update(vcx, |panel, cx| {
@@ -293,7 +294,9 @@ fn startup_each_native_submission_paints_the_newest_row(cx: &mut gpui::TestAppCo
             "Growth message {index:02}. {}",
             "Keep the composer steady until the conversation needs more room. ".repeat(3)
         );
-        vcx.simulate_input(&text);
+        // One commit per prompt: this test is about submission and paint,
+        // not keystrokes, and per-character typing made it the slowest test.
+        crate::test_input::commit_text(vcx, &text);
         vcx.simulate_keystrokes("enter");
         vcx.run_until_parked();
         panel.read_with(vcx, |panel, _| {

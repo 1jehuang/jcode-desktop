@@ -7,6 +7,13 @@ use gpui::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+/// Longest edge of a rendered page in pixels. Tests check layout and aspect
+/// ratio, not pixels, and a 2400px raster costs ~450ms of pdftoppm per page.
+#[cfg(not(test))]
+const RENDER_EDGE: u32 = 2400;
+#[cfg(test)]
+const RENDER_EDGE: u32 = 400;
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(crate) struct PdfViewState {
     pub page: usize,
@@ -124,7 +131,7 @@ impl PdfViewer {
         let page = self.state.page;
         // A single bounded, high-resolution page at a time, not an entire PDF in GPU memory.
         let work = cx.background_executor().spawn(async move {
-            let bytes = document.render_page(page, 2400)?;
+            let bytes = document.render_page(page, RENDER_EDGE)?;
             let reader = image::ImageReader::with_format(
                 std::io::Cursor::new(&bytes),
                 image::ImageFormat::Png,

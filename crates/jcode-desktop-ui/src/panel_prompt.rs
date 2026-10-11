@@ -1232,7 +1232,10 @@ mod tests {
         assert!(vcx.debug_bounds("user-prompt-451").is_some());
         assert!(vcx.debug_bounds("user-prompt-533").is_none());
         println!("ACCEPTANCE: arrival of prompt 14 leaves viewed prompt 12 pinned");
-        for (delta, label) in [(180., "user-prompt-0"), (-180., "user-prompt-533")] {
+        // Travel to each end through the real wheel handler. Only the end
+        // state is asserted, so long strokes cover 500+ rows in a few steps
+        // instead of hundreds of small, separately settled ones.
+        for (delta, label) in [(2400., "user-prompt-0"), (-2400., "user-prompt-533")] {
             for _ in 0..250 {
                 let position = vcx.debug_bounds("transcript").unwrap().center();
                 vcx.simulate_event(gpui::ScrollWheelEvent {

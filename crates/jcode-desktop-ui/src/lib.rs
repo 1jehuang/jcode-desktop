@@ -26,6 +26,8 @@ pub mod memory;
 mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;
+#[cfg(test)]
+mod test_input;
 mod panel;
 mod pdf_viewer;
 mod performance;
