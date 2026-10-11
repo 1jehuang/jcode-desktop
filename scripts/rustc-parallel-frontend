@@ -1,6 +1,10 @@
-#!/bin/sh
+#!/usr/bin/env bash
 # rustc wrapper: compile local, unoptimized crates with rustc's parallel
 # front-end (-Zthreads).
+#
+# bash, not sh: Debian/Ubuntu's /bin/sh (dash) drops environment variables
+# whose names are not shell identifiers when it execs rustc, such as cargo's
+# CARGO_BIN_EXE_jcode-desktop, so tests/version.rs failed to compile there.
 #
 # Cargo runs this as `rustc-parallel-frontend <rustc> <args...>`, either as
 # build.rustc-wrapper (every crate) or RUSTC_WORKSPACE_WRAPPER (workspace
