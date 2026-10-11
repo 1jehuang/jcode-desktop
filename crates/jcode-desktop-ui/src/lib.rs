@@ -387,7 +387,7 @@ unsafe extern "C-unwind" fn snapshot(
     }
 }
 
-pub const fn plugin_api() -> PluginApi {
+pub fn plugin_api() -> PluginApi {
     PluginApi::new(activate, snapshot)
 }
 

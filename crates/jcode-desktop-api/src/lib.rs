@@ -247,18 +247,32 @@ pub struct PluginApi {
     pub gpui_revision: [u8; 40],
     pub state_schema: u32,
     pub minimum_state_schema: u32,
+    /// Identity of the Globals shared through this crate. A different crate
+    /// identity (for example after a version bump) gives them new TypeIds, so
+    /// the UI silently stops seeing host state such as per-window launches.
+    pub shared_globals: u64,
     pub activate: ActivateFn,
     pub snapshot: SnapshotFn,
 }
 
+/// Fingerprint of the TypeIds of every Global shared between host and UI.
+pub fn shared_globals_fingerprint() -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    std::any::TypeId::of::<WindowLaunches>().hash(&mut hasher);
+    std::any::TypeId::of::<ImageIds>().hash(&mut hasher);
+    hasher.finish()
+}
+
 impl PluginApi {
-    pub const fn new(activate: ActivateFn, snapshot: SnapshotFn) -> Self {
+    pub fn new(activate: ActivateFn, snapshot: SnapshotFn) -> Self {
         Self {
             abi_version: ABI_VERSION,
             struct_size: size_of::<Self>() as u32,
             gpui_revision: GPUI_REVISION,
             state_schema: STATE_SCHEMA_VERSION,
             minimum_state_schema: STATE_SCHEMA_VERSION,
+            shared_globals: shared_globals_fingerprint(),
             activate,
             snapshot,
         }
@@ -271,6 +285,10 @@ impl PluginApi {
             Some("plugin ABI table size differs from host")
         } else if self.gpui_revision != GPUI_REVISION {
             Some("plugin GPUI revision differs from host")
+        } else if self.shared_globals != shared_globals_fingerprint() {
+            Some(
+                "plugin shared-global identity differs from host (jcode-desktop-api changed); restart Jcode Desktop",
+            )
         } else if self.minimum_state_schema > self.state_schema {
             Some("plugin state schema range is invalid")
         } else {
@@ -311,6 +329,19 @@ mod tests {
         assert!(api.accepts_state(STATE_SCHEMA_VERSION));
         assert!(api.accepts_state(0));
         assert!(!api.accepts_state(STATE_SCHEMA_VERSION + 1));
+    }
+
+    /// A UI built against a different jcode-desktop-api identity (the version
+    /// bump that broke JCODE_DESKTOP_WORKING_DIR for hot-reloaded windows)
+    /// must be refused rather than silently losing every shared Global.
+    #[test]
+    fn plugin_with_different_shared_global_identity_is_rejected() {
+        let mut api = PluginApi::new(activate, snapshot);
+        api.shared_globals ^= 1;
+        assert!(
+            api.compatibility_error()
+                .is_some_and(|error| error.contains("shared-global identity"))
+        );
     }
 
     #[test]
