@@ -5807,19 +5807,20 @@ fn render_todo_card_with_style(
                         .flex()
                         .items_center()
                         .justify_between()
-                        .text_size(px(11.0))
+                        .text_size(px(10.0))
+                        .pt_0p5()
                         .child(
                             div()
                                 .min_w_0()
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .font_weight(FontWeight::SEMIBOLD)
+                                .font_weight(FontWeight::BOLD)
                                 .text_color(Theme::global().ACCENT_MUTED)
                                 .child(text_selection::plain(
                                     selection.clone(),
                                     format!("{key}-group-{group_index}"),
-                                    group.unwrap_or("Other").to_string(),
+                                    group.unwrap_or("Other").to_uppercase(),
                                     window,
                                     cx,
                                 )),
@@ -5901,12 +5902,27 @@ fn render_todo_card_with_style(
                     .gap_1()
                     .text_size(px(12.0))
                     .when_some(payload.plan.understands_user_intent, |line, state| {
+                        // Mirror the TUI: "Intent clear: <intention>".
                         line.child(
                             div()
                                 .debug_selector(|| "pinned-todo-intent-state".into())
                                 .flex_none()
-                                .text_color(todo_tone_color(intent_understanding_tone(state)))
-                                .child(state.as_str()),
+                                .flex()
+                                .child(
+                                    div()
+                                        .text_color(Theme::global().TEXT_DIM)
+                                        .child("Intent\u{00a0}"),
+                                )
+                                .child(
+                                    div()
+                                        .text_color(todo_tone_color(
+                                            intent_understanding_tone(state),
+                                        ))
+                                        .child(state.as_str()),
+                                )
+                                .child(
+                                    div().text_color(Theme::global().TEXT_DIM).child(":"),
+                                ),
                         )
                     })
                     .child(
