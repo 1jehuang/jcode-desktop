@@ -5520,9 +5520,52 @@ fn todoist_named_color(color: Option<&str>) -> gpui::Rgba {
     }
 }
 
-fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
-    let color = todo_status_color(todo);
+/// The evidence state a row's color encodes: what was achieved for completed
+/// work, the planning confidence otherwise.
+fn todo_effective_confidence(todo: &TodoCardItem) -> Option<jcode_base::todo::ConfidenceState> {
+    if todo.status == "completed" {
+        todo.completion_confidence.or(todo.confidence)
+    } else {
+        todo.confidence
+    }
+}
+
+/// Confidence palette, a red to green ramp: speculative red, plausible
+/// amber, validated lime, verified green.
+fn todo_confidence_color(state: jcode_base::todo::ConfidenceState) -> gpui::Rgba {
+    use jcode_base::todo::ConfidenceState as C;
+    let theme = Theme::global();
+    let mix = |a: gpui::Rgba, b: gpui::Rgba, t: f32| gpui::Rgba {
+        r: a.r + (b.r - a.r) * t,
+        g: a.g + (b.g - a.g) * t,
+        b: a.b + (b.b - a.b) * t,
+        a: a.a + (b.a - a.a) * t,
+    };
+    match state {
+        C::Speculative => theme.ERROR,
+        C::Plausible => theme.WARN,
+        C::Validated => mix(theme.WARN, theme.OK, 0.6),
+        C::Verified => theme.OK,
+    }
+}
+
+/// Status is the marker's shape (empty ring, inner dot, filled) and
+/// confidence its color, so rows need no trailing text label. Blocked and
+/// cancelled rows keep their status colors. Hovering names the confidence.
+fn render_todo_marker(todo: &TodoCardItem, id: String) -> impl IntoElement {
+    let blocked = !todo.blocked_by.is_empty() && todo.status != "completed";
+    let confidence = todo_effective_confidence(todo);
+    let color = match confidence {
+        _ if todo.status == "cancelled" => Theme::global().TEXT_FAINT,
+        Some(state) if !blocked => todo_confidence_color(state),
+        _ => todo_status_color(todo),
+    };
+    let label = todo_confidence_label(todo);
     div()
+        .id(gpui::SharedString::from(id))
+        .when(label.is_some(), |marker| {
+            marker.debug_selector(|| "todo-row-confidence".into())
+        })
         .flex_none()
         .w(px(13.0))
         .h(px(13.0))
@@ -5534,7 +5577,17 @@ fn render_todo_marker(todo: &TodoCardItem) -> impl IntoElement {
             marker.child(div().size_full().rounded_full().bg(color))
         })
         .when(todo.status == "in_progress", |marker| {
-            marker.child(div().size_full().rounded_full().bg(Theme::global().ACCENT))
+            let dot = if confidence.is_some() { color } else { Theme::global().ACCENT };
+            marker
+                .p(px(3.0))
+                .child(div().size_full().rounded_full().bg(dot))
+        })
+        .when_some(label, |marker, label| {
+            let tip = format!("Confidence: {label}");
+            marker.tooltip(move |_, cx| {
+                cx.new(|_| crate::panel::usage::MeterTooltip(tip.clone()))
+                    .into()
+            })
         })
 }
 
@@ -5843,7 +5896,10 @@ fn render_todo_card_with_style(
                         .w_full()
                         .items_center()
                         .gap_1p5()
-                        .child(render_todo_marker(todo))
+                        .child(render_todo_marker(
+                            todo,
+                            format!("{key}-marker-{group_index}-{todo_index}"),
+                        ))
                         .child(
                             div()
                                 .debug_selector(|| "todo-row-content".into())
@@ -5867,17 +5923,7 @@ fn render_todo_card_with_style(
                                     window,
                                     cx,
                                 )),
-                        )
-                        .when_some(todo_confidence_label(todo), |row, label| {
-                            row.child(
-                                div()
-                                    .debug_selector(|| "todo-row-confidence".into())
-                                    .flex_none()
-                                    .text_size(px(10.5))
-                                    .text_color(Theme::global().TEXT_FAINT)
-                                    .child(label),
-                            )
-                        }),
+                        ),
                 );
             }
             body = body.child(section);
@@ -9422,15 +9468,15 @@ fn demo_item_fixtures() -> Vec<Item> {
                     status: "completed".into(),
                     group: Some("Desktop".into()),
                     blocked_by: vec![],
-                    confidence: None,
-                    completion_confidence: None,
+                    confidence: Some(jcode_base::todo::ConfidenceState::Plausible),
+                    completion_confidence: Some(jcode_base::todo::ConfidenceState::Verified),
                 },
                 TodoCardItem {
                     content: "Keep the pinned plan compact while the detailed card stays in the transcript".into(),
                     status: "in_progress".into(),
                     group: Some("Desktop".into()),
                     blocked_by: vec![],
-                    confidence: None,
+                    confidence: Some(jcode_base::todo::ConfidenceState::Validated),
                     completion_confidence: None,
                 },
                 TodoCardItem {
@@ -9438,7 +9484,7 @@ fn demo_item_fixtures() -> Vec<Item> {
                     status: "pending".into(),
                     group: Some("Validation".into()),
                     blocked_by: vec![],
-                    confidence: None,
+                    confidence: Some(jcode_base::todo::ConfidenceState::Speculative),
                     completion_confidence: None,
                 },
                 TodoCardItem {
