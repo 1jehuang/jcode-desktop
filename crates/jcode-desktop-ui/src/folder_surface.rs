@@ -4,7 +4,7 @@ use std::{cell::RefCell, rc::Rc};
 
 use super::{FOLDER_CONTENT_INSET, STRIP_PADDING_TOP, STRIP_PADDING_Y};
 use crate::theme::Theme;
-use gpui::{Bounds, PathBuilder, Pixels, canvas, div, point, prelude::*, px};
+use gpui::{Bounds, Pixels, canvas, div, point, prelude::*, px};
 
 #[derive(Default)]
 pub(super) struct Frame {
@@ -83,36 +83,17 @@ pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
                     // Otherwise the active pane's rounded cutouts disappear
                     // into it and the inactive panes look like the top layer.
                     // The selected sidebar tab remains its own raised sheet.
+                    //
+                    // Each sheet is one rectangle, so it is a rounded quad,
+                    // not a path. The panel backing covers most of the window,
+                    // and as a path it went through a full-window 4x MSAA
+                    // pass on every frame. On Windows software rendering that
+                    // made each click-driven repaint stall the UI (#5).
                     for (region, color) in regions {
-                        let contour = outline(&[region]);
-                        if contour.len() < 3 {
-                            return;
-                        }
-                        let mut builder = PathBuilder::fill();
-                        // Keep each sheet's corners soft without masking its neighbors.
-                        for i in 0..contour.len() {
-                            let previous = contour[(i + contour.len() - 1) % contour.len()];
-                            let vertex = contour[i];
-                            let next = contour[(i + 1) % contour.len()];
-                            let radius = 8f32
-                                .min(distance(previous, vertex) / 2.)
-                                .min(distance(vertex, next) / 2.);
-                            let enter = toward(vertex, previous, radius);
-                            let exit = toward(vertex, next, radius);
-                            if i == 0 {
-                                builder.move_to(point(px(enter.0), px(enter.1)));
-                            } else {
-                                builder.line_to(point(px(enter.0), px(enter.1)));
-                            }
-                            builder.curve_to(
-                                point(px(exit.0), px(exit.1)),
-                                point(px(vertex.0), px(vertex.1)),
-                            );
-                        }
-                        builder.close();
-                        if let Ok(path) = builder.build() {
-                            window.paint_path(path, color);
-                        }
+                        let Some((bounds, radius)) = sheet(region) else {
+                            continue;
+                        };
+                        window.paint_quad(gpui::fill(bounds, color).corner_radii(radius));
                     }
                 },
             )
@@ -137,135 +118,47 @@ impl Rect {
         }
     }
 }
-type Vertex = (f32, f32);
-fn distance(a: Vertex, b: Vertex) -> f32 {
-    (a.0 - b.0).abs() + (a.1 - b.1).abs()
-}
-fn toward(a: Vertex, b: Vertex, amount: f32) -> Vertex {
-    let ratio = amount / distance(a, b);
-    (a.0 + (b.0 - a.0) * ratio, a.1 + (b.1 - a.1) * ratio)
-}
+/// Sheet corners stay soft without masking their neighbors.
+const SHEET_RADIUS: f32 = 8.;
 
-/// Extract the external contour of a small connected orthogonal union. Grid
-/// coordinates come from actual layout bounds, so resizing and scrolling do
-/// not require a second, approximate layout model. At most four rectangles.
-fn outline(regions: &[Rect]) -> Vec<Vertex> {
-    let regions: Vec<_> = regions
-        .iter()
-        .filter(|r| r.right > r.left && r.bottom > r.top)
-        .collect();
-    let mut xs: Vec<_> = regions.iter().flat_map(|r| [r.left, r.right]).collect();
-    let mut ys: Vec<_> = regions.iter().flat_map(|r| [r.top, r.bottom]).collect();
-    xs.sort_by(f32::total_cmp);
-    xs.dedup();
-    ys.sort_by(f32::total_cmp);
-    ys.dedup();
-    if xs.len() < 2 || ys.len() < 2 {
-        return vec![];
+/// A sheet's bounds and corner radius (at most half its shorter side), or
+/// `None` for an empty region.
+fn sheet(region: Rect) -> Option<(Bounds<Pixels>, Pixels)> {
+    let width = region.right - region.left;
+    let height = region.bottom - region.top;
+    if width <= 0. || height <= 0. {
+        return None;
     }
-    let filled = |x: usize, y: usize| {
-        if x + 1 >= xs.len() || y + 1 >= ys.len() {
-            return false;
-        }
-        let (x, y) = ((xs[x] + xs[x + 1]) / 2., (ys[y] + ys[y + 1]) / 2.);
-        regions
-            .iter()
-            .any(|r| x > r.left && x < r.right && y > r.top && y < r.bottom)
-    };
-    let mut edges = vec![];
-    for y in 0..ys.len() - 1 {
-        for x in 0..xs.len() - 1 {
-            if !filled(x, y) {
-                continue;
-            }
-            if y == 0 || !filled(x, y - 1) {
-                edges.push(((x, y), (x + 1, y)));
-            }
-            if !filled(x + 1, y) {
-                edges.push(((x + 1, y), (x + 1, y + 1)));
-            }
-            if !filled(x, y + 1) {
-                edges.push(((x + 1, y + 1), (x, y + 1)));
-            }
-            if x == 0 || !filled(x - 1, y) {
-                edges.push(((x, y + 1), (x, y)));
-            }
-        }
-    }
-    let Some((start, mut end)) = edges.pop() else {
-        return vec![];
-    };
-    let mut vertices = vec![(xs[start.0], ys[start.1])];
-    while end != start {
-        vertices.push((xs[end.0], ys[end.1]));
-        let Some(index) = edges.iter().position(|(from, _)| *from == end) else {
-            return vec![];
-        };
-        end = edges.swap_remove(index).1;
-    }
-    let n = vertices.len();
-    (0..n)
-        .filter_map(|i| {
-            let a = vertices[(i + n - 1) % n];
-            let b = vertices[i];
-            let c = vertices[(i + 1) % n];
-            ((a.0 != b.0 || b.0 != c.0) && (a.1 != b.1 || b.1 != c.1)).then_some(b)
-        })
-        .collect()
+    Some((
+        Bounds::new(
+            point(px(region.left), px(region.top)),
+            gpui::size(px(width), px(height)),
+        ),
+        px(SHEET_RADIUS.min(width / 2.).min(height / 2.)),
+    ))
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn rect(left: f32, top: f32, right: f32, bottom: f32) -> Rect {
+        Rect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
     #[test]
-    fn sidebar_bridge_and_focused_panel_have_one_seamless_contour() {
-        let regions = [
-            Rect {
-                left: 264.,
-                top: 16.,
-                right: 1400.,
-                bottom: 48.,
-            },
-            Rect {
-                left: 264.,
-                top: 16.,
-                right: 276.,
-                bottom: 184.,
-            },
-            Rect {
-                left: 8.,
-                top: 140.,
-                right: 276.,
-                bottom: 184.,
-            },
-            Rect {
-                left: 650.,
-                top: 48.,
-                right: 1000.,
-                bottom: 984.,
-            },
-        ];
-        let shape = outline(&regions);
-        assert!(shape.contains(&(8., 140.)));
-        assert!(
-            !shape.contains(&(650., 16.)),
-            "panel must not add a top tab"
-        );
-        assert!(shape.contains(&(264., 16.)));
-        assert!(shape.contains(&(1400., 16.)));
-        assert!(shape.contains(&(1000., 984.)));
-        let area: f32 = shape
-            .iter()
-            .zip(shape.iter().cycle().skip(1))
-            .take(shape.len())
-            .map(|(a, b)| a.0 * b.1 - b.0 * a.1)
-            .sum::<f32>()
-            .abs()
-            / 2.;
-        let expected = 1136. * 32. + 12. * (184. - 48.) + 256. * 44. + 350. * (984. - 48.);
-        assert_eq!(
-            area, expected,
-            "one contour contains the entire union without internal seams"
-        );
+    fn sheets_are_rounded_quads_with_capped_radius() {
+        let (bounds, radius) = sheet(rect(264., 48., 1400., 984.)).unwrap();
+        assert_eq!(bounds.origin, point(px(264.), px(48.)));
+        assert_eq!(bounds.size, gpui::size(px(1136.), px(936.)));
+        assert_eq!(radius, px(8.));
+        // A short selected tab keeps a pill-like end instead of overlapping corners.
+        assert_eq!(sheet(rect(0., 0., 120., 10.)).unwrap().1, px(5.));
+        assert!(sheet(rect(10., 10., 10., 40.)).is_none());
+        assert!(sheet(rect(10., 40., 50., 30.)).is_none());
     }
 }
