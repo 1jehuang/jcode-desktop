@@ -5,7 +5,7 @@
 //! like `jcode transcript --session <id>`. The CLI then submits it as a prompt.
 //! Any other focused app keeps the existing behavior (a new voice window).
 use super::*;
-use jcode_base::voice::{self, NariEvent, NariRecording, VoiceError};
+use jcode_voice::{self as voice, NariEvent, NariRecording, VoiceError};
 use std::sync::atomic::Ordering;
 
 const METER: Duration = Duration::from_millis(50);
@@ -86,7 +86,7 @@ impl Workspace {
         self.global_voice.press_serial = self.global_voice.press_serial.wrapping_add(1);
         let serial = self.global_voice.press_serial;
         let resolve = cx.background_executor().spawn(async {
-            let session = jcode_base::dictation::focused_cli_session()
+            let session = jcode_voice::dictation::focused_cli_session()
                 .ok()
                 .flatten()?;
             let allowed = crate::global_voice_session::permitted().await;
@@ -220,7 +220,7 @@ impl Workspace {
                     if !crate::global_voice_session::permitted().await {
                         anyhow::bail!("denied by session check");
                     }
-                    jcode_base::dictation::send_transcript_blocking(
+                    jcode_voice::dictation::send_transcript_blocking(
                         text.trim(),
                         jcode_base::protocol::TranscriptMode::Send,
                         Some(session),

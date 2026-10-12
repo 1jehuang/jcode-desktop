@@ -1,6 +1,6 @@
 //! Compact concrete-action evidence, independent of the optional detailed trace.
 use super::*;
-use jcode_base::voice;
+use jcode_voice as voice;
 
 // Keep the shared routing argmax order, including numeric (not lexical) candidates.
 fn concrete_action_rank(id: &str) -> Option<usize> {

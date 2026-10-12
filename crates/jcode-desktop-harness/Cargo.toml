@@ -34,10 +34,10 @@ toml = "0.8"
 # Keep jcode-base features identical to jcode-desktop-ui's so feature
 # unification never differs between the host and the plugin builds.
 [target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
-jcode-base = { path = "../../../jcode/crates/jcode-base", features = ["voice-capture"] }
+jcode-base = { path = "../../../jcode/crates/jcode-base" }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
-jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false, features = ["voice-capture"] }
+jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

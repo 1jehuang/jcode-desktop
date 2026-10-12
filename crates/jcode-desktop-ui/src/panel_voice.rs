@@ -1,7 +1,7 @@
 //! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
 use gpui::FutureExt as _;
-use jcode_base::voice::{self, NariEvent, NariRecording, VoiceError};
+use jcode_voice::{self as voice, NariEvent, NariRecording, VoiceError};
 use jcode_base::voice_intent::{self, SessionCandidate, VoiceIntent};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -394,7 +394,7 @@ impl Panel {
         if self.voice.phase != Phase::Idle {
             return;
         }
-        jcode_base::voice::timing::begin();
+        jcode_voice::timing::begin();
         self.prepare_voice_attempt(hold_capture);
         // Starting is nonblocking: the microphone opens and the provider
         // handshake runs in the background while PCM buffers. The press is
@@ -434,7 +434,7 @@ impl Panel {
                         ""
                     },
                 ));
-                jcode_base::voice::timing::mark("ui shows recording");
+                jcode_voice::timing::mark("ui shows recording");
                 if self.voice.global_capture {
                     eprintln!("global voice: recording started");
                 }
@@ -564,7 +564,7 @@ impl Panel {
         let Some(recording) = self.voice.recording.as_ref() else {
             return;
         };
-        jcode_base::voice::timing::release();
+        jcode_voice::timing::release();
         recording.stop();
         self.voice.stop_reason = Some(reason);
         self.voice.audio = self.voice.started.map(|started| started.elapsed());
@@ -577,7 +577,7 @@ impl Panel {
     }
 
     fn finish_voice(&mut self, result: Result<String, VoiceError>, cx: &mut Context<Self>) {
-        jcode_base::voice::timing::mark("ui received final transcript");
+        jcode_voice::timing::mark("ui received final transcript");
         match &result {
             Ok(text) if text.trim().is_empty() => self.voice.log_end(
                 self.voice.stop_reason.is_some(),
@@ -693,7 +693,7 @@ impl Panel {
         // unfocused OS pill needs a confirmation label.
         self.voice.decision = self.voice.global_capture.then(|| "Sent to agent".into());
         self.submit_or_queue(tag::wrap(&text), Vec::new(), false, cx);
-        jcode_base::voice::timing::mark("ui sent transcript");
+        jcode_voice::timing::mark("ui sent transcript");
         cx.notify();
     }
 

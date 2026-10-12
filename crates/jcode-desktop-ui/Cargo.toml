@@ -55,13 +55,19 @@ toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 handterm-common = { git = "https://github.com/1jehuang/handterm", rev = "ead926b6f13a1f30d58836c4fd8fb325660bae96" }
 
+# Microphone capture, Nari transcription and dictation. Client-only, kept out
+# of the shared runtime (jcode-base) so the harness server never opens a mic.
+[dependencies.jcode-voice]
+path = "../../../jcode/crates/jcode-voice"
+features = ["voice-capture"]
+
 [target.'cfg(not(all(target_os = "windows", target_arch = "aarch64")))'.dependencies]
-jcode-base = { path = "../../../jcode/crates/jcode-base", features = ["voice-capture"] }
+jcode-base = { path = "../../../jcode/crates/jcode-base" }
 
 [target.'cfg(all(target_os = "windows", target_arch = "aarch64"))'.dependencies]
 # Match the bundled CLI's ARM64 build. The desktop only uses foundation
 # helpers, not in-process embedding inference or provider implementations.
-jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false, features = ["voice-capture"] }
+jcode-base = { path = "../../../jcode/crates/jcode-base", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5.19"
