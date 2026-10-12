@@ -49,6 +49,8 @@ pub(crate) mod change_review;
 mod account_menu;
 #[path = "sidebar_account.rs"]
 mod sidebar_account;
+#[path = "sidebar_collections.rs"]
+mod sidebar_collections;
 #[path = "sidebar_edits.rs"]
 mod sidebar_edits;
 #[path = "sidebar_gesture.rs"]
@@ -750,6 +752,10 @@ pub struct Workspace {
     folder_frame: folder_surface::SharedFrame,
     sidebar_view: SidebarView,
     worktrees: sidebar_worktrees::State,
+    /// User-created collections of sessions (issue #7).
+    collections: sidebar_collections::State,
+    /// Drafts started inside a collection: (draft request id, collection id).
+    pending_collection_drafts: Vec<(String, String)>,
     tutorial_page: usize,
     onboarding_launch: onboarding_simulator::LaunchState,
     expanded_directories: HashSet<PathBuf>,
@@ -1069,6 +1075,8 @@ impl Workspace {
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             worktrees: sidebar_worktrees::State::default(),
+            collections: Default::default(),
+            pending_collection_drafts: Vec::new(),
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
@@ -1231,6 +1239,7 @@ impl Workspace {
             workspace.sessions = vec![session.clone()];
             workspace.active = workspace.open_session(session, cx);
             workspace.init_worktree_fixture(cx);
+            workspace.init_collections_fixture();
             if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_SWARM").is_some() {
                 for (index, (label, status)) in [
                     ("API reviewer", "working"),
@@ -1361,6 +1370,8 @@ impl Workspace {
         workspace.start_preview_control(cx);
         workspace.start_global_voice(window, cx);
         workspace.detect_account_imports(cx);
+        workspace.load_collections(cx);
+        workspace.open_collections_fixture_form(window, cx);
         workspace
     }
 
@@ -1443,6 +1454,8 @@ impl Workspace {
             last_canvas_width: None,
             sidebar_view: SidebarView::Sessions,
             worktrees: sidebar_worktrees::State::default(),
+            collections: Default::default(),
+            pending_collection_drafts: Vec::new(),
             tutorial_page: 0,
             onboarding_launch: onboarding_simulator::LaunchState::default(),
             expanded_directories: HashSet::new(),
@@ -2187,6 +2200,9 @@ impl Workspace {
                         let working_dir = session.working_dir.clone();
                         slot.panel
                             .update(cx, |panel, cx| panel.attach_startup_session(session, cx));
+                        if let Some(request_id) = request_id.as_deref() {
+                            self.resolve_collection_draft(request_id, &session_id, cx);
+                        }
                         if request_id
                             .as_deref()
                             .is_some_and(crate::publish::is_publish_draft)
@@ -2205,6 +2221,8 @@ impl Workspace {
                     } else {
                         // The user closed the draft during startup. Do not
                         // reopen it or steal focus when creation finishes.
+                        self.pending_collection_drafts
+                            .retain(|(draft, _)| Some(draft.as_str()) != request_id.as_deref());
                         self.bridge.send(Command::Unwatch {
                             session_id: session.session_id,
                         });
@@ -5463,16 +5481,55 @@ impl Workspace {
         // recency. Inside a project, threads group by checkout (the main
         // working tree first, then linked worktrees), and open panels precede
         // history within each checkout.
+        //
+        // User-created collections come first, in their own order, and take
+        // their sessions out of the directory groups below.
         let mut groups: Vec<(sidebar_projects::Project, usize, usize)> = Vec::new();
         let mut members: Vec<Vec<SidebarRow>> = Vec::new();
         let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
-        for (open, session) in open_sessions
+        let collection_order = self
+            .collections
+            .store
+            .collections
+            .iter()
+            .map(|c| c.id.clone())
+            .collect::<Vec<_>>();
+        let rank_collection = |session: &jcode_sdk::SessionInfo| {
+            self.collections
+                .collection_of(&session.session_id)
+                .and_then(|c| collection_order.iter().position(|id| *id == c.id))
+                .unwrap_or(usize::MAX)
+        };
+        let mut grouped = open_sessions
             .into_iter()
             .map(|session| (true, session))
             .chain(other_sessions.into_iter().map(|session| (false, session)))
-        {
-            let (project, subdirectory) = self.sidebar_projects.project(&session);
-            let checkout = self.sidebar_projects.checkout(&session);
+            .collect::<Vec<_>>();
+        // Stable: open-before-history and recency survive inside each group.
+        grouped.sort_by_key(|(_, session)| rank_collection(session));
+        for (open, session) in grouped {
+            let collection = self
+                .collections
+                .collection_of(&session.session_id)
+                .map(|c| (c.id.clone(), c.name.clone()));
+            let (project, subdirectory) = match collection {
+                // Inside a collection, the session's folder is a detail line.
+                Some((id, name)) => (
+                    sidebar_projects::Project {
+                        key: sidebar_collections::key(&id),
+                        label: name,
+                        location: None,
+                    },
+                    sidebar_session_directory(&session),
+                ),
+                None => self.sidebar_projects.project(&session),
+            };
+            // Collections mix folders, so they never split into checkouts.
+            let checkout = if sidebar_collections::id_from_key(&project.key).is_some() {
+                None
+            } else {
+                self.sidebar_projects.checkout(&session)
+            };
             let index = match groups.iter().position(|(p, _, _)| p.key == project.key) {
                 Some(index) => index,
                 None => {
@@ -5566,10 +5623,11 @@ impl Workspace {
         let collapsed_projects = groups
             .iter()
             .map(|(project, open, _)| {
-                headers
-                    && self
-                        .sidebar_projects
-                        .collapsed(&project.key, any_open && *open == 0)
+                // A collection the user built stays open unless they fold it.
+                let default = sidebar_collections::id_from_key(&project.key).is_none()
+                    && any_open
+                    && *open == 0;
+                headers && self.sidebar_projects.collapsed(&project.key, default)
             })
             .collect::<Vec<_>>();
         let mut ordered_sessions = Vec::new();
@@ -5630,6 +5688,7 @@ impl Workspace {
                         || sidebar_session_created_ms(&session.session_id).is_some()
                         || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
                         || session.edit_stats.is_some()),
+                    menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
                 }
             })
             .collect::<Vec<_>>();
@@ -5665,6 +5724,25 @@ impl Workspace {
         }
         if let Some(form) = self.render_worktree_form(cx) {
             list = list.child(form);
+        }
+        if let Some(form) = self.render_collection_form(cx) {
+            list = list.child(form);
+        }
+        // Collections with no chats yet have no row to carry a header.
+        let empty_collections = self
+            .collections
+            .store
+            .collections
+            .iter()
+            .filter(|c| {
+                !groups
+                    .iter()
+                    .any(|(p, _, _)| p.key == sidebar_collections::key(&c.id))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(empty) = self.render_empty_collections(&empty_collections, cx) {
+            list = list.child(empty);
         }
         if !self.sidebar_selection.ids.is_empty() {
             list = list.child(
@@ -5828,9 +5906,14 @@ impl Workspace {
                                 .when(sidebar_index + 1 == ordered_sessions.len(), |el| el.pb_2());
                             if row.header {
                                 let (project, _, count) = &groups[row.project];
+                                let header = if sidebar_collections::id_from_key(&project.key).is_some() {
+                                    this.render_collection_header(row.project, project, *count, collapsed_projects[row.project], cx)
+                                } else {
+                                    this.render_project_header(row.project, project, *count, collapsed_projects[row.project], project_branches[row.project].clone(), cx)
+                                };
                                 list = list
                                     .when(sidebar_index > 0, |el| el.pt_3())
-                                    .child(this.render_project_header(row.project, project, *count, collapsed_projects[row.project], project_branches[row.project].clone(), cx));
+                                    .child(header);
                             }
                             if row.checkout_header {
                                 list = list.child(this.render_checkout_header(sidebar_index, row.checkout.as_ref(), cx));
@@ -5907,6 +5990,10 @@ impl Workspace {
                             let pinned = session.saved;
                             let release_id = session.session_id.clone();
                             let release_out_id = session.session_id.clone();
+                            let menu_id = session.session_id.clone();
+                            let context_id = session.session_id.clone();
+                            let menu_open = this.collections.menu.as_deref() == Some(session.session_id.as_str());
+                            let menu_session = session.session_id.clone();
                             let selection_order = selection_order.clone();
                             let hovered = this.sidebar_hovered_session.as_deref() == Some(session.session_id.as_str());
                             let working = activity.is_some();
@@ -5983,6 +6070,14 @@ impl Workspace {
                                     .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(move |this, event, window, cx| {
                                         this.finish_sidebar_gesture(&release_out_id, false, event, window, cx);
                                     }))
+                                    // Right-click opens the same menu as the row's ⋯ button.
+                                    .on_mouse_down(gpui::MouseButton::Right, cx.listener(move |this, _, window, cx| {
+                                        window.prevent_default();
+                                        cx.stop_propagation();
+                                        this.sidebar_gesture = None;
+                                        this.collections.menu = Some(context_id.clone());
+                                        cx.notify();
+                                    }))
                                     .on_scroll_wheel(cx.listener(|this, _, _, _| {
                                         this.sidebar_gesture = None;
                                     }))
@@ -6048,6 +6143,37 @@ impl Workspace {
                                             // swaps any spinner for the pin and close actions, so the
                                             // title can use the full width the rest of the time.
                                             .when(hovered || (pinned && !working), |row| row
+                                                // Collections: move this chat into one, or out.
+                                                .when(hovered, |row| row.child(
+                                                    div()
+                                                        .id(("sidebar-collection-button", sidebar_index))
+                                                        .debug_selector(move || format!("sidebar-collection-button-{sidebar_index}"))
+                                                        .flex_none()
+                                                        .size(px(18.0))
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_center()
+                                                        .rounded_full()
+                                                        .cursor_pointer()
+                                                        .text_size(px(12.0))
+                                                        .text_color(Theme::global().TEXT_DIM)
+                                                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                                                        .tooltip(|_, cx| {
+                                                            cx.new(|_| remotes::HeaderTooltip("Move to collection".into())).into()
+                                                        })
+                                                        .child("⋯")
+                                                        .on_mouse_down(gpui::MouseButton::Left, cx.listener(move |this, _, window, cx| {
+                                                            window.prevent_default();
+                                                            cx.stop_propagation();
+                                                            this.sidebar_gesture = None;
+                                                            this.collections.menu = if this.collections.menu.as_deref() == Some(menu_id.as_str()) {
+                                                                None
+                                                            } else {
+                                                                Some(menu_id.clone())
+                                                            };
+                                                            cx.notify();
+                                                        })),
+                                                ))
                                                 // Pinning is /save: pinned sessions sort to the top.
                                                 .child(
                                                     div()
@@ -6141,6 +6267,10 @@ impl Workspace {
                                         )
                                     }),
                             );
+                            if menu_open {
+                                let menu = this.render_collection_menu(&menu_session, cx);
+                                list = list.child(div().ml(px(28.0)).mr(px(crate::scrollbar::GUTTER + 8.0)).mb_1().child(menu));
+                            }
                             list.into_any_element()
                         })
                     },
@@ -8926,6 +9056,8 @@ struct SidebarSessionLayout {
     selected: bool,
     saved: bool,
     details: bool,
+    /// The row's "Move to collection" menu is open beneath it.
+    menu: bool,
 }
 
 struct SidebarRow {

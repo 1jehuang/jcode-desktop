@@ -1905,7 +1905,16 @@ fn session_worker_with_connector(
                         let result = if steering {
                             client.soft_interrupt_with_images(real_id, &content, images, true)
                         } else {
-                            client.send_message(real_id, &content, images, None)
+                            // Collection instructions ride along hidden on every
+                            // new turn, read fresh so edits apply immediately.
+                            let reminder = collection_reminder(&session_id);
+                            client.send_message_with_reminder(
+                                real_id,
+                                &content,
+                                images,
+                                reminder.as_deref(),
+                                None,
+                            )
                         };
                         if let Err(error) = result {
                             // A daemon reload can briefly hand this SDK socket
@@ -2377,6 +2386,15 @@ fn recover_async_attachment_mismatch(
     };
     pending.push_front(submission);
     true
+}
+
+/// Hidden instructions from the collection a session belongs to. Keyed by the
+/// desktop session id, which also identifies SSH sessions uniquely. A missing
+/// or unreadable store simply sends no reminder.
+pub fn collection_reminder(session_id: &str) -> Option<String> {
+    jcode_sdk::collections::load()
+        .ok()?
+        .instructions_for(session_id)
 }
 
 fn queue_wrong_session_retry(

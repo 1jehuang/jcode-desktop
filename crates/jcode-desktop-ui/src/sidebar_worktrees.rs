@@ -272,10 +272,9 @@ impl Workspace {
     /// Always-visible entry points at the top of the thread list.
     pub(super) fn render_sidebar_quick_actions(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let pill = |id: &'static str, label: &'static str, glyph: gpui::AnyElement| {
-            let tip = if id == "sidebar-open-project" {
-                "Open a project folder"
-            } else {
-                "New thread in the default directory"
+            let tip = match id {
+                "sidebar-open-project" => "Open a project folder",
+                _ => "New thread in the default directory",
             };
             div()
                 .id(id)
@@ -336,6 +335,38 @@ impl Workspace {
                         this.open_folder(&OpenFolder, window, cx);
                     }),
                 ),
+            )
+            .child(
+                // Icon-only, like hide: four labelled pills do not fit 224px.
+                div()
+                    .id("sidebar-new-collection")
+                    .debug_selector(|| "sidebar-new-collection".into())
+                    .flex_none()
+                    .size(px(26.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .bg(Theme::global().TOOL_BG)
+                    .hover(|el| el.bg(Theme::global().PANEL_BG))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| {
+                            remotes::HeaderTooltip(
+                                "New collection: group chats your own way".into(),
+                            )
+                        })
+                        .into()
+                    })
+                    .child(icon(sidebar_collections::COLLECTION_ICON, 13.0))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.begin_new_collection(None, window, cx);
+                        }),
+                    ),
             )
             .child(
                 div()

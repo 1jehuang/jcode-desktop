@@ -72,6 +72,8 @@ def main():
     parser.add_argument("--tab-actions-interact", action="store_true",
                         help="verify hover-only tab actions and shortcut tooltips")
     parser.add_argument("--worktrees", action="store_true", help="show isolated Git worktrees in the sidebar")
+    parser.add_argument("--collections", nargs="?", const="1", choices=("1", "menu", "form"),
+                        help="show user-created collections above project groups (menu: a row's Move menu open, form: the editor)")
     parser.add_argument("--swarm", action="store_true", help="load nested swarm fixtures (children remain hidden in the sidebar)")
     parser.add_argument("--swarm-interact", action="store_true",
                         help="verify swarm showcase stays absent and lead selection remains stable (implies --swarm)")
@@ -459,6 +461,8 @@ def main():
             env["JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS"] = args.release_status
         if args.worktrees:
             env["JCODE_DESKTOP_SCREENSHOT_WORKTREES"] = "1"
+        if args.collections:
+            env["JCODE_DESKTOP_SCREENSHOT_COLLECTIONS"] = args.collections
         if args.swarm:
             env["JCODE_DESKTOP_SCREENSHOT_SWARM"] = "1"
         if args.changelog:
