@@ -43,7 +43,7 @@ CAPTION_STATES = {"caption", "caption-light"}
 # Issue #5 input latency: the reporter's synthetic move/click loop, measured
 # with a SendMessageTimeout round trip that approximates UI-thread stalls.
 LATENCY_STATES = {"input-latency"}
-STATES["input-latency"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "info"}, "warm-neutral", True)
+STATES["input-latency"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "info", "GPUI_DX_PROFILE": "1"}, "warm-neutral", True)
 # Issue #5 Windows integration: diagnostics log, GUI subsystem, single instance.
 INTEGRATION_STATES = {"windows-integration"}
 STATES["windows-integration"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "debug"}, "warm-neutral", True)
@@ -285,9 +285,9 @@ def input_latency(name, hwnd, out_dir, root):
     for log in (root / "localappdata").rglob("jcode-desktop.log"):
         text = log.read_text(errors="ignore")
         (out_dir / f"{name}-desktop.log").write_text(text)
-        slow = [line for line in text.splitlines() if "slow window message" in line or "slow render" in line]
+        slow = [line for line in text.splitlines() if any(k in line for k in ("slow window message", "slow render", "DirectX batches", "DirectX present"))]
         print(f"{name}: desktop log {len(text)} bytes, {len(slow)} slow-message lines")
-        for line in slow[:40]:
+        for line in slow[:80]:
             print("  ", line)
     return report
 
