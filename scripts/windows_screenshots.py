@@ -42,8 +42,11 @@ STATES = {
 CAPTION_STATES = {"caption", "caption-light"}
 # Issue #5 input latency: the reporter's synthetic move/click loop, measured
 # with a SendMessageTimeout round trip that approximates UI-thread stalls.
-LATENCY_STATES = {"input-latency"}
-STATES["input-latency"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "info", "GPUI_DX_PROFILE": "1"}, "warm-neutral", True)
+# input-latency-profile also flushes the GPU after every batch to attribute
+# time to primitive kinds. That inflates latency, so compare without it.
+LATENCY_STATES = {"input-latency", "input-latency-profile"}
+STATES["input-latency"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "info"}, "warm-neutral", True)
+STATES["input-latency-profile"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "info", "GPUI_DX_PROFILE": "1"}, "warm-neutral", True)
 # Issue #5 Windows integration: diagnostics log, GUI subsystem, single instance.
 INTEGRATION_STATES = {"windows-integration"}
 STATES["windows-integration"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "debug"}, "warm-neutral", True)
