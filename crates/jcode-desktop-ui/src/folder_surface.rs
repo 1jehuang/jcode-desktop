@@ -2,7 +2,6 @@
 //! without a wide shoulder or a connector forcing unrelated surfaces together.
 use std::{cell::RefCell, rc::Rc};
 
-use super::{FOLDER_CONTENT_INSET, STRIP_PADDING_TOP, STRIP_PADDING_Y};
 use crate::theme::Theme;
 use gpui::{Bounds, Pixels, canvas, div, point, prelude::*, px};
 
@@ -59,21 +58,16 @@ pub(super) fn background(frame: SharedFrame) -> impl IntoElement {
                 move |_, _, _| *reset.borrow_mut() = Frame::default(),
                 move |_, _, window, _| {
                     let frame = frame.borrow();
-                    let Some(canvas) = frame.canvas else { return };
-                    let mut regions = vec![];
-                    if frame.panel_right > canvas.left() {
-                        regions.push((
-                            Rect {
-                                left: f32::from(canvas.left()),
-                                top: f32::from(canvas.top())
-                                    + STRIP_PADDING_TOP
-                                    + FOLDER_CONTENT_INSET,
-                                right: f32::from(frame.panel_right.min(canvas.right())),
-                                bottom: f32::from(canvas.bottom()) - STRIP_PADDING_Y,
-                            },
-                            Theme::global().panel_background(false),
-                        ));
+                    if frame.canvas.is_none() {
+                        return;
                     }
+                    let mut regions = vec![];
+                    // The recessed panel backing is HEADER_BG, which the workspace
+                    // root already fills the window with, so only the raised
+                    // selected tab is a sheet. Repainting the backing added a
+                    // near full-window layer to every frame for no visible
+                    // change, and software renderers paid for it on each
+                    // click-driven repaint (#5).
                     if let Some(tab) = frame.selected_tab {
                         regions.push((Rect::from_bounds(tab), Theme::global().PANEL_BG));
                     }
