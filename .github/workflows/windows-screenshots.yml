@@ -17,6 +17,9 @@ on:
       profile:
         description: "Cargo profile: dev (fast build) or release (what users run)"
         default: dev
+      baseline_release:
+        description: "Optional published desktop tag (e.g. desktop-v0.5.2-beta.6) to run the same states against on the same runner, for A/B"
+        default: ""
 
 permissions:
   contents: read
@@ -76,6 +79,17 @@ jobs:
             jcode-desktop/target/jcode-desktop-under-test.exe screenshots `
             --states '${{ inputs.states }}' --resolution '${{ inputs.resolution }}'
           if ($LASTEXITCODE) { throw 'Some states failed to capture' }
+      - name: Capture the same states with a published baseline
+        if: inputs.baseline_release != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download '${{ inputs.baseline_release }}' -R 1jehuang/jcode-desktop -p '*windows-x86_64.zip' -D baseline-zip
+          Expand-Archive (Get-ChildItem baseline-zip/*.zip).FullName -DestinationPath baseline
+          $exe = (Get-ChildItem baseline -Recurse -Filter jcode-desktop.exe | Select-Object -First 1).FullName
+          python jcode-desktop/scripts/windows_screenshots.py $exe screenshots/baseline `
+            --states '${{ inputs.states }}' --resolution '${{ inputs.resolution }}'
       - name: Upload screenshots
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
