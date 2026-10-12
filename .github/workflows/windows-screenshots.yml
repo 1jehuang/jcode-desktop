@@ -14,6 +14,9 @@ on:
       resolution:
         description: "Runner display resolution"
         default: 1920x1080
+      profile:
+        description: "Cargo profile: dev (fast build) or release (what users run)"
+        default: dev
 
 permissions:
   contents: read
@@ -53,17 +56,24 @@ jobs:
           workspaces: jcode-desktop
           cache-on-failure: true
           key: windows-screenshots
-      - name: Build Jcode Desktop (dev profile)
+      - name: Build Jcode Desktop
         shell: pwsh
         run: |
-          cargo build --manifest-path jcode-desktop/Cargo.toml --bin jcode-desktop
-          if ($LASTEXITCODE) { throw 'Desktop build failed' }
+          if ('${{ inputs.profile }}' -eq 'release') {
+            cargo build --manifest-path jcode-desktop/Cargo.toml --release --bin jcode-desktop
+            if ($LASTEXITCODE) { throw 'Desktop build failed' }
+            Copy-Item jcode-desktop/target/release/jcode-desktop.exe jcode-desktop/target/jcode-desktop-under-test.exe
+          } else {
+            cargo build --manifest-path jcode-desktop/Cargo.toml --bin jcode-desktop
+            if ($LASTEXITCODE) { throw 'Desktop build failed' }
+            Copy-Item jcode-desktop/target/debug/jcode-desktop.exe jcode-desktop/target/jcode-desktop-under-test.exe
+          }
       - name: Capture screenshots
         shell: pwsh
         run: |
           python -m pip install --quiet pillow
           python jcode-desktop/scripts/windows_screenshots.py `
-            jcode-desktop/target/debug/jcode-desktop.exe screenshots `
+            jcode-desktop/target/jcode-desktop-under-test.exe screenshots `
             --states '${{ inputs.states }}' --resolution '${{ inputs.resolution }}'
           if ($LASTEXITCODE) { throw 'Some states failed to capture' }
       - name: Upload screenshots
