@@ -22,6 +22,20 @@ pub fn companion_executable(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Keep a console-subsystem child (the `jcode` CLI, `ssh`, `python`) from
+/// opening a console window. Jcode Desktop is a GUI-subsystem app on
+/// Windows, so it has no console for children to share, and each one would
+/// otherwise flash a black terminal window. No-op elsewhere.
+pub fn no_console_window(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 /// The desktop executable to relaunch for new windows. A long-running host
 /// whose binary was rebuilt in place reports `/path (deleted)` on Linux, which
 /// cannot be spawned. The rebuilt file at the original path is the right

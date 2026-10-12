@@ -407,7 +407,7 @@ mod windows_process {
 fn reload_server(log: &mut Log) {
     let jcode = crate::platform::companion_executable("jcode");
     log.line(format!("reloading server with {}", jcode.display()));
-    let child = Command::new(&jcode)
+    let child = crate::platform::no_console_window(&mut Command::new(&jcode))
         .args(["server", "reload", "--force"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

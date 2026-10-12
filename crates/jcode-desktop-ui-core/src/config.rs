@@ -199,7 +199,9 @@ pub fn path() -> PathBuf {
     if let Some(home) = std::env::var_os("JCODE_HOME") {
         return PathBuf::from(home).join("config.toml");
     }
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".jcode/config.toml")
+    jcode_desktop_model::platform_dirs::jcode_home()
+        .unwrap_or_else(|| PathBuf::from(".jcode"))
+        .join("config.toml")
 }
 
 /// Persist one appearance value without reserializing the rest of the shared

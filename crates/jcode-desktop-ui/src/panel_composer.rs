@@ -452,28 +452,27 @@ pub(super) fn model_tab_label(model: Option<&str>, effort: Option<&str>) -> Stri
 }
 
 /// Repo name (the last path component) plus its home-relative parent path.
-/// `/home/me/src/jcode` reads `jcode` then `~/src`.
+/// `/home/me/src/jcode` reads `jcode` then `~/src`. Windows paths split on
+/// either separator, so `C:\Users\me\src\jcode` reads `jcode` then `~\src`.
 pub(super) fn location_label(path: &str) -> (String, Option<String>) {
-    let trimmed = path.trim_end_matches('/');
+    let trimmed = path.trim_end_matches(['/', '\\']);
     if trimmed.is_empty() {
         return ("/".into(), None);
     }
-    let home = std::env::var("HOME").ok().filter(|home| !home.is_empty());
-    if home.as_deref() == Some(trimmed) {
+    if crate::platform_dirs::tilde(trimmed) == "~" {
         return ("~".into(), None);
     }
-    let (parent, name) = match trimmed.rsplit_once('/') {
+    let (parent, name) = match trimmed.rsplit_once(['/', '\\']) {
         Some((parent, name)) => (parent, name),
         None => return (trimmed.into(), None),
     };
-    let parent = if parent.is_empty() { "/" } else { parent };
-    let parent = match home.as_deref() {
-        Some(home) if parent == home => "~".to_string(),
-        Some(home) => match parent.strip_prefix(&format!("{home}/")) {
-            Some(rest) => format!("~/{rest}"),
-            None => parent.to_string(),
-        },
-        None => parent.to_string(),
+    // `C:\` keeps its separator so the parent of `C:\repo` is not `C:`.
+    let parent = if parent.is_empty() {
+        "/".to_string()
+    } else if parent.ends_with(':') {
+        trimmed[..parent.len() + 1].to_string()
+    } else {
+        crate::platform_dirs::tilde(parent)
     };
     (name.to_string(), Some(parent))
 }
@@ -560,6 +559,14 @@ mod tests {
             ("app".into(), Some("/srv".into()))
         );
         assert_eq!(location_label("/"), ("/".into(), None));
+        assert_eq!(
+            location_label(r"D:\work\jcode\"),
+            ("jcode".into(), Some(r"D:\work".into()))
+        );
+        assert_eq!(
+            location_label(r"C:\repo"),
+            ("repo".into(), Some(r"C:\".into()))
+        );
     }
 
     #[gpui::test]

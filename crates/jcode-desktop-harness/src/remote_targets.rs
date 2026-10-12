@@ -83,10 +83,11 @@ fn safe_name(value: &str) -> bool {
 /// Relative Include paths resolve against ~/.ssh, as in OpenSSH. `~/`, `*`,
 /// and `?` are supported, but not named-user expansion or bracket glob classes.
 pub fn discover_hosts() -> Vec<String> {
-    let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) else {
+    // Windows OpenSSH reads %USERPROFILE%\.ssh, and Windows sets no HOME.
+    let Some(home) = jcode_desktop_model::platform_dirs::home_dir() else {
         return Vec::new();
     };
-    discover_hosts_at(&PathBuf::from(home))
+    discover_hosts_at(&home)
 }
 
 fn discover_hosts_at(home: &Path) -> Vec<String> {

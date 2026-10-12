@@ -5304,13 +5304,9 @@ fn context_usage_label(model: Option<&str>, context_tokens: Option<u64>) -> Opti
 
 /// Shorten a home-relative path for the footer.
 fn compact_dir(path: &str) -> String {
-    match std::env::var("HOME").ok() {
-        Some(home) if path == home => "~ (home)".to_string(),
-        Some(home) => match path.strip_prefix(&format!("{home}/")) {
-            Some(relative) => format!("~/{relative}"),
-            None => path.to_string(),
-        },
-        None => path.to_string(),
+    match crate::platform_dirs::tilde(path) {
+        home if home == "~" => "~ (home)".to_string(),
+        shortened => shortened,
     }
 }
 

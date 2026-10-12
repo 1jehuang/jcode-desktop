@@ -430,9 +430,322 @@ mod platform {
 #[cfg(unix)]
 pub use platform::{Command, Instance, acquire_named, notify_named};
 
-// GPUI's Windows event loop is supported, but Unix-domain socket ownership and
-// permissions are not. Permit independent instances until named pipes land.
-#[cfg(not(unix))]
+/// Windows: the same one-byte protocol over a per-user named pipe.
+///
+/// Before this, every launch from the Start menu or a pinned taskbar icon
+/// started an independent host, each with its own window, sessions, and
+/// global voice shortcut. Now a second launch shows the running window, as on
+/// Linux and macOS. The first pipe instance is created with
+/// `FILE_FLAG_FIRST_PIPE_INSTANCE`, which atomically makes exactly one process
+/// the owner. The pipe's default security grants access to the creating user
+/// only, and remote clients are rejected.
+#[cfg(windows)]
+mod platform {
+    use jcode_desktop_api::WindowLaunch;
+    use std::{
+        ffi::OsStr,
+        fs::OpenOptions,
+        io::{self, Read, Write},
+        os::windows::{
+            ffi::OsStrExt,
+            io::{FromRawHandle, OwnedHandle},
+        },
+        sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+            mpsc::{self, Receiver},
+        },
+        thread,
+        time::Duration,
+    };
+    use windows_sys::Win32::{
+        Foundation::{
+            ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetLastError, HANDLE,
+            INVALID_HANDLE_VALUE,
+        },
+        Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX},
+        System::Pipes::{
+            ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
+            PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
+            WaitNamedPipeW,
+        },
+    };
+
+    const SHOW: u8 = b'S';
+    const RELOAD: u8 = b'R';
+    const TOGGLE_VOICE: u8 = b'V';
+    const VOICE_PRESS: u8 = b'P';
+    const VOICE_RELEASE: u8 = b'U';
+    const OPEN_WINDOW: u8 = b'W';
+    const OK: &[u8] = b"ok\n";
+    const MAX_LAUNCH_BYTES: usize = 64 * 1024;
+
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    pub enum Command {
+        Show,
+        Reload,
+        ToggleVoice,
+        VoicePress,
+        VoiceRelease,
+        /// Open another window in the shared single-panel host.
+        OpenWindow(WindowLaunch),
+    }
+
+    pub enum Instance {
+        Primary {
+            commands: Receiver<Command>,
+            _socket: SocketGuard,
+        },
+        Secondary,
+    }
+
+    /// Owns the listening pipe. Dropping it stops accepting new clients, so a
+    /// replacement host can take over the name.
+    pub struct SocketGuard {
+        stopped: std::sync::Arc<AtomicBool>,
+        name: Mutex<Option<String>>,
+    }
+
+    impl SocketGuard {
+        pub fn cleanup(&self) {
+            self.stopped.store(true, Ordering::SeqCst);
+            if let Some(name) = self.name.lock().unwrap().take() {
+                // Wake the accept loop so it observes `stopped` and exits.
+                let _ = OpenOptions::new().read(true).write(true).open(&name);
+            }
+        }
+    }
+
+    impl Drop for SocketGuard {
+        fn drop(&mut self) {
+            self.cleanup();
+        }
+    }
+
+    /// Per-user, per-session pipe name. `USERNAME` keeps users on a shared
+    /// machine apart. The pipe's default DACL enforces the same boundary.
+    fn pipe_name(name: Option<&str>) -> String {
+        let user: String = std::env::var("USERNAME")
+            .unwrap_or_else(|_| "user".into())
+            .chars()
+            .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+            .take(64)
+            .collect();
+        let suffix = match name {
+            Some(name) => format!("-{name}"),
+            None => String::new(),
+        };
+        format!(r"\\.\pipe\jcode-desktop-{user}{suffix}")
+    }
+
+    fn wide(value: &str) -> Vec<u16> {
+        OsStr::new(value).encode_wide().chain(Some(0)).collect()
+    }
+
+    pub fn acquire_named(name: Option<&str>, command: Command) -> io::Result<Instance> {
+        acquire_at(pipe_name(name), command)
+    }
+
+    pub fn notify_named(name: Option<&str>, command: Command) -> io::Result<()> {
+        notify(&pipe_name(name), command)
+    }
+
+    fn create_instance(name: &str, first: bool) -> io::Result<OwnedHandle> {
+        let wide_name = wide(name);
+        let mut open_mode = PIPE_ACCESS_DUPLEX;
+        if first {
+            open_mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+        }
+        // SAFETY: `wide_name` is NUL terminated and outlives the call.
+        let handle: HANDLE = unsafe {
+            CreateNamedPipeW(
+                wide_name.as_ptr(),
+                open_mode,
+                PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+                PIPE_UNLIMITED_INSTANCES,
+                4096,
+                4096,
+                0,
+                std::ptr::null(),
+            )
+        };
+        if handle == INVALID_HANDLE_VALUE {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: a fresh, valid handle owned by nobody else.
+        Ok(unsafe { OwnedHandle::from_raw_handle(handle as _) })
+    }
+
+    fn acquire_at(name: String, command: Command) -> io::Result<Instance> {
+        if notify(&name, command.clone()).is_ok() {
+            return Ok(Instance::Secondary);
+        }
+        let first = match create_instance(&name, true) {
+            Ok(handle) => handle,
+            // Another host owns the name but is still starting. Give it a
+            // moment to accept before starting a second, independent host.
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED as i32) => {
+                for _ in 0..20 {
+                    thread::sleep(Duration::from_millis(25));
+                    if notify(&name, command.clone()).is_ok() {
+                        return Ok(Instance::Secondary);
+                    }
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let (commands, receiver) = mpsc::channel();
+        let stopped = std::sync::Arc::new(AtomicBool::new(false));
+        let serve_name = name.clone();
+        let serve_stopped = stopped.clone();
+        thread::Builder::new()
+            .name("jcode-desktop-instance".into())
+            .spawn(move || serve(serve_name, first, commands, serve_stopped))?;
+        Ok(Instance::Primary {
+            commands: receiver,
+            _socket: SocketGuard {
+                stopped,
+                name: Mutex::new(Some(name)),
+            },
+        })
+    }
+
+    fn serve(
+        name: String,
+        mut next: OwnedHandle,
+        commands: mpsc::Sender<Command>,
+        stopped: std::sync::Arc<AtomicBool>,
+    ) {
+        loop {
+            let raw = {
+                use std::os::windows::io::AsRawHandle;
+                next.as_raw_handle() as HANDLE
+            };
+            // SAFETY: `raw` is a valid pipe server handle owned by `next`.
+            let connected = unsafe { ConnectNamedPipe(raw, std::ptr::null_mut()) } != 0
+                || unsafe { GetLastError() } == ERROR_PIPE_CONNECTED;
+            if stopped.load(Ordering::SeqCst) {
+                return;
+            }
+            // Create the next instance before serving, so a client arriving
+            // meanwhile finds a listener instead of ERROR_FILE_NOT_FOUND.
+            let following = match create_instance(&name, false) {
+                Ok(handle) => handle,
+                Err(error) => {
+                    eprintln!("desktop instance pipe stopped: {error}");
+                    return;
+                }
+            };
+            let current = std::mem::replace(&mut next, following);
+            if connected {
+                let mut stream = std::fs::File::from(current);
+                if let Some(command) = read_command(&mut stream)
+                    && commands.send(command).is_ok()
+                {
+                    let _ = stream.write_all(OK);
+                    let _ = stream.flush();
+                }
+                use std::os::windows::io::AsRawHandle;
+                // SAFETY: valid handle; disconnect lets the client see EOF.
+                unsafe { DisconnectNamedPipe(stream.as_raw_handle() as HANDLE) };
+            }
+        }
+    }
+
+    fn read_command(stream: &mut std::fs::File) -> Option<Command> {
+        let mut command = [0; 1];
+        stream.read_exact(&mut command).ok()?;
+        Some(match command[0] {
+            SHOW => Command::Show,
+            RELOAD => Command::Reload,
+            TOGGLE_VOICE => Command::ToggleVoice,
+            VOICE_PRESS => Command::VoicePress,
+            VOICE_RELEASE => Command::VoiceRelease,
+            OPEN_WINDOW => {
+                let mut len = [0; 4];
+                stream.read_exact(&mut len).ok()?;
+                let len = u32::from_le_bytes(len) as usize;
+                if len > MAX_LAUNCH_BYTES {
+                    return None;
+                }
+                let mut payload = vec![0; len];
+                stream.read_exact(&mut payload).ok()?;
+                Command::OpenWindow(WindowLaunch::decode(&payload)?)
+            }
+            _ => return None,
+        })
+    }
+
+    fn notify(name: &str, command: Command) -> io::Result<()> {
+        let mut stream = match OpenOptions::new().read(true).write(true).open(name) {
+            Ok(stream) => stream,
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY as i32) => {
+                let wide_name = wide(name);
+                // SAFETY: NUL-terminated name that outlives the call.
+                if unsafe { WaitNamedPipeW(wide_name.as_ptr(), 500) } == 0 {
+                    return Err(error);
+                }
+                OpenOptions::new().read(true).write(true).open(name)?
+            }
+            Err(error) => return Err(error),
+        };
+        let mut message = vec![match &command {
+            Command::Show => SHOW,
+            Command::Reload => RELOAD,
+            Command::ToggleVoice => TOGGLE_VOICE,
+            Command::VoicePress => VOICE_PRESS,
+            Command::VoiceRelease => VOICE_RELEASE,
+            Command::OpenWindow(_) => OPEN_WINDOW,
+        }];
+        if let Command::OpenWindow(launch) = &command {
+            let payload = launch.encode();
+            if payload.len() > MAX_LAUNCH_BYTES {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "desktop launch request is too large",
+                ));
+            }
+            message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            message.extend_from_slice(&payload);
+        }
+        // The running host must be allowed to raise its window: Windows only
+        // lets the foreground process (this launcher) hand focus over.
+        // SAFETY: plain Win32 call without pointers.
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(
+                windows_sys::Win32::UI::WindowsAndMessaging::ASFW_ANY,
+            );
+        }
+        stream.write_all(&message)?;
+        // A host that is stopping, or an older host that does not know this
+        // command, closes the pipe without answering. Bound the wait so a
+        // wedged host cannot hang a launch: read on a helper thread.
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let mut response = [0; 3];
+            let _ = sender.send(stream.read_exact(&mut response).map(|()| response));
+        });
+        match receiver.recv_timeout(Duration::from_millis(1500)) {
+            Ok(Ok(response)) if response == OK => Ok(()),
+            Ok(Ok(_)) => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid desktop host response",
+            )),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "desktop host did not answer",
+            )),
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use platform::{Command, Instance, acquire_named, notify_named};
+
+// Other non-Unix targets permit independent instances.
+#[cfg(not(any(unix, windows)))]
 mod platform {
     use std::{
         io,
@@ -480,5 +793,5 @@ mod platform {
     }
 }
 
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub use platform::{Command, Instance, acquire_named, notify_named};

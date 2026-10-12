@@ -856,19 +856,7 @@ impl Coach {
 
 /// Where the model lives between runs.
 pub fn state_path() -> Option<std::path::PathBuf> {
-    if let Some(base) = std::env::var_os("XDG_STATE_HOME") {
-        return Some(
-            std::path::PathBuf::from(base)
-                .join("jcode-desktop")
-                .join("learning"),
-        );
-    }
-    let home = std::path::PathBuf::from(std::env::var_os("HOME")?);
-    #[cfg(target_os = "macos")]
-    let base = home.join("Library/Application Support/Jcode");
-    #[cfg(not(target_os = "macos"))]
-    let base = home.join(".local/state/jcode-desktop");
-    Some(base.join("learning"))
+    Some(crate::platform_dirs::state_dir()?.join("learning"))
 }
 
 pub fn load() -> Coach {

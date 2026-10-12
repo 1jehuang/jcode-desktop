@@ -20,6 +20,7 @@ path = "src/lib.rs"
 test-support = []
 
 [dependencies]
+jcode-desktop-model.workspace = true
 gpui.workspace = true
 jcode-desktop-api.workspace = true
 jcode-desktop-harness.workspace = true

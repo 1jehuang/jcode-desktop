@@ -130,13 +130,15 @@ pub fn fetch_connection_statuses() -> Option<ConnectionStatuses> {
         );
     }
     let mut output = tempfile::tempfile().ok()?;
-    let mut child = Command::new(crate::platform::companion_executable("jcode"))
-        .args(["auth", "doctor", "--json"])
-        .stdin(Stdio::null())
-        .stdout(output.try_clone().ok()?)
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut child = crate::platform::no_console_window(&mut Command::new(
+        crate::platform::companion_executable("jcode"),
+    ))
+    .args(["auth", "doctor", "--json"])
+    .stdin(Stdio::null())
+    .stdout(output.try_clone().ok()?)
+    .stderr(Stdio::null())
+    .spawn()
+    .ok()?;
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         match child.try_wait() {
@@ -202,13 +204,15 @@ pub fn run_live_test(provider: Option<&str>) -> Option<HashMap<String, LiveTestR
     args.extend(provider);
     args.extend(["--validate", "--json"]);
     let mut output = tempfile::tempfile().ok()?;
-    let mut child = Command::new(crate::platform::companion_executable("jcode"))
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(output.try_clone().ok()?)
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+    let mut child = crate::platform::no_console_window(&mut Command::new(
+        crate::platform::companion_executable("jcode"),
+    ))
+    .args(args)
+    .stdin(Stdio::null())
+    .stdout(output.try_clone().ok()?)
+    .stderr(Stdio::null())
+    .spawn()
+    .ok()?;
     // The doctor bounds each provider at 120s. Leave room for several.
     let deadline = Instant::now() + Duration::from_secs(if provider.is_some() { 150 } else { 600 });
     loop {

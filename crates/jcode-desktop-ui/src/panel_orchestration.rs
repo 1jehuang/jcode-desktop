@@ -309,12 +309,7 @@ fn render_todo(todo: &UnfinishedTodo) -> impl IntoElement {
 }
 
 fn short_dir(dir: &str) -> String {
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() && dir.starts_with(&home) => {
-            format!("~{}", &dir[home.len()..])
-        }
-        _ => dir.to_owned(),
-    }
+    crate::platform_dirs::tilde(dir)
 }
 
 fn fixture_sessions() -> Vec<LiveSession> {

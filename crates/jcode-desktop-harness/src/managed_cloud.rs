@@ -85,12 +85,13 @@ impl EphemeralKey {
             .tempdir()
             .map_err(|e| format!("Could not create a private key directory: {e}"))?;
         let key = dir.path().join("id");
-        let output = std::process::Command::new("ssh-keygen")
-            .args(["-q", "-t", "ed25519", "-N", "", "-C", "jcode-desktop", "-f"])
-            .arg(&key)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .map_err(|e| format!("ssh-keygen is required for Jcode Cloud: {e}"))?;
+        let output =
+            crate::platform::no_console_window(&mut std::process::Command::new("ssh-keygen"))
+                .args(["-q", "-t", "ed25519", "-N", "", "-C", "jcode-desktop", "-f"])
+                .arg(&key)
+                .stdin(std::process::Stdio::null())
+                .output()
+                .map_err(|e| format!("ssh-keygen is required for Jcode Cloud: {e}"))?;
         if !output.status.success() {
             return Err(format!(
                 "Could not generate a connection key: {}",

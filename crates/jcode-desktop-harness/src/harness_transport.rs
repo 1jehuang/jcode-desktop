@@ -192,7 +192,7 @@ impl<W> Pool<W> {
 /// Match exec is user-configured executable code, just as for the real connect.
 fn config_identity(host: &str) -> std::io::Result<Option<u64>> {
     let mut output = tempfile::tempfile()?;
-    let child = Command::new("ssh")
+    let child = crate::platform::no_console_window(&mut Command::new("ssh"))
         .args([
             "-G",
             "-T",
@@ -254,7 +254,7 @@ fn fingerprint(host: &str, config: &str) -> Option<u64> {
     fingerprint_with_environment(
         host,
         config,
-        std::env::var_os("HOME"),
+        jcode_desktop_model::platform_dirs::home_dir().map(Into::into),
         std::env::var_os("SSH_AUTH_SOCK"),
     )
 }
@@ -349,7 +349,8 @@ fn expand_tokens(value: &str, host: &str, config: &str, reusable: &mut bool) -> 
             Some('n') => output.push_str(host.split_once('@').map_or(host, |(_, host)| host)),
             Some('r') => output.push_str(field("user ")),
             Some('p') => output.push_str(field("port ")),
-            Some('d') => output.push_str(&std::env::var("HOME").unwrap_or_default()),
+            Some('d') => output
+                .push_str(&jcode_desktop_model::platform_dirs::home_string().unwrap_or_default()),
             // Exotic token expansions must not accidentally reuse a master
             // whose authentication files we could not identify safely.
             _ => *reusable = false,

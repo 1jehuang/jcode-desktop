@@ -453,17 +453,21 @@ fn shared_poller() -> &'static Poller {
 }
 
 pub fn fetch() -> Option<Vec<Account>> {
-    let output = std::process::Command::new(crate::platform::companion_executable("jcode"))
-        .args(["auth", "status", "--json"])
-        .output()
-        .ok()?;
+    let output = crate::platform::no_console_window(&mut std::process::Command::new(
+        crate::platform::companion_executable("jcode"),
+    ))
+    .args(["auth", "status", "--json"])
+    .output()
+    .ok()?;
     if !output.status.success() {
         return None;
     }
     let mut accounts = parse(&String::from_utf8_lossy(&output.stdout))?;
-    if let Ok(output) = std::process::Command::new(crate::platform::companion_executable("jcode"))
-        .args(["usage", "--json"])
-        .output()
+    if let Ok(output) = crate::platform::no_console_window(&mut std::process::Command::new(
+        crate::platform::companion_executable("jcode"),
+    ))
+    .args(["usage", "--json"])
+    .output()
         && output.status.success()
     {
         merge_usage(&mut accounts, &String::from_utf8_lossy(&output.stdout));

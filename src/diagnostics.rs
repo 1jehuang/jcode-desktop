@@ -25,25 +25,31 @@ pub fn install() -> io::Result<PathBuf> {
         fs::create_dir_all(parent)?;
     }
     rotate_if_needed(&path)?;
+    // Say where diagnostics go while stderr still reaches the launching
+    // terminal, so `RUST_LOG=debug jcode-desktop` users know where to look.
+    eprintln!("desktop diagnostics: {}", path.display());
     redirect_stderr(&path)?;
+    install_logger();
     eprintln!(
-        "{} jcode-desktop started pid={} version={}",
+        "{} jcode-desktop started pid={} version={} os={} arch={}",
         timestamp(),
         std::process::id(),
-        jcode_desktop_ui::build_version()
+        jcode_desktop_ui::build_version(),
+        std::env::consts::OS,
+        std::env::consts::ARCH,
     );
     spawn_cpu_monitor();
     Ok(path)
 }
 
+/// `$XDG_STATE_HOME/jcode-desktop`, `%LOCALAPPDATA%\Jcode Desktop` on
+/// Windows, `~/Library/Application Support/Jcode` on macOS, and
+/// `~/.local/state/jcode-desktop` elsewhere. Windows sets no `HOME`, which
+/// used to put this log under `%TEMP%\.local\state` (#5).
 fn log_path() -> PathBuf {
-    if let Some(state) = std::env::var_os("XDG_STATE_HOME") {
-        return PathBuf::from(state).join("jcode-desktop/jcode-desktop.log");
-    }
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".local/state/jcode-desktop/jcode-desktop.log")
+    jcode_desktop_model::platform_dirs::state_dir()
+        .unwrap_or_else(|| std::env::temp_dir().join("jcode-desktop"))
+        .join("jcode-desktop.log")
 }
 
 fn rotate_if_needed(path: &Path) -> io::Result<()> {
@@ -67,12 +73,82 @@ fn redirect_stderr(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn redirect_stderr(path: &Path) -> io::Result<()> {
-    // Keep the file discoverable on unsupported hosts even though stderr cannot
-    // yet be redirected without platform-specific APIs.
+    use std::os::windows::io::IntoRawHandle;
+    use windows_sys::Win32::System::Console::{STD_ERROR_HANDLE, STD_OUTPUT_HANDLE, SetStdHandle};
+
+    // A GUI-subsystem process has no console, so stderr went nowhere and the
+    // log stayed empty (#5). Rust's stderr resolves the process handle on
+    // every write, so pointing STD_ERROR_HANDLE at the file captures every
+    // eprintln!, panic message, and `log` record from here on, exactly like
+    // the dup2 on Unix.
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    // Leak the handle on purpose: it must stay valid for the process lifetime.
+    let handle = file.into_raw_handle();
+    // SAFETY: `handle` is a valid, owned file handle that is never closed.
+    unsafe {
+        if SetStdHandle(STD_ERROR_HANDLE, handle as _) == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // stdout carries nothing useful for a windowed app, but stray
+        // println! output is better in the log than silently dropped.
+        SetStdHandle(STD_OUTPUT_HANDLE, handle as _);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn redirect_stderr(path: &Path) -> io::Result<()> {
     OpenOptions::new().create(true).append(true).open(path)?;
     Ok(())
+}
+
+/// Route `log` records (GPUI's platform backends, the SDK) into stderr, which
+/// is the diagnostics log. Without a logger, `RUST_LOG=debug` did nothing.
+/// The level comes from `RUST_LOG` (`error`..`trace`, or `off`), default warn.
+fn install_logger() {
+    let level = log_level(std::env::var("RUST_LOG").ok().as_deref());
+    if log::set_logger(&StderrLogger).is_ok() {
+        log::set_max_level(level);
+    }
+}
+
+/// Accepts plain levels and `env_logger`-style directives, taking the most
+/// verbose level mentioned (`gpui=debug,warn` enables debug).
+fn log_level(spec: Option<&str>) -> log::LevelFilter {
+    let Some(spec) = spec.map(str::trim).filter(|spec| !spec.is_empty()) else {
+        return log::LevelFilter::Warn;
+    };
+    spec.split(',')
+        .filter_map(|directive| {
+            let level = directive.rsplit('=').next()?.trim();
+            level.parse::<log::LevelFilter>().ok()
+        })
+        .max()
+        .unwrap_or(log::LevelFilter::Warn)
+}
+
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!(
+                "{} {} {}: {}",
+                timestamp(),
+                record.level(),
+                record.target(),
+                record.args()
+            );
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 fn timestamp() -> String {
@@ -327,6 +403,24 @@ mod tests {
             monitor.observe(sample(2150)),
             vec![format!("memory: {}", sample(2150))]
         );
+    }
+
+    #[test]
+    fn rust_log_specs_pick_the_most_verbose_level() {
+        use log::LevelFilter::*;
+        assert_eq!(log_level(None), Warn);
+        assert_eq!(log_level(Some("")), Warn);
+        assert_eq!(log_level(Some("debug")), Debug);
+        assert_eq!(log_level(Some("OFF")), Off);
+        assert_eq!(log_level(Some("gpui_windows=trace,info")), Trace);
+        assert_eq!(log_level(Some("nonsense")), Warn);
+    }
+
+    #[test]
+    fn log_path_uses_the_platform_state_dir() {
+        let path = log_path();
+        assert!(path.ends_with("jcode-desktop.log"));
+        assert!(path.is_absolute(), "{}", path.display());
     }
 
     #[test]

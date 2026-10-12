@@ -1316,9 +1316,7 @@ fn json_value_field(bytes: &[u8], field: &str, last: bool) -> Option<serde_json:
 const MAX_PERSISTED_SIDEBAR_SESSIONS: usize = 100;
 
 pub fn jcode_home() -> Option<PathBuf> {
-    std::env::var_os("JCODE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".jcode")))
+    jcode_desktop_model::platform_dirs::jcode_home()
 }
 
 fn session_recency_ms(session_id: &str) -> Option<u128> {

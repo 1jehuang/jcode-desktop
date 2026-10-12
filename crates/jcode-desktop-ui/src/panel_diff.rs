@@ -199,12 +199,7 @@ fn tree_rows(files: &[FileDiff], collapsed: &HashSet<String>) -> (String, Vec<Tr
     flatten(&root, "", 0, collapsed, &mut rows);
     let absolute = files.iter().all(|file| file.path.starts_with('/'));
     let mut label = format!("{}{}", if absolute { "/" } else { "" }, prefix.join("/"));
-    if let Some(home) = std::env::var_os("HOME").and_then(|h| h.into_string().ok()) {
-        let home = home.trim_end_matches('/');
-        if !home.is_empty() && (label == home || label.starts_with(&format!("{home}/"))) {
-            label = format!("~{}", &label[home.len()..]);
-        }
-    }
+    label = crate::platform_dirs::tilde(&label);
     (label, rows)
 }
 

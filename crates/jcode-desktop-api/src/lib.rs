@@ -15,7 +15,7 @@ pub use window_launch::{FORWARDED_ENV, WindowLaunch, WindowLaunches};
 pub const ABI_VERSION: u32 = 4;
 pub const STATE_SCHEMA_VERSION: u32 = 1;
 pub const ENTRY_POINT: &[u8] = b"jcode_desktop_ui_plugin\0";
-pub const GPUI_REVISION: [u8; 40] = *b"1cfbc5d35c9865930db3287a5fe15dd95d16f15c";
+pub const GPUI_REVISION: [u8; 40] = *b"1e6e8f8cd41b68d33b6b5f577d7b31aad0940296";
 
 pub const ACTIVATE_OK: i32 = 0;
 pub const ACTIVATE_FAILED: i32 = 1;

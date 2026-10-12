@@ -536,7 +536,7 @@ impl Runtime {
             .command
             .split_first()
             .ok_or_else(|| format!("applet {} has an empty command", applet.id))?;
-        let mut child = Command::new(program)
+        let mut child = crate::platform::no_console_window(&mut Command::new(program))
             .args(args)
             .current_dir(&applet.dir)
             .envs(&applet.env)
@@ -650,10 +650,7 @@ fn load_grants() -> crate::applet_host::Grants {
 }
 
 pub(crate) fn applets_dir() -> Option<PathBuf> {
-    std::env::var_os("JCODE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| Path::new(&home).join(".jcode")))
-        .map(|home| home.join("applets"))
+    crate::platform_dirs::jcode_home().map(|home| home.join("applets"))
 }
 
 #[cfg(test)]

@@ -1087,7 +1087,7 @@ pub(super) fn expand_home(path: &str) -> String {
     let path = path.trim();
     if let Some(rest) = path.strip_prefix("~")
         && (rest.is_empty() || rest.starts_with('/') || rest.starts_with('\\'))
-        && let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+        && let Some(home) = crate::platform_dirs::home_dir()
     {
         return format!("{}{rest}", PathBuf::from(home).display());
     }

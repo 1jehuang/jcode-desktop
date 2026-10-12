@@ -50,8 +50,7 @@ fn render_markdown(development: bool) -> String {
 pub(crate) fn should_open(is_reload: bool) -> bool {
     let Some(path) = marker_path(
         env::var_os("JCODE_DESKTOP_STATE").map(PathBuf::from),
-        env::var_os("XDG_STATE_HOME").map(PathBuf::from),
-        env::var_os("HOME").map(PathBuf::from),
+        crate::platform_dirs::state_dir(),
     ) else {
         return true;
     };
@@ -60,22 +59,15 @@ pub(crate) fn should_open(is_reload: bool) -> bool {
     open
 }
 
-fn marker_path(
-    state: Option<PathBuf>,
-    xdg: Option<PathBuf>,
-    home: Option<PathBuf>,
-) -> Option<PathBuf> {
+fn marker_path(state: Option<PathBuf>, state_dir: Option<PathBuf>) -> Option<PathBuf> {
     // JCODE_DESKTOP_STATE is the workspace's debug dump *file*. Keep the marker
     // beside it, never in the user's real state directory during isolated runs.
     if let Some(state) = state.filter(|path| !path.as_os_str().is_empty()) {
         return Some(state.parent().unwrap_or(Path::new(".")).join(MARKER));
     }
-    xdg.filter(|path| !path.as_os_str().is_empty())
-        .map(|path| path.join("jcode-desktop").join(MARKER))
-        .or_else(|| {
-            home.filter(|path| !path.as_os_str().is_empty())
-                .map(|path| path.join(".local/state/jcode-desktop").join(MARKER))
-        })
+    // Shared with every other Desktop state file. On Windows this is
+    // %LOCALAPPDATA%, where HOME is unset and notes otherwise reopened forever.
+    state_dir.map(|path| path.join(MARKER))
 }
 
 fn decision(previous: Option<&str>, identity: &str, is_reload: bool) -> bool {
@@ -171,19 +163,19 @@ mod tests {
     fn state_override_is_isolated_and_fallbacks_match_desktop() {
         let p = |s: &str| Some(PathBuf::from(s));
         assert_eq!(
-            marker_path(p("/isolated/state.txt"), p("/xdg"), p("/home")),
+            marker_path(p("/isolated/state.txt"), p("/state")),
             p(&format!("/isolated/{MARKER}"))
         );
         assert_eq!(
-            marker_path(None, p("/xdg"), p("/home")),
-            p(&format!("/xdg/jcode-desktop/{MARKER}"))
+            marker_path(None, p("/state")),
+            p(&format!("/state/{MARKER}"))
         );
         assert_eq!(
-            marker_path(None, p(""), p("/home")),
-            p(&format!("/home/.local/state/jcode-desktop/{MARKER}"))
+            marker_path(p(""), p("/state")),
+            p(&format!("/state/{MARKER}"))
         );
-        assert_eq!(marker_path(None, None, None), None);
-        assert_eq!(marker_path(p("state.txt"), None, None), p(MARKER));
+        assert_eq!(marker_path(None, None), None);
+        assert_eq!(marker_path(p("state.txt"), None), p(MARKER));
     }
 
     #[test]

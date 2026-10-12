@@ -8789,7 +8789,7 @@ fn default_working_dir() -> Option<String> {
 fn launch_working_dir(launch: &jcode_desktop_api::WindowLaunch) -> Option<String> {
     default_working_dir_from(
         launch.var("JCODE_DESKTOP_WORKING_DIR").map(str::to_owned),
-        std::env::var("HOME").ok(),
+        crate::platform_dirs::home_string(),
         Path::is_dir,
     )
 }
@@ -9258,18 +9258,10 @@ fn sidebar_session_meta(session: &jcode_sdk::SessionInfo) -> Option<String> {
 }
 
 fn compact_working_dir(path: &str) -> String {
-    let home = std::env::var("HOME").ok();
-    if let Some(home) = home.as_deref()
-        && let Some(relative) = path.strip_prefix(home)
-    {
-        if relative.is_empty() {
-            return "~ (home)".into();
-        }
-        if relative.starts_with('/') {
-            return format!("~{relative}");
-        }
+    match crate::platform_dirs::tilde(path) {
+        home if home == "~" => "~ (home)".into(),
+        shortened => shortened,
     }
-    path.to_owned()
 }
 
 /// The first panel owns the viewport. Later panels use the normal column width

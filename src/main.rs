@@ -1,4 +1,8 @@
 //! Stable native GPUI host for Jcode Desktop.
+// A GUI app on Windows: launching from Explorer or a shortcut must not open a
+// console window beside the app. `--version` and `--update` reattach to the
+// invoking terminal (see `attach_parent_console`).
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
 mod host {
     #[cfg(any(target_os = "macos", target_os = "windows", test))]
@@ -508,7 +512,45 @@ fn configure_system_allocator() {
     }
 }
 
+/// A GUI-subsystem process starts without stdout or stderr. When a terminal
+/// launched it (`jcode-desktop --version`, `--update`), attach to that
+/// terminal's console so CLI output still appears there. Handles a caller
+/// already redirected (a pipe or file, as CI does) are left untouched.
+#[cfg(windows)]
+fn attach_parent_console() {
+    use windows_sys::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: plain Win32 queries on this process's own standard handles.
+    unsafe {
+        let redirected = |which| {
+            let handle = GetStdHandle(which);
+            !handle.is_null() && handle != windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE
+        };
+        if redirected(STD_OUTPUT_HANDLE) || redirected(STD_ERROR_HANDLE) {
+            return;
+        }
+        // Fails harmlessly when launched from Explorer (no parent console).
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_parent_console() {}
+
+#[cfg(windows)]
+fn detach_console() {
+    // SAFETY: detaching from a console this process may have attached to.
+    unsafe {
+        windows_sys::Win32::System::Console::FreeConsole();
+    }
+}
+
+#[cfg(not(windows))]
+fn detach_console() {}
+
 fn main() {
+    attach_parent_console();
     if let Some(code) = jcode_desktop_ui::run_restart_worker_if_requested() {
         std::process::exit(code);
     }
@@ -547,13 +589,12 @@ fn main() {
         }
         return;
     }
-    let diagnostics_path = diagnostics::install().unwrap_or_else(|error| {
+    if let Err(error) = diagnostics::install() {
         eprintln!("failed to initialize desktop diagnostics: {error}");
-        PathBuf::new()
-    });
-    if !diagnostics_path.as_os_str().is_empty() {
-        eprintln!("desktop diagnostics: {}", diagnostics_path.display());
     }
+    // The window outlives the terminal that may have started it. Closing that
+    // terminal must not take the app down with its console.
+    detach_console();
     // Single-panel launches have a per-process identity. Sidebar-free windows
     // retain their shared identity, independent from the main window.
     // Otherwise a shortcut for `--no-sidebar` only wakes the already-running

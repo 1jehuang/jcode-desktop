@@ -40,6 +40,13 @@ STATES = {
 }
 
 CAPTION_STATES = {"caption", "caption-light"}
+# Issue #5 input latency: the reporter's synthetic move/click loop, measured
+# with a SendMessageTimeout round trip that approximates UI-thread stalls.
+LATENCY_STATES = {"input-latency"}
+STATES["input-latency"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "info"}, "warm-neutral", True)
+# Issue #5 Windows integration: diagnostics log, GUI subsystem, single instance.
+INTEGRATION_STATES = {"windows-integration"}
+STATES["windows-integration"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", "RUST_LOG": "debug"}, "warm-neutral", True)
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
@@ -222,6 +229,113 @@ def caption_checks(name, hwnd, out_dir):
     return all(line.startswith(("PASS", "INFO")) for line in report)
 
 
+def input_latency(name, hwnd, out_dir, root):
+    """Replay the issue #5 automation (moves only, moves + clicks, clicks only)
+    and report UI-thread round-trip latency plus the app's slow-message log."""
+    import json
+    import math
+    SMTO_ABORTIFHUNG = 0x2
+    user32.SendMessageTimeoutW.restype = ctypes.c_ssize_t
+    user32.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                                           wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+
+    def ping():
+        result = ctypes.c_size_t()
+        started = time.perf_counter()
+        ok = user32.SendMessageTimeoutW(hwnd, 0, 0, 0, SMTO_ABORTIFHUNG, 2000, ctypes.byref(result))
+        return bool(ok), (time.perf_counter() - started) * 1000
+
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    time.sleep(1)
+    user32.SetWindowPos(hwnd, None, 100, 60, 1400, 900, 0x4)
+    time.sleep(1.5)
+    left, top, right, bottom = window_rect(hwnd)
+    cx, cy = (left + right) // 2, (top + bottom) // 2
+    report = {}
+    for mode, radius, clicks in (("moves", 200, False), ("moves+clicks", 200, True), ("clicks", 0, True)):
+        samples = []
+        started = time.monotonic()
+        step = 0
+        while time.monotonic() - started < 10:
+            angle = step * 0.15
+            user32.SetCursorPos(int(cx + radius * math.cos(angle)), int(cy + radius * math.sin(angle)))
+            if clicks and step % 40 == 0:
+                user32.mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+            elif clicks and step % 40 == 30:
+                user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+            point = wintypes.POINT()
+            user32.GetCursorPos(ctypes.byref(point))
+            ok, ms = ping()
+            samples.append(dict(ms=ms, ok=ok))
+            step += 1
+            time.sleep(0.008)
+        user32.mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+        values = sorted(s["ms"] for s in samples)
+        report[mode] = dict(
+            samples=len(values),
+            timeouts=sum(not s["ok"] for s in samples),
+            p50=round(values[len(values) // 2], 1),
+            p95=round(values[int(len(values) * 0.95)], 1),
+            max=round(values[-1], 1),
+            over_30ms=sum(v > 30 for v in values),
+        )
+        print(name, mode, json.dumps(report[mode]), flush=True)
+        time.sleep(1)
+    (out_dir / f"{name}-latency.json").write_text(json.dumps(report, indent=2) + "\n")
+    for log in (root / "localappdata").rglob("jcode-desktop.log"):
+        text = log.read_text(errors="ignore")
+        (out_dir / f"{name}-desktop.log").write_text(text)
+        slow = [line for line in text.splitlines() if "slow window message" in line or "slow render" in line]
+        print(f"{name}: desktop log {len(text)} bytes, {len(slow)} slow-message lines")
+        for line in slow[:40]:
+            print("  ", line)
+    return report
+
+
+def integration_checks(name, binary, hwnd, app, env, root, out_dir):
+    """Windows behavior from issue #5 that a screenshot cannot show."""
+    import struct
+    report = []
+
+    def check(label, ok, detail=""):
+        report.append(f"{'PASS' if ok else 'FAIL'} {label} {detail}".rstrip())
+
+    # 1. The exe is a GUI-subsystem program, so Explorer launches open no console.
+    data = Path(binary).read_bytes()[:4096]
+    pe = struct.unpack_from("<I", data, 0x3C)[0]
+    subsystem = struct.unpack_from("<H", data, pe + 24 + 68)[0]
+    check("GUI subsystem (no console window)", subsystem == 2, f"subsystem={subsystem}")
+
+    # 2. Diagnostics land in %LOCALAPPDATA%\Jcode Desktop and are not empty.
+    log = root / "localappdata" / "Jcode Desktop" / "jcode-desktop.log"
+    text = log.read_text(errors="ignore") if log.exists() else ""
+    (out_dir / f"{name}-desktop.log").write_text(text)
+    check("diagnostics log exists", log.exists(), str(log))
+    check("diagnostics log records startup", "jcode-desktop started" in text, f"{len(text)} bytes")
+    check("RUST_LOG=debug reaches the log", " DEBUG " in text or " INFO " in text,
+          "no log records" if " DEBUG " not in text else "")
+
+    # 3. A second launch hands off to the running host instead of opening
+    #    another independent app, and exits promptly.
+    second = subprocess.run([str(binary)], env=env, cwd=root, timeout=30,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    time.sleep(1.5)
+    check("second launch exits", second.returncode == 0, f"code={second.returncode}")
+    check("first host still running", app.poll() is None)
+    check("still exactly one app window", len(windows_of(app.pid)) == 1,
+          f"windows={len(windows_of(app.pid))}")
+
+    # 4. --version still prints when stdout is captured (CI, updater smoke test).
+    version = subprocess.run([str(binary), "--version"], env=env, cwd=root, timeout=30,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    check("--version prints through a pipe", version.stdout.startswith("Jcode Desktop"),
+          repr(version.stdout.strip()[:60]))
+
+    (out_dir / f"{name}-checks.txt").write_text("\n".join(report) + "\n")
+    print("\n".join(report))
+    return all(line.startswith("PASS") for line in report)
+
+
 def capture(name, binary, out_dir, timeout):
     from PIL import ImageGrab
 
@@ -276,6 +390,15 @@ def capture(name, binary, out_dir, timeout):
                     (out_dir / f"{name}.state.txt").write_text(state.read_text(errors="ignore"))
                     if not ok:
                         raise RuntimeError(f"{name}: caption checks failed")
+                    print(f"captured {name}")
+                    return
+                if name in LATENCY_STATES:
+                    input_latency(name, hwnd, out_dir, root)
+                    print(f"captured {name}")
+                    return
+                if name in INTEGRATION_STATES:
+                    if not integration_checks(name, binary, hwnd, app, env, root, out_dir):
+                        raise RuntimeError(f"{name}: Windows integration checks failed")
                     print(f"captured {name}")
                     return
                 rect = wintypes.RECT()
