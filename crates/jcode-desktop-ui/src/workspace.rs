@@ -826,6 +826,10 @@ pub struct Workspace {
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
+    /// Last known "header is below the list" answer per project key. Spawning
+    /// sessions remeasures rows, and an unmeasured header must keep its dock
+    /// entry rather than blinking out for a frame.
+    sidebar_dock_below: HashMap<String, bool>,
     sidebar_projects: sidebar_projects::State,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
@@ -1129,6 +1133,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_dock_below: HashMap::new(),
             sidebar_projects: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
@@ -1508,6 +1513,7 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
+            sidebar_dock_below: HashMap::new(),
             sidebar_projects: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
@@ -5788,16 +5794,32 @@ impl Workspace {
             // hides the others. Uses the last layout, and list scrolling
             // re-renders this view.
             let below = if groups.len() > 1 {
-                ordered_sessions
+                let list = &self.sidebar_sessions_list;
+                let memory = &mut self.sidebar_dock_below;
+                let mut seen = HashSet::new();
+                let below = ordered_sessions
                     .iter()
                     .enumerate()
                     .filter(|(_, row)| row.header)
-                    .filter(|(index, _)| {
-                        self.sidebar_sessions_list.item_is_below_viewport(*index) == Some(true)
+                    .filter(|(index, row)| {
+                        let key = &groups[row.project].0.key;
+                        seen.insert(key.clone());
+                        // Unmeasured rows (just spliced in or remeasured) give
+                        // no answer. Hold the last one so the dock stays put.
+                        match list.item_is_below_viewport(*index) {
+                            Some(below) => {
+                                memory.insert(key.clone(), below);
+                                below
+                            }
+                            None => memory.get(key).copied().unwrap_or(false),
+                        }
                     })
                     .map(|(index, row)| (index, row.project))
-                    .collect::<Vec<_>>()
+                    .collect::<Vec<_>>();
+                memory.retain(|key, _| seen.contains(key));
+                below
             } else {
+                self.sidebar_dock_below.clear();
                 Vec::new()
             };
             // Like the pinned last prompt in chat, headers that scrolled
