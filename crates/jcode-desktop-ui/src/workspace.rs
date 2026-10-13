@@ -840,6 +840,8 @@ pub struct Workspace {
     sidebar_todo_progress: HashMap<String, (usize, usize)>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
+    /// Breathing "Checking…" beside the version while an update check runs.
+    version_pulse: crate::pulse_text::Tickers,
     sidebar_navigation_scroll: ScrollHandle,
     live_tabs: live_tabs::TabMotion,
     sidebar_roller: sidebar_roller::Roller,
@@ -954,6 +956,7 @@ impl Workspace {
             let mut next_session_refresh = session_refresh_interval.min(Duration::from_secs(2));
             let mut last_update_state = updates::current();
             let mut last_release_state = updates::release_status();
+            let mut last_check_visible = updates::user_check_visible();
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 if crate::memory::claim_trim_slot() {
@@ -963,9 +966,14 @@ impl Workspace {
                 }
                 let update_state = updates::current();
                 let release_state = updates::release_status();
-                if update_state != last_update_state || release_state != last_release_state {
+                let check_visible = updates::user_check_visible();
+                if update_state != last_update_state
+                    || release_state != last_release_state
+                    || check_visible != last_check_visible
+                {
                     last_update_state = update_state;
                     last_release_state = release_state;
+                    last_check_visible = check_visible;
                     if this.update(cx, |_, cx| cx.notify()).is_err() {
                         break;
                     }
@@ -1143,6 +1151,7 @@ impl Workspace {
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
             sidebar_title_pulses: Default::default(),
+            version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
@@ -1524,6 +1533,7 @@ impl Workspace {
             sidebar_hovered_session: None,
             sidebar_todo_progress: Default::default(),
             sidebar_title_pulses: Default::default(),
+            version_pulse: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),

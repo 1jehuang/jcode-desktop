@@ -42,6 +42,8 @@ def main():
                         help="open Accounts mid OAuth sign-in to review the numbered checklist offline")
     parser.add_argument("--release-status", choices=("current", "newer", "checking", "error", "source"),
                         help="render an offline Desktop release status in the workspace top bar")
+    parser.add_argument("--update-clicked", action="store_true",
+                        help="show the version pill just after the user clicked it to check for updates")
     parser.add_argument("--account-sign-in", action="store_true",
                         help="show optional first-launch account sign-in without network access")
     parser.add_argument("--account-sign-in-no-emails", action="store_true",
@@ -459,6 +461,8 @@ def main():
         env = isolated_env(root)
         if args.release_status:
             env["JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS"] = args.release_status
+        if args.update_clicked:
+            env["JCODE_DESKTOP_SCREENSHOT_UPDATE_CLICKED"] = "1"
         if args.worktrees:
             env["JCODE_DESKTOP_SCREENSHOT_WORKTREES"] = "1"
         if args.collections:

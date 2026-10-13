@@ -2,7 +2,11 @@
 use super::*;
 use crate::updates::{ReleaseStatus, UpdateState};
 
-fn status_label(release: &ReleaseStatus, update: &UpdateState) -> (String, Option<&'static str>) {
+fn status_label(
+    release: &ReleaseStatus,
+    update: &UpdateState,
+    source: bool,
+) -> (String, Option<&'static str>) {
     match update {
         UpdateState::Checking => ("Updating…".into(), None),
         UpdateState::Available { version } => (format!("Downloading {version}…"), None),
@@ -14,6 +18,8 @@ fn status_label(release: &ReleaseStatus, update: &UpdateState) -> (String, Optio
                 ("Checking for updates…".into(), None)
             }
             ReleaseStatus::Current { .. } => ("Latest version".into(), None),
+            // A source checkout cannot install a release in place.
+            ReleaseStatus::Newer { version } if source => (format!("{version} released"), None),
             ReleaseStatus::Newer { version } => (format!("{version} available"), Some("Update")),
             ReleaseStatus::Error { .. } => ("Unable to check".into(), None),
             ReleaseStatus::Source => ("Development build".into(), None),
@@ -21,18 +27,67 @@ fn status_label(release: &ReleaseStatus, update: &UpdateState) -> (String, Optio
     }
 }
 
-/// Size the pill to its short version string, with room for an optional action.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Tone {
+    Busy,
+    Good,
+    News,
+    Bad,
+}
+
+/// What a check the user just asked for is doing, shown beside the version.
+/// `None` when the Restart or Update action already says it.
+fn check_feedback(release: &ReleaseStatus, update: &UpdateState) -> Option<(String, Tone)> {
+    Some(match update {
+        UpdateState::Checking => ("Checking…".into(), Tone::Busy),
+        UpdateState::Available { version } => (format!("Downloading {version}…"), Tone::Busy),
+        UpdateState::ReadyToRestart { .. } => return None,
+        UpdateState::Failed { .. } => ("Update failed".into(), Tone::Bad),
+        UpdateState::Finished { .. } | UpdateState::Idle => match release {
+            ReleaseStatus::Unknown | ReleaseStatus::Checking => ("Checking…".into(), Tone::Busy),
+            ReleaseStatus::Current { .. } => ("Up to date".into(), Tone::Good),
+            ReleaseStatus::Newer { version } => (format!("v{version} out"), Tone::News),
+            ReleaseStatus::Error { .. } => ("Couldn't check".into(), Tone::Bad),
+            ReleaseStatus::Source => return None,
+        },
+    })
+}
+
+fn visible_feedback() -> Option<(String, Tone)> {
+    updates::user_check_visible()
+        .then(|| check_feedback(&updates::release_status(), &updates::current()))
+        .flatten()
+}
+
+const CHAR_WIDTH: f32 = 5.4;
+
+/// Size the pill to its short version string, with room for an optional action
+/// and the result of a check the user asked for.
 pub(super) fn pill_width() -> f32 {
-    let (_, action) = status_label(&updates::release_status(), &updates::current());
-    let version = ((crate::build_info::VERSION.len() + 1) as f32 * 5.4 + 16.0).clamp(64.0, 132.0);
-    (version + action.map_or(0.0, |label| label.len() as f32 * 5.4 + 12.0)).ceil()
+    let (_, action) = status_label(
+        &updates::release_status(),
+        &updates::current(),
+        updates::is_source_build(),
+    );
+    let version =
+        ((crate::build_info::VERSION.len() + 1) as f32 * CHAR_WIDTH + 16.0).clamp(64.0, 132.0);
+    let feedback = visible_feedback().map_or(0.0, |(text, _)| {
+        text.chars().count() as f32 * CHAR_WIDTH + 8.0
+    });
+    (version + feedback + action.map_or(0.0, |label| label.len() as f32 * CHAR_WIDTH + 12.0)).ceil()
 }
 
 impl Workspace {
-    /// Clicking the version pill: refresh the release check and ask the
-    /// platform updater to check, download, or install whatever is next.
+    /// Clicking the version pill: check for a newer release right away and
+    /// ask the platform updater to check, download, or install whatever is
+    /// next. The pill shows the check and its result.
     fn check_and_apply_update() {
-        updates::recheck_release();
+        updates::note_user_check();
+        updates::check_release_now();
+        // A source checkout only reports releases. Ctrl+R or /update rebuild it.
+        if updates::is_source_build() {
+            return;
+        }
         if updates::request_now() == updates::UpdateRequest::Unavailable {
             updates::set(UpdateState::Failed {
                 message: "Automatic updates are unavailable in this build. Install the latest Desktop release manually.".into(),
@@ -41,19 +96,56 @@ impl Workspace {
     }
 
     pub(super) fn render_version_header(
-        &self,
+        &mut self,
         width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         updates::ensure_release_check();
         let release = updates::release_status();
         let update = updates::current();
-        let (label, action) = status_label(&release, &update);
+        let (label, action) = status_label(&release, &update, updates::is_source_build());
+        let feedback = visible_feedback();
+        let theme = Theme::global();
+        let feedback = feedback.map(|(text, tone)| {
+            let color = match tone {
+                Tone::Busy => theme.ACCENT,
+                Tone::Good => theme.OK,
+                Tone::News => theme.ACCENT,
+                Tone::Bad => theme.ERROR,
+            };
+            let content = if tone == Tone::Busy {
+                let ticker = self.version_pulse.get(
+                    "check",
+                    crate::pulse_text::Kind::PulseText {
+                        text: text.into(),
+                        period: crate::pulse_text::TOOL_PULSE_PERIOD,
+                        curve: version_check_pulse,
+                    },
+                    cx,
+                );
+                ticker.into_any_element()
+            } else {
+                div().child(text).into_any_element()
+            };
+            div()
+                .id("workspace-version-check")
+                .debug_selector(|| "workspace-version-check".into())
+                .flex_none()
+                .text_color(color)
+                .font_family(theme.FONT_MONO)
+                .text_size(px(9.0))
+                .child(content)
+        });
+        if feedback.is_none() {
+            self.version_pulse.retain(|_| false);
+        }
         let detail = match &update {
             UpdateState::Finished { message } | UpdateState::Failed { message } => message.clone(),
             _ => match &release {
                 ReleaseStatus::Error { message } => message.clone(),
                 ReleaseStatus::Source => "Local source build. Release status cannot establish whether this checkout is current. Use Ctrl+R to rebuild local changes.".into(),
+                ReleaseStatus::Current { latest } => format!("Latest release: v{latest}"),
+                ReleaseStatus::Newer { version } if updates::is_source_build() => format!("v{version} is released. This source build updates through Git and Ctrl+R."),
                 _ => label.clone(),
             },
         };
@@ -87,7 +179,7 @@ impl Workspace {
                 cx.new(|_| {
                     live_tabs::TabTooltip(
                         format!(
-                            "{}\nClick to check for and apply updates",
+                            "{}\nClick to check for updates",
                             if detail == label {
                                 label.clone()
                             } else {
@@ -112,6 +204,7 @@ impl Workspace {
                     .tooltip(|_, cx| cx.new(|_| crate::build_info::BuildTooltip).into())
                     .child(crate::build_info::version()),
             )
+            .children(feedback)
             .when_some(action, |el, action| {
                 el.child(
                     div()
@@ -136,6 +229,10 @@ impl Workspace {
     }
 }
 
+fn version_check_pulse(phase: f32) -> f32 {
+    0.6 + 0.4 * (phase * std::f32::consts::TAU).cos()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -150,7 +247,7 @@ mod tests {
                 message: "offline".into(),
             },
         ] {
-            let (label, action) = status_label(&release, &UpdateState::Idle);
+            let (label, action) = status_label(&release, &UpdateState::Idle, false);
             assert_ne!(label, "Latest version");
             assert!(action.is_none());
         }
@@ -159,24 +256,91 @@ mod tests {
                 &ReleaseStatus::Current {
                     latest: "1.0.0".into()
                 },
-                &UpdateState::Idle
+                &UpdateState::Idle,
+                false
             ),
             ("Latest version".into(), None)
         );
         let newer = ReleaseStatus::Newer {
             version: "1.1.0".into(),
         };
-        assert_eq!(status_label(&newer, &UpdateState::Idle).1, Some("Update"));
-        assert_eq!(status_label(&newer, &UpdateState::Checking).1, None);
+        assert_eq!(
+            status_label(&newer, &UpdateState::Idle, false).1,
+            Some("Update")
+        );
+        assert_eq!(
+            status_label(&newer, &UpdateState::Idle, true).1,
+            None,
+            "a source checkout cannot install a release"
+        );
+        assert_eq!(status_label(&newer, &UpdateState::Checking, false).1, None);
         assert_eq!(
             status_label(
                 &newer,
                 &UpdateState::ReadyToRestart {
                     version: "1.1.0".into()
-                }
+                },
+                false
             )
             .1,
             Some("Restart")
+        );
+    }
+
+    #[test]
+    fn a_requested_check_reports_progress_then_its_result() {
+        let current = ReleaseStatus::Current {
+            latest: "1.0.0".into(),
+        };
+        assert_eq!(
+            check_feedback(&ReleaseStatus::Checking, &UpdateState::Idle),
+            Some(("Checking…".into(), Tone::Busy))
+        );
+        assert_eq!(
+            check_feedback(&current, &UpdateState::Checking),
+            Some(("Checking…".into(), Tone::Busy))
+        );
+        assert_eq!(
+            check_feedback(&current, &UpdateState::Idle),
+            Some(("Up to date".into(), Tone::Good))
+        );
+        assert_eq!(
+            check_feedback(
+                &current,
+                &UpdateState::Finished {
+                    message: "current".into()
+                }
+            ),
+            Some(("Up to date".into(), Tone::Good))
+        );
+        assert_eq!(
+            check_feedback(
+                &ReleaseStatus::Newer {
+                    version: "1.1.0".into()
+                },
+                &UpdateState::Idle
+            ),
+            Some(("v1.1.0 out".into(), Tone::News))
+        );
+        assert_eq!(
+            check_feedback(
+                &ReleaseStatus::Error {
+                    message: "offline".into()
+                },
+                &UpdateState::Idle
+            )
+            .map(|(_, tone)| tone),
+            Some(Tone::Bad)
+        );
+        assert_eq!(
+            check_feedback(
+                &current,
+                &UpdateState::ReadyToRestart {
+                    version: "1.1.0".into()
+                }
+            ),
+            None,
+            "Restart already says it"
         );
     }
     #[gpui::test]
@@ -264,11 +428,29 @@ mod tests {
         }
         draw(vcx);
         let build = vcx.debug_bounds("workspace-build").unwrap();
+        let compact = vcx.debug_bounds("workspace-version").unwrap().size.width;
+        assert!(vcx.debug_bounds("workspace-version-check").is_none());
         let before = REQUESTS.load(Ordering::SeqCst);
         vcx.simulate_click(build.center(), gpui::Modifiers::default());
         draw(vcx);
         assert_eq!(REQUESTS.load(Ordering::SeqCst), before + 1);
         assert_eq!(updates::current(), UpdateState::Checking);
+        assert_eq!(updates::release_status(), ReleaseStatus::Checking);
+        // The click is visible: the pill grows to show the running check.
+        let check = vcx
+            .debug_bounds("workspace-version-check")
+            .expect("clicking shows the check in progress");
+        let header = vcx.debug_bounds("workspace-version").unwrap();
+        assert!(header.size.width > compact);
+        assert!(check.right() <= header.right());
+        // Its result stays visible once the check settles.
+        updates::set(UpdateState::Idle);
+        updates::set_release_status(ReleaseStatus::Current {
+            latest: "1.0.0".into(),
+        });
+        draw(vcx);
+        assert!(vcx.debug_bounds("workspace-version-check").is_some());
+        assert_eq!(visible_feedback(), Some(("Up to date".into(), Tone::Good)));
         updates::clear_test_actions();
         updates::set_release_status(ReleaseStatus::Source);
     }

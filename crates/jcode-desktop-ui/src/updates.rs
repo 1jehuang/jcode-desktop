@@ -10,6 +10,19 @@ use std::ffi::{CStr, c_char, c_void};
 use std::sync::atomic::{AtomicPtr, Ordering};
 use std::sync::{Mutex, OnceLock};
 
+/// Tests run in parallel and render workspace headers whose width follows
+/// this state. Each test thread gets its own copy so one test's update state
+/// never changes another test's layout.
+#[cfg(test)]
+macro_rules! per_test_thread {
+    ($ty:ty, $init:expr) => {{
+        thread_local! {
+            static CELL: &'static Mutex<$ty> = Box::leak(Box::new(Mutex::new($init)));
+        }
+        CELL.with(|cell| *cell)
+    }};
+}
+
 /// Public release availability, independent of installer/download state.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ReleaseStatus {
@@ -31,8 +44,13 @@ pub enum ReleaseStatus {
 }
 
 fn release_state() -> &'static Mutex<ReleaseStatus> {
-    static STATE: OnceLock<Mutex<ReleaseStatus>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(ReleaseStatus::Unknown))
+    #[cfg(test)]
+    return per_test_thread!(ReleaseStatus, ReleaseStatus::Unknown);
+    #[cfg(not(test))]
+    {
+        static STATE: OnceLock<Mutex<ReleaseStatus>> = OnceLock::new();
+        STATE.get_or_init(|| Mutex::new(ReleaseStatus::Unknown))
+    }
 }
 
 pub fn release_status() -> ReleaseStatus {
@@ -46,6 +64,68 @@ fn store_release_status(next: ReleaseStatus) {
     *release_state()
         .lock()
         .unwrap_or_else(|error| error.into_inner()) = next;
+    note_change();
+}
+
+/// How long the result of a check the user asked for stays visible.
+pub const CHECK_FEEDBACK: std::time::Duration = std::time::Duration::from_secs(6);
+
+#[derive(Clone, Copy, Default)]
+struct Feedback {
+    /// When the user last clicked to check.
+    requested: Option<std::time::Instant>,
+    /// When the release or update state last changed.
+    changed: Option<std::time::Instant>,
+}
+
+fn feedback() -> &'static Mutex<Feedback> {
+    #[cfg(test)]
+    return per_test_thread!(Feedback, Feedback::default());
+    #[cfg(not(test))]
+    {
+        static FEEDBACK: Mutex<Feedback> = Mutex::new(Feedback {
+            requested: None,
+            changed: None,
+        });
+        &FEEDBACK
+    }
+}
+
+fn note_change() {
+    feedback()
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .changed = Some(std::time::Instant::now());
+}
+
+/// Record that the user asked to check, so the UI shows its progress and result.
+pub fn note_user_check() {
+    let now = std::time::Instant::now();
+    *feedback().lock().unwrap_or_else(|error| error.into_inner()) = Feedback {
+        requested: Some(now),
+        changed: Some(now),
+    };
+}
+
+/// Whether a check the user asked for is still running or its result is
+/// still fresh enough to show beside the version.
+pub fn user_check_visible() -> bool {
+    let Feedback { requested, changed } =
+        *feedback().lock().unwrap_or_else(|error| error.into_inner());
+    let Some(requested) = requested else {
+        return false;
+    };
+    if release_status() == ReleaseStatus::Checking || current().is_busy() {
+        return true;
+    }
+    let settled = changed.map_or(requested, |changed| changed.max(requested));
+    settled.elapsed() < CHECK_FEEDBACK
+}
+
+/// Whether this process runs from a Cargo checkout rather than an install.
+pub fn is_source_build() -> bool {
+    static SOURCE: OnceLock<bool> = OnceLock::new();
+    *SOURCE.get_or_init(source_build)
 }
 
 #[cfg(test)]
@@ -137,6 +217,11 @@ pub fn ensure_release_check() {
             &std::env::var("JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS")
                 .unwrap_or_else(|_| "source".into()),
         );
+        drop(state);
+        // Preview the inline result of clicking the version pill.
+        if std::env::var_os("JCODE_DESKTOP_SCREENSHOT_UPDATE_CLICKED").is_some() {
+            note_user_check();
+        }
         return;
     }
     // Render tests run from Cargo test executables, not a packaged release.
@@ -147,17 +232,59 @@ pub fn ensure_release_check() {
     }
     *state = ReleaseStatus::Checking;
     drop(state);
+    note_change();
     report_active();
     // Packaged builds without Sparkle download updates on their own, the same
     // way Sparkle does on macOS.
     if CHECK_NOW.load(Ordering::Acquire).is_null() && packaged::supported() {
         packaged::schedule();
     }
+    spawn_release_check();
+}
+
+/// A release check the user asked for. Unlike the automatic check this also
+/// runs in source builds, so a checkout can see whether a newer release
+/// exists. It never installs or rebuilds anything.
+pub fn check_release_now() {
+    {
+        let mut state = release_state()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if *state == ReleaseStatus::Checking {
+            return;
+        }
+        if cfg!(test) {
+            // Never touch the network from tests.
+            *state = ReleaseStatus::Checking;
+            drop(state);
+            note_change();
+            return;
+        }
+        if crate::harness::screenshot_mode() {
+            // Offline screenshots resolve to their fixture instead.
+            *state = fixture_release_status(
+                &std::env::var("JCODE_DESKTOP_SCREENSHOT_RELEASE_STATUS")
+                    .unwrap_or_else(|_| "current".into()),
+            );
+            drop(state);
+            note_change();
+            return;
+        }
+        *state = ReleaseStatus::Checking;
+    }
+    note_change();
+    spawn_release_check();
+}
+
+fn spawn_release_check() {
     if let Err(error) = std::thread::Builder::new()
         .name("desktop-release-check".into())
         .spawn(|| {
             let result = std::panic::catch_unwind(|| {
-                compare_release(env!("JCODE_DESKTOP_VERSION"), jcode_desktop_updater::latest()?)
+                compare_release(
+                    env!("JCODE_DESKTOP_VERSION"),
+                    jcode_desktop_updater::latest()?,
+                )
             })
             .unwrap_or_else(|_| Err(anyhow::anyhow!("Release checker unexpectedly stopped")));
             store_release_status(match result {
@@ -241,8 +368,13 @@ impl UpdateState {
 }
 
 fn state() -> &'static Mutex<UpdateState> {
-    static STATE: OnceLock<Mutex<UpdateState>> = OnceLock::new();
-    STATE.get_or_init(|| Mutex::new(UpdateState::Idle))
+    #[cfg(test)]
+    return per_test_thread!(UpdateState, UpdateState::Idle);
+    #[cfg(not(test))]
+    {
+        static STATE: OnceLock<Mutex<UpdateState>> = OnceLock::new();
+        STATE.get_or_init(|| Mutex::new(UpdateState::Idle))
+    }
 }
 
 /// The updater's current state, for the render path.
@@ -258,6 +390,7 @@ pub fn set(next: UpdateState) {
     if let Ok(mut state) = state().lock() {
         *state = next;
     }
+    note_change();
 }
 
 /// Numeric mirror of [`UpdateState`], shared with `updater_bootstrap.m`.
@@ -392,6 +525,7 @@ pub(crate) fn clear_test_actions() {
     CHECK_NOW.store(std::ptr::null_mut(), Ordering::Release);
     INSTALL_NOW.store(std::ptr::null_mut(), Ordering::Release);
     set(UpdateState::Idle);
+    *feedback().lock().unwrap_or_else(|error| error.into_inner()) = Feedback::default();
 }
 
 #[cfg(test)]
