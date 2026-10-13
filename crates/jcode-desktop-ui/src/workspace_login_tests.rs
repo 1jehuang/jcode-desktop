@@ -397,3 +397,38 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
     }
     assert!(commands.try_recv().is_err());
 }
+
+#[gpui::test]
+fn reset_composer_command_opens_read_only_claude_review(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx, "reset-command-source");
+    let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+    submit(vcx, "/reset usage limits claude");
+    assert!(vcx.debug_bounds("usage-reset-dialog").is_some());
+    workspace.read_with(vcx, |w, cx| {
+        let dialog = w.usage_reset.as_ref().expect("reset dialog");
+        assert_eq!(dialog.provider, crate::accounts::ResetProvider::Claude);
+        // Tests never reach the network, so the dialog stays in its read-only check.
+        assert!(matches!(dialog.stage, usage_reset::Stage::Checking));
+        // The command is local: it is neither sent as a prompt nor kept as a draft.
+        assert!(source.read(cx).items.is_empty());
+        assert!(source.read(cx).input.read(cx).content.is_empty());
+    });
+    assert!(vcx.debug_bounds("usage-reset-confirm").is_none());
+    click(vcx, "usage-reset-cancel");
+    workspace.read_with(vcx, |w, _| assert!(w.usage_reset.is_none()));
+
+    submit(vcx, "/reset openai");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(
+            w.usage_reset.as_ref().map(|dialog| dialog.provider),
+            Some(crate::accounts::ResetProvider::OpenAi)
+        );
+    });
+    // Nothing besides the initial runtime refresh reached the daemon.
+    while let Ok(command) = commands.try_recv() {
+        assert!(
+            matches!(command, Command::RefreshRuntime { .. }),
+            "/reset must stay local"
+        );
+    }
+}

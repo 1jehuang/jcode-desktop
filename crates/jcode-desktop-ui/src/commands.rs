@@ -154,6 +154,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/changelog", "Show recent changes in this build"),
     RegisteredCommand::public("/applets", "Open the applet component showcase"),
     RegisteredCommand::public("/info", "Show session info and tokens"),
+    RegisteredCommand::public(
+        "/reset",
+        "Review and confirm an OpenAI or Claude usage limit reset",
+    ),
     RegisteredCommand::public("/usage", "Show connected provider usage limits"),
     RegisteredCommand::public(
         "/productivity",
@@ -267,9 +271,77 @@ pub(crate) fn is_accounts_command(content: &str) -> bool {
     matches!(content.trim(), "/account" | "/accounts")
 }
 
+/// Target of a `/reset` command typed in the composer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResetCommand {
+    /// Bare `/reset`: the provider of the panel's current session.
+    Current,
+    OpenAi,
+    Claude,
+}
+
+/// Parse `/reset`, `/reset <provider>` and the TUI spelling
+/// `/reset usage limits <provider>`. Desktop always opens the read-only
+/// review dialog, so the TUI's `confirm` and `cancel` suffixes are accepted
+/// and only ever open that review. Nothing is spent without the dialog's button.
+pub(crate) fn reset_command(content: &str) -> Option<ResetCommand> {
+    let words: Vec<&str> = content.split_whitespace().collect();
+    let rest = match words.as_slice() {
+        ["/reset", "usage", "limits", rest @ ..] if !rest.is_empty() => rest,
+        ["/reset", "usage", ..] => return None,
+        ["/reset", rest @ ..] => rest,
+        _ => return None,
+    };
+    let (provider, suffix) = match rest {
+        [] => return Some(ResetCommand::Current),
+        [provider] => (*provider, None),
+        [provider, suffix] => (*provider, Some(*suffix)),
+        _ => return None,
+    };
+    if !matches!(suffix, None | Some("confirm" | "cancel")) {
+        return None;
+    }
+    match provider.to_ascii_lowercase().as_str() {
+        "openai" | "codex" | "chatgpt" => Some(ResetCommand::OpenAi),
+        "claude" | "anthropic" => Some(ResetCommand::Claude),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reset_command_accepts_desktop_and_tui_spellings() {
+        assert_eq!(reset_command("/reset"), Some(ResetCommand::Current));
+        assert_eq!(reset_command(" /reset claude "), Some(ResetCommand::Claude));
+        assert_eq!(reset_command("/reset Anthropic"), Some(ResetCommand::Claude));
+        assert_eq!(
+            reset_command("/reset usage limits claude"),
+            Some(ResetCommand::Claude)
+        );
+        assert_eq!(
+            reset_command("/reset usage limits claude confirm"),
+            Some(ResetCommand::Claude)
+        );
+        assert_eq!(
+            reset_command("/reset usage limits openai"),
+            Some(ResetCommand::OpenAi)
+        );
+        assert_eq!(reset_command("/reset codex"), Some(ResetCommand::OpenAi));
+        for other in [
+            "/resetting",
+            "/reset gemini",
+            "/reset claude now",
+            "/reset usage limits",
+            "/reset usage",
+            "reset claude",
+        ] {
+            assert_eq!(reset_command(other), None, "{other}");
+        }
+        assert!(registered_command("/reset").is_some());
+    }
 
     #[test]
     fn account_aliases_match_complete_commands_only() {

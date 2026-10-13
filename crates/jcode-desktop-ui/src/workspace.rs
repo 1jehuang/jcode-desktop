@@ -8697,6 +8697,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_applet_showcase))
             .on_action(cx.listener(Self::open_orchestration))
             .on_action(cx.listener(Self::open_accounts))
+            .on_action(cx.listener(Self::open_usage_reset_command))
             .on_action(cx.listener(Self::publish_desktop))
             .on_action(cx.listener(Self::open_model_window_or_picker))
             .on_action(cx.listener(Self::open_todoist))

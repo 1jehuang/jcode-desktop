@@ -922,7 +922,8 @@ impl PromptInput {
             && self.content.trim_start().starts_with('/')
             && !(self.attachments.is_empty()
                 && (crate::commands::is_resume_command(&self.content)
-                    || crate::commands::is_accounts_command(&self.content)))
+                    || crate::commands::is_accounts_command(&self.content)
+                    || crate::commands::reset_command(&self.content).is_some()))
         {
             self.attachment_notice = Some(PENDING_COMMAND_NOTICE.into());
             cx.notify();

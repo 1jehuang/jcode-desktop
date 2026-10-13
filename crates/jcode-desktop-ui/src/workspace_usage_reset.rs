@@ -149,6 +149,40 @@ fn live() -> bool {
 }
 
 impl Workspace {
+    /// `/reset` from the composer. Targets the active login of that provider
+    /// and starts the same read-only check as the accounts list pill.
+    pub(super) fn open_usage_reset_command(
+        &mut self,
+        request: &crate::ui_actions::OpenUsageReset,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // A redemption in flight keeps its dialog until the result is shown.
+        if matches!(
+            self.usage_reset.as_ref().map(|dialog| &dialog.stage),
+            Some(Stage::Redeeming(_))
+        ) {
+            return;
+        }
+        let account_label = if live() {
+            match request.provider {
+                ResetProvider::OpenAi => jcode_base::auth::codex::active_account_label(),
+                ResetProvider::Claude => jcode_base::auth::claude::active_account_label(),
+            }
+        } else {
+            None
+        };
+        let reset = BankedReset {
+            provider: request.provider,
+            account_label,
+            // Availability is unknown until the read-only check answers.
+            available_count: 0,
+            limit_reached: false,
+            next_available_at: None,
+        };
+        self.open_usage_reset(&reset, cx);
+    }
+
     /// Open the review for one login's reset and start the read-only check.
     pub(super) fn open_usage_reset(&mut self, reset: &BankedReset, cx: &mut Context<Self>) {
         let provider = reset.provider;

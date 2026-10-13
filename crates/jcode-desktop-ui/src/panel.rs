@@ -1785,6 +1785,30 @@ impl Panel {
                             );
                             return;
                         }
+                        // Usage resets open Desktop's review dialog. The daemon
+                        // never sees the command, and nothing is spent until the
+                        // dialog's confirm button.
+                        if images.is_empty()
+                            && let Some(command) = crate::commands::reset_command(&content)
+                        {
+                            let provider = match command {
+                                crate::commands::ResetCommand::OpenAi => {
+                                    crate::accounts::ResetProvider::OpenAi
+                                }
+                                crate::commands::ResetCommand::Claude => {
+                                    crate::accounts::ResetProvider::Claude
+                                }
+                                crate::commands::ResetCommand::Current => weak
+                                    .upgrade()
+                                    .map(|panel| reset_provider_for(panel.read(app)))
+                                    .unwrap_or(crate::accounts::ResetProvider::OpenAi),
+                            };
+                            _window.dispatch_action(
+                                Box::new(crate::ui_actions::OpenUsageReset { provider }),
+                                app,
+                            );
+                            return;
+                        }
                         // A draft has no runtime identity yet. The editor
                         // retains slash commands while ordinary prompts queue.
                         if let Some(panel) = weak.upgrade()
@@ -5232,6 +5256,24 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::CacheMiss(_)
         | Item::Applet(_)
         | Item::Error(_) => None,
+    }
+}
+
+/// Provider a bare `/reset` targets: Claude for Anthropic sessions, otherwise
+/// OpenAI, which matches the TUI default.
+fn reset_provider_for(panel: &Panel) -> crate::accounts::ResetProvider {
+    let is_claude = |value: Option<&str>| {
+        value.is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value.contains("anthropic") || value.contains("claude")
+        })
+    };
+    if is_claude(panel.provider.as_deref())
+        || (panel.provider.is_none() && is_claude(panel.model.as_deref()))
+    {
+        crate::accounts::ResetProvider::Claude
+    } else {
+        crate::accounts::ResetProvider::OpenAi
     }
 }
 

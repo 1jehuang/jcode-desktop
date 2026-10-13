@@ -17,6 +17,13 @@ pub(crate) struct OpenAccounts {
     pub login_command: Option<String>,
 }
 
+/// Open the read-only usage reset review for one provider, from `/reset`.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct OpenUsageReset {
+    pub provider: crate::accounts::ResetProvider,
+}
+
 /// Commit, push, release and publish Desktop from the source panel's checkout.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]
