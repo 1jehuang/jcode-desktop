@@ -4805,6 +4805,7 @@ name = "jcode-voice"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-io",
  "base64",
  "cpal",
  "futures",
@@ -4817,6 +4818,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "zbus",
 ]
 
 [[package]]

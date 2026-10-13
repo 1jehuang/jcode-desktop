@@ -2193,6 +2193,12 @@ impl Workspace {
                             })
                             .await;
                         cx.update(|cx| crate::example_prompts::set(prompts, cx));
+                        let _ = this.update(cx, |this, cx| {
+                            if this.sidebar_todo_progress != todos {
+                                this.sidebar_todo_progress = todos;
+                                cx.notify();
+                            }
+                        });
                     })
                     .detach();
                 }
@@ -2209,12 +2215,6 @@ impl Workspace {
                     }
                 }
             }
-                        let _ = this.update(cx, |this, cx| {
-                            if this.sidebar_todo_progress != todos {
-                                this.sidebar_todo_progress = todos;
-                                cx.notify();
-                            }
-                        });
             Update::SessionCreated {
                 session,
                 request_id,
@@ -10258,9 +10258,10 @@ mod tests {
             vcx.debug_bounds(format!("sidebar-pin-{row}").leak())
                 .is_none()
         );
+        // No todo progress known yet: nothing in the details line.
         assert!(
             vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
-                .is_some()
+                .is_none()
         );
         assert!(
             vcx.debug_bounds(format!("sidebar-todos-{}", 1 - row).leak())
@@ -10284,7 +10285,6 @@ mod tests {
         );
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
-        let mark = workspace.read_with(vcx, |workspace, _| {
         // Working rows no longer show a timer: the spinner already says it,
         // and the details line stays compact. Todo progress takes that spot.
         assert!(
@@ -10298,6 +10298,15 @@ mod tests {
             cx.notify();
         });
         vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
+                .is_some()
+        );
+        assert!(
+            vcx.debug_bounds(format!("sidebar-todos-{}", 1 - row).leak())
+                .is_none()
+        );
+        let mark = workspace.read_with(vcx, |workspace, _| {
             workspace
                 .daemon_running_mark("background-run")
                 .unwrap()

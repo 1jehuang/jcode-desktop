@@ -4085,9 +4085,9 @@ impl Panel {
     /// change anything. Callers drawing a frame check this first, since GPUI
     /// counts any update made while drawing as a change to the views reading it.
     pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
-            || (focused && self.finished_unseen)
         self.show_build_footer
             || self.surface_focused != focused
+            || (focused && self.finished_unseen)
             || self
                 .terminal
                 .as_ref()
@@ -4097,11 +4097,11 @@ impl Panel {
     pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.surface_focused != focused {
             self.surface_focused = focused;
+            cx.notify();
+        }
         if focused && self.finished_unseen {
             // Viewing the session reads its result.
             self.finished_unseen = false;
-            cx.notify();
-        }
             cx.notify();
         }
         if let Some(terminal) = &self.terminal {
@@ -8558,7 +8558,7 @@ mod tests {
                 Vec::new(),
                 cx,
             );
-            panel.apply(&ApiEvent::SessionStatus { session_id: "session-a".into(), status: "idle".into() }, cx);
+            panel.apply(&ApiEvent::SessionStatus { session_id: "session-a".into(), status: "idle".into(), pending_soft_interrupts: None }, cx);
             assert!(matches!(
                 panel.items.last(),
                 Some(Item::Assistant(text)) if text == "recovered response"
@@ -8576,7 +8576,7 @@ mod tests {
                 cx,
             );
             assert_eq!(panel.streaming_text, "partial", "history must not duplicate queued deltas");
-            panel.apply(&ApiEvent::SessionStatus { session_id: "session-a".into(), status: "idle".into() }, cx);
+            panel.apply(&ApiEvent::SessionStatus { session_id: "session-a".into(), status: "idle".into(), pending_soft_interrupts: None }, cx);
             assert!(matches!(panel.items.last(), Some(Item::Assistant(text)) if text == "partial response completed"));
         });
     }
