@@ -1772,6 +1772,19 @@ impl Panel {
                             );
                             return;
                         }
+                        if images.is_empty()
+                            && crate::commands::is_accounts_command(&content)
+                            && let Some(panel) = weak.upgrade()
+                        {
+                            _window.dispatch_action(
+                                Box::new(crate::ui_actions::OpenAccounts {
+                                    source: panel.entity_id(),
+                                    login_command: None,
+                                }),
+                                app,
+                            );
+                            return;
+                        }
                         // A draft has no runtime identity yet. The editor
                         // retains slash commands while ordinary prompts queue.
                         if let Some(panel) = weak.upgrade()

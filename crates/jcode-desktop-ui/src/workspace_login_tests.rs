@@ -130,6 +130,63 @@ fn login_composer_remote_provider_keeps_native_recovery(cx: &mut gpui::TestAppCo
     });
 }
 
+#[gpui::test]
+fn accounts_composer_aliases_open_and_reuse_native_picker(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx, "accounts-command-source");
+    let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
+    submit(vcx, "/account");
+    let accounts = workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 2);
+        assert!(w.slots[w.active].panel.read(cx).is_accounts_panel());
+        assert!(source.read(cx).items.is_empty());
+        assert!(source.read(cx).input.read(cx).content.is_empty());
+        w.slots[w.active].panel.clone()
+    });
+    assert!(vcx.debug_bounds("accounts-panel").is_some());
+    workspace.update_in(vcx, |w, window, cx| {
+        w.set_active(0, cx);
+        w.focus_active(window, cx);
+    });
+    submit(vcx, "/accounts");
+    workspace.read_with(vcx, |w, _| {
+        assert_eq!(w.slots.len(), 2);
+        assert_eq!(w.slots[w.active].panel, accounts);
+    });
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| assert_eq!(w.slots[w.active].panel, source));
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::RefreshRuntime { session_id }) if session_id == "accounts-command-source")
+    );
+    assert!(commands.try_recv().is_err());
+}
+
+#[gpui::test]
+fn accounts_composer_works_before_connection_in_single_panel(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx, commands) = setup(cx, "startup://draft/accounts-command");
+    workspace.update(vcx, |w, cx| {
+        w.single_panel = true;
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    submit(vcx, "/accounts");
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 1);
+        let panel = w.slots[0].panel.read(cx);
+        assert!(panel.is_pending_session());
+        assert!(panel.items.is_empty());
+        assert!(panel.input.read(cx).content.is_empty());
+    });
+    let child = accounts_child(vcx);
+    let mut child_cx = gpui::VisualTestContext::from_window(child, vcx);
+    child_cx.run_until_parked();
+    assert!(child_cx.debug_bounds("accounts-panel").is_some());
+    child_cx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    vcx.update(|_, cx| assert_eq!(cx.windows().len(), 1));
+    assert!(commands.try_recv().is_err());
+}
+
 fn accounts_child(vcx: &mut gpui::VisualTestContext) -> gpui::AnyWindowHandle {
     vcx.update(|_, cx| {
         cx.windows()

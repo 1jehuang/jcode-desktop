@@ -262,9 +262,25 @@ pub(crate) fn is_resume_command(content: &str) -> bool {
     matches!(content.trim(), "/resume" | "/sessions" | "/session")
 }
 
+/// Both account aliases open Desktop's native picker, not a runtime prompt.
+pub(crate) fn is_accounts_command(content: &str) -> bool {
+    matches!(content.trim(), "/account" | "/accounts")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn account_aliases_match_complete_commands_only() {
+        for command in ["/account", "/accounts", "  /accounts\n", "\t/account "] {
+            assert!(is_accounts_command(command));
+            assert!(registered_command(command.trim()).is_some());
+        }
+        for command in ["/accounting", "/accounts-extra", "/account foo", "account"] {
+            assert!(!is_accounts_command(command));
+        }
+    }
 
     #[test]
     fn desktop_catalog_contains_the_full_tui_command_surface() {
