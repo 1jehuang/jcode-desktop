@@ -63,6 +63,7 @@ pub(crate) fn open_panel_window_at(
             ..Default::default()
         },
         move |window, cx| {
+            crate::window_zoom::apply(window, cx);
             window.set_window_title(&format!("{} · Jcode", panel.read(cx).title));
             if activate {
                 window.activate_window();

@@ -46,6 +46,7 @@ mod ui_actions;
 mod update_notes;
 mod updates;
 mod window_caption;
+mod window_zoom;
 mod workspace;
 
 // The GPUI-free harness bridge and its transports live in their own crate so
@@ -114,6 +115,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
     terminal::bind_keys(cx);
     panel::voice::bind_keys(cx);
     panel::shortcuts::bind_keys(cx);
+    cx.bind_keys(window_zoom::bindings());
     cx.bind_keys([
         // Canonical Jcode TUI workspace bindings. On niri these are normally
         // intercepted by the compositor, so Super aliases remain below.
@@ -311,6 +313,8 @@ unsafe extern "C-unwind" fn activate(
         // setup can disrupt the first paint, so defer until the next frame.
         window.on_next_frame(|window, _| window.set_app_id(APP_ID));
         bind_workspace_keys(app);
+        window_zoom::install(app);
+        window_zoom::apply(window, app);
         app.on_action(|_: &Quit, cx| {
             // A shared single-panel host owns other people's windows. Quit
             // closes this one; the process exits after its last window.
