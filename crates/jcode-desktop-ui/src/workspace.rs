@@ -61,8 +61,6 @@ mod sidebar_projects;
 mod sidebar_selection;
 #[path = "sidebar_swarm.rs"]
 mod sidebar_swarm;
-#[path = "sidebar_working.rs"]
-mod sidebar_working;
 #[path = "sidebar_worktrees.rs"]
 mod sidebar_worktrees;
 #[path = "workspace_stream_fixture.rs"]
@@ -835,8 +833,9 @@ pub struct Workspace {
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     /// Session row under the pointer. Hovering swaps its spinner for actions.
     sidebar_hovered_session: Option<String>,
-    /// Live "working for" timers, one per session that is mid-turn.
-    sidebar_working: sidebar_working::Timers,
+    /// Persisted todo progress (completed, total) per session, refreshed in
+    /// the background with the session list. Open panels override it live.
+    sidebar_todo_progress: HashMap<String, (usize, usize)>,
     /// Breathing titles of working sidebar sessions, each its own view.
     sidebar_title_pulses: crate::pulse_text::Tickers,
     sidebar_navigation_scroll: ScrollHandle,
@@ -1138,7 +1137,7 @@ impl Workspace {
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
-            sidebar_working: Default::default(),
+            sidebar_todo_progress: Default::default(),
             sidebar_title_pulses: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
@@ -1518,7 +1517,7 @@ impl Workspace {
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
-            sidebar_working: Default::default(),
+            sidebar_todo_progress: Default::default(),
             sidebar_title_pulses: Default::default(),
             sidebar_navigation_scroll: ScrollHandle::new(),
             live_tabs: live_tabs::TabMotion::default(),
@@ -2167,10 +2166,15 @@ impl Workspace {
                 // tests must not pick up the developer's own sessions.
                 if !cfg!(test) {
                     let sessions = self.sessions.clone();
-                    cx.spawn(async move |_, cx| {
-                        let prompts = cx
+                    cx.spawn(async move |this, cx| {
+                        let (prompts, todos) = cx
                             .background_executor()
-                            .spawn(async move { crate::example_prompts::load(&sessions) })
+                            .spawn(async move {
+                                let todos = crate::harness::jcode_home()
+                                    .map(|home| crate::harness::todo_progress_in(&home, &sessions))
+                                    .unwrap_or_default();
+                                (crate::example_prompts::load(&sessions), todos)
+                            })
                             .await;
                         cx.update(|cx| crate::example_prompts::set(prompts, cx));
                     })
@@ -2189,6 +2193,12 @@ impl Workspace {
                     }
                 }
             }
+                        let _ = this.update(cx, |this, cx| {
+                            if this.sidebar_todo_progress != todos {
+                                this.sidebar_todo_progress = todos;
+                                cx.notify();
+                            }
+                        });
             Update::SessionCreated {
                 session,
                 request_id,
@@ -5382,7 +5392,6 @@ impl Workspace {
                     .cloned(),
             )
             .collect::<HashSet<_>>();
-        self.sidebar_working.sync(&working, cx);
         self.sidebar_title_pulses.retain(|id| working.contains(id));
         let open_titles = self
             .slots
@@ -5398,6 +5407,14 @@ impl Workspace {
         // within each section.
         // Live panels are authoritative, including sessions still waiting for
         // creation/catalog acknowledgement. Never wait for a server refresh to
+        let open_todos = self
+            .slots
+            .iter()
+            .map(|slot| {
+                let panel = slot.panel.read(cx);
+                (panel.session_id.clone(), panel.latest_todo_progress())
+            })
+            .collect::<HashMap<_, _>>();
         // make a newly opened neighbor reachable in the sidebar.
         let mut catalog = self.sessions.clone();
         let mut known = catalog
@@ -5976,14 +5993,14 @@ impl Workspace {
                             #[cfg(test)]
                             tests::SIDEBAR_TITLE_RENDERS.with(|count| count.set(count.get() + 1));
                             let directory = row.subdirectory.clone();
-                            // While a session works, its age gives way to a live
-                            // "working for" timer for the current turn.
-                            let working_timer = this.sidebar_working.get(&session.session_id);
-                            let meta = if working_timer.is_some() {
-                                sidebar_session_tokens(session)
-                            } else {
-                                sidebar_session_meta(session)
-                            };
+                            // Todo progress leads the details line: live from an
+                            // open panel, otherwise from the persisted snapshot.
+                            let todo_progress = open_todos
+                                .get(&session.session_id)
+                                .copied()
+                                .flatten()
+                                .or_else(|| this.sidebar_todo_progress.get(&session.session_id).copied());
+                            let meta = sidebar_session_meta(session);
                             let edits = session.edit_stats.as_ref().map(|stats| {
                                 sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
                             });
@@ -6257,7 +6274,7 @@ impl Workspace {
                                                 )
                                             })
                                     )
-                                    .when(details.is_some() || edits.is_some() || working_timer.is_some(), |row| {
+                                    .when(details.is_some() || edits.is_some() || todo_progress.is_some(), |row| {
                                         row.child(
                                             div()
                                                 .pl(px(20.0))
@@ -6274,14 +6291,15 @@ impl Workspace {
                                                         .flex()
                                                         .overflow_hidden()
                                                         .whitespace_nowrap()
-                                                        .when_some(working_timer, |line, timer| line.child(
+                                                        .when_some(todo_progress, |line, (done, total)| line.child(
                                                             div()
                                                                 .flex_none()
-                                                                .debug_selector(move || format!("sidebar-working-{sidebar_index}"))
+                                                                .debug_selector(move || format!("sidebar-todos-{sidebar_index}"))
                                                                 .when(details.is_some(), |el| el.mr_1())
-                                                                .child(timer),
+                                                                .when(done == total, |el| el.text_color(Theme::global().OK))
+                                                                .child(format!("{done}/{total}")),
                                                         ))
-                                                        .when_some(details.map(|d| if working { format!("· {d}") } else { d }), |line, details| {
+                                                        .when_some(details.map(|d| if todo_progress.is_some() { format!("· {d}") } else { d }), |line, details| {
                                                             line.child(div().min_w_0().truncate().child(details))
                                                         }),
                                                 )
@@ -9250,14 +9268,6 @@ fn sidebar_title_pulse(phase: f32) -> f32 {
     0.75 + 0.25 * (phase * std::f32::consts::TAU).cos()
 }
 
-/// Estimated token count alone, for rows whose age is replaced by a timer.
-fn sidebar_session_tokens(session: &jcode_sdk::SessionInfo) -> Option<String> {
-    session
-        .transcript_bytes
-        .filter(|bytes| *bytes > 0)
-        .map(|bytes| format_estimated_tokens(bytes / 4))
-}
-
 /// The TUI picker's per-session metadata line, from the fields the desktop
 /// API actually carries: `12m ago · ~4.2k tok`.
 fn sidebar_session_meta(session: &jcode_sdk::SessionInfo) -> Option<String> {
@@ -10222,11 +10232,11 @@ mod tests {
                 .is_none()
         );
         assert!(
-            vcx.debug_bounds(format!("sidebar-working-{row}").leak())
+            vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
                 .is_some()
         );
         assert!(
-            vcx.debug_bounds(format!("sidebar-working-{}", 1 - row).leak())
+            vcx.debug_bounds(format!("sidebar-todos-{}", 1 - row).leak())
                 .is_none()
         );
         assert!(title.right() <= spin_bounds.left());
@@ -10248,6 +10258,19 @@ mod tests {
         vcx.run_until_parked();
         assert!(vcx.debug_bounds(spinner(row).leak()).is_some());
         let mark = workspace.read_with(vcx, |workspace, _| {
+        // Working rows no longer show a timer: the spinner already says it,
+        // and the details line stays compact. Todo progress takes that spot.
+        assert!(
+            vcx.debug_bounds(format!("sidebar-todos-{row}").leak())
+                .is_none()
+        );
+        workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_todo_progress
+                .insert("background-run".into(), (2, 5));
+            cx.notify();
+        });
+        vcx.run_until_parked();
             workspace
                 .daemon_running_mark("background-run")
                 .unwrap()

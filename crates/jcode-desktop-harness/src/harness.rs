@@ -1095,6 +1095,29 @@ pub fn unfinished_sessions_in(home: &Path, sessions: &[SessionInfo]) -> Vec<Unfi
         .collect()
 }
 
+/// Completed and total todos per local session, from durable todo snapshots.
+/// Sessions without todos are omitted. Cheap enough for a background refresh.
+pub fn todo_progress_in(home: &Path, sessions: &[SessionInfo]) -> HashMap<String, (usize, usize)> {
+    let todos_dir = home.join("todos");
+    sessions
+        .iter()
+        .filter(|session| !remote::is_remote(&session.session_id))
+        .filter_map(|session| {
+            let todos: Vec<PersistedTodoTitleItem> =
+                std::fs::read(todos_dir.join(format!("{}.json", session.session_id)))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice(&bytes).ok())?;
+            (!todos.is_empty()).then(|| {
+                let done = todos
+                    .iter()
+                    .filter(|todo| todo.status.eq_ignore_ascii_case("completed"))
+                    .count();
+                (session.session_id.clone(), (done, todos.len()))
+            })
+        })
+        .collect()
+}
+
 /// One session a live process owns, for the orchestration panel. Built from
 /// presence markers and durable todo snapshots only, never from a transcript.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2531,6 +2554,28 @@ mod remote_tests;
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn todo_progress_counts_completed_over_total() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("todos")).unwrap();
+        std::fs::write(
+            home.path().join("todos/with.json"),
+            r#"[{"content":"a","status":"completed"},{"content":"b","status":"in_progress"},{"content":"c","status":"pending"}]"#,
+        )
+        .unwrap();
+        std::fs::write(home.path().join("todos/empty.json"), "[]").unwrap();
+        let session = |id: &str| {
+            serde_json::from_value::<SessionInfo>(serde_json::json!({"session_id": id, "status": "idle"}))
+                .unwrap()
+        };
+        let progress = todo_progress_in(
+            home.path(),
+            &[session("with"), session("empty"), session("missing")],
+        );
+        assert_eq!(progress.len(), 1);
+        assert_eq!(progress.get("with"), Some(&(1, 3)));
+    }
 
     #[test]
     fn unknown_session_reconnects_back_off_to_the_cap() {
