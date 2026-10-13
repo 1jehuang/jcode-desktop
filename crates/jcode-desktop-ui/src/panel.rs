@@ -456,6 +456,8 @@ pub struct Panel {
     activity_spinner: Entity<activity::Spinner>,
     latest_activity_spinner: Entity<activity::Spinner>,
     tab_outline: Entity<tab_outline::TabOutline>,
+    /// The last turn finished while this session was out of view.
+    finished_unseen: bool,
     sidebar_spinner: Entity<activity::Spinner>,
     /// Selected workspace surface, independent of temporary keyboard focus.
     surface_focused: bool,
@@ -706,20 +708,14 @@ impl Panel {
         self.session_id == Self::CHANGELOG_SESSION_ID
     }
 
-    /// State ring painted over the tab outline. The session emoji stays still.
+    /// Activity painted over the tab. The session emoji stays still.
     pub(crate) fn tab_ring(&self) -> Option<TabRing> {
         // Only a live turn animates. `minimap_state` treats any non-idle
-        // status as work, which would ring merely connected sessions.
+        // status as work, which would mark merely connected sessions.
         let state = match self.minimap_state() {
             MinimapSessionState::Error => MinimapSessionState::Error,
             _ if self.activity_active() => MinimapSessionState::Working,
-            MinimapSessionState::Complete => MinimapSessionState::Complete,
-            _ if self
-                .latest_todo_progress()
-                .is_some_and(|(done, total)| total > 0 && done == total) =>
-            {
-                MinimapSessionState::Complete
-            }
+            _ if self.finished_unseen => MinimapSessionState::Complete,
             _ => MinimapSessionState::Idle,
         };
         TabRing::resolve(state, self.latest_todo_progress())
@@ -894,17 +890,16 @@ impl Panel {
             );
         let usage_fixture =
             crate::harness::screenshot_mode() && fixture.as_deref() == Some("tokens");
-        let activity_status =
-            if crate::harness::screenshot_mode() && session_id == "screenshot-fixture" {
-                match std::env::var("JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT").as_deref() {
-                    Ok("orb-working") => "running",
-                    Ok("orb-thinking") => "thinking",
-                    Ok("orb-tools") => "running_tools",
-                    _ => "idle",
-                }
-            } else {
-                "idle"
-            };
+        let activity_status = if crate::harness::screenshot_mode() {
+            match fixture.as_deref() {
+                Some("orb-working" | "orb-todos") => "running",
+                Some("orb-thinking") => "thinking",
+                Some("orb-tools") => "running_tools",
+                _ => "idle",
+            }
+        } else {
+            "idle"
+        };
         let activity_owner = cx.entity();
         Self {
             session_id,
@@ -937,6 +932,9 @@ impl Panel {
             latest_activity_spinner: cx
                 .new(|cx| activity::Spinner::for_panel(activity_owner.clone(), cx)),
             tab_outline: cx.new(|cx| tab_outline::TabOutline::new(activity_owner.clone(), cx)),
+            // The completed-plan fixture shows a turn that finished unseen.
+            finished_unseen: crate::harness::screenshot_mode()
+                && fixture.as_deref() == Some("todos-completed"),
             sidebar_spinner: cx
                 .new(|cx| activity::Spinner::for_sidebar(activity_owner.clone(), cx)),
             surface_focused: true,
@@ -2632,6 +2630,30 @@ impl Panel {
         if self.is_side_document() {
             return;
         }
+        let was_active = self.activity_active();
+        self.apply_event(event, cx);
+        self.note_turn_transition(was_active, cx);
+    }
+
+    /// A turn that finishes out of view leaves a green "done" glow on its
+    /// tab until the session is seen. A new turn clears it right away.
+    fn note_turn_transition(&mut self, was_active: bool, cx: &mut Context<Self>) {
+        let active = self.activity_active();
+        let finished_unseen = match (was_active, active) {
+            (false, true) => false,
+            (true, false) => {
+                !self.surface_focused
+                    && self.minimap_state() != MinimapSessionState::Error
+            }
+            _ => return,
+        };
+        if self.finished_unseen != finished_unseen {
+            self.finished_unseen = finished_unseen;
+            cx.notify();
+        }
+    }
+
+    fn apply_event(&mut self, event: &ApiEvent, cx: &mut Context<Self>) {
         if matches!(
             event,
             ApiEvent::TextDelta { .. }
@@ -4050,6 +4072,7 @@ impl Panel {
     /// change anything. Callers drawing a frame check this first, since GPUI
     /// counts any update made while drawing as a change to the views reading it.
     pub(crate) fn needs_surface_update(&self, focused: bool, cx: &App) -> bool {
+            || (focused && self.finished_unseen)
         self.show_build_footer
             || self.surface_focused != focused
             || self
@@ -4061,6 +4084,11 @@ impl Panel {
     pub(crate) fn set_surface_focused(&mut self, focused: bool, cx: &mut Context<Self>) {
         if self.surface_focused != focused {
             self.surface_focused = focused;
+        if focused && self.finished_unseen {
+            // Viewing the session reads its result.
+            self.finished_unseen = false;
+            cx.notify();
+        }
             cx.notify();
         }
         if let Some(terminal) = &self.terminal {
@@ -6218,6 +6246,49 @@ mod tests {
             old.upgrade().is_none(),
             "hot reload must release the old workspace and its background tasks"
         );
+    }
+
+    #[gpui::test]
+    fn tab_glows_done_until_seen_and_clears_on_a_new_turn(cx: &mut gpui::TestAppContext) {
+        use super::tab_outline::TabMode;
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("tab-focused", cx);
+            workspace.push_test_panel("tab-done", cx);
+            workspace
+        });
+        let panel = workspace
+            .read_with(vcx, |workspace, _| workspace.test_panel(1))
+            .expect("panel exists");
+        let status = |status: &str| ApiEvent::SessionStatus {
+            session_id: "tab-done".into(),
+            status: status.into(),
+            pending_soft_interrupts: None,
+        };
+        let mode = |vcx: &mut gpui::VisualTestContext| {
+            panel.read_with(vcx, |panel, _| panel.tab_ring().map(|ring| ring.mode))
+        };
+        // Panel 1 sits beside the selected panel, out of view.
+        panel.update(vcx, |panel, cx| panel.apply(&status("running"), cx));
+        assert_eq!(mode(vcx), Some(TabMode::Working));
+        panel.update(vcx, |panel, cx| panel.apply(&status("idle"), cx));
+        assert_eq!(mode(vcx), Some(TabMode::Done), "finished out of view");
+        // A new turn replaces the glow with the working fill.
+        panel.update(vcx, |panel, cx| panel.apply(&status("running"), cx));
+        assert_eq!(mode(vcx), Some(TabMode::Working));
+        panel.update(vcx, |panel, cx| panel.apply(&status("idle"), cx));
+        assert_eq!(mode(vcx), Some(TabMode::Done));
+        // Viewing the session reads it.
+        panel.update(vcx, |panel, cx| panel.set_surface_focused(true, cx));
+        assert_eq!(mode(vcx), None);
+        // A turn that finishes while watched never glows.
+        panel.update(vcx, |panel, cx| {
+            panel.set_surface_focused(true, cx);
+            panel.apply(&status("running"), cx);
+            panel.apply(&status("idle"), cx);
+        });
+        assert_eq!(mode(vcx), None);
     }
 
     #[gpui::test]
@@ -9231,6 +9302,33 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
                 percent: None,
                 done: true,
             },
+        ];
+    }
+    if crate::harness::screenshot_mode() && fixture.as_deref() == Some("orb-todos") {
+        // A live turn partway through its plan, for the tab progress fill.
+        return vec![
+            Item::User("Ship the tab activity redesign".into()),
+            Item::Todos(TodoCardPayload {
+                todos: [
+                    ("Replace the orbiting comet", "completed"),
+                    ("Fill the tab with todo progress", "completed"),
+                    ("Glow green when done", "in_progress"),
+                    ("Clear the glow once seen", "pending"),
+                    ("Rebuild and reload", "pending"),
+                ]
+                .into_iter()
+                .map(|(content, status)| TodoCardItem {
+                    content: content.into(),
+                    status: status.into(),
+                    group: None,
+                    blocked_by: vec![],
+                    confidence: None,
+                    completion_confidence: None,
+                })
+                .collect(),
+                plan: TodoCardPlan::default(),
+                goals: Vec::new(),
+            }),
         ];
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("todos-completed") {
