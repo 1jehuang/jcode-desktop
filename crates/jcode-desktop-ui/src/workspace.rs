@@ -106,6 +106,8 @@ mod fps_header_tests;
 mod hidden_animation_tests;
 #[path = "workspace_map_motion.rs"]
 mod map_motion;
+#[path = "workspace_scroll_snap.rs"]
+mod scroll_snap;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
@@ -852,6 +854,8 @@ pub struct Workspace {
     /// When the last precise delta of any axis arrived, so a stale gesture
     /// can be ended by silence when no Ended phase is delivered.
     gesture_seen: Option<Instant>,
+    /// Settles horizontal strip pans onto the nearest panel edge.
+    scroll_snap: scroll_snap::ScrollSnap,
     /// Saving a preference rather than opening a new session.
     folder_picker_sets_default: bool,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
@@ -1146,6 +1150,7 @@ impl Workspace {
             gesture_last: None,
             gesture: StripGesture::default(),
             gesture_seen: None,
+            scroll_snap: Default::default(),
             folder_picker_sets_default: false,
             folder_picker_dir: None,
             folder_picker_error: None,
@@ -1526,6 +1531,7 @@ impl Workspace {
             gesture_last: None,
             gesture: StripGesture::default(),
             gesture_seen: None,
+            scroll_snap: Default::default(),
             folder_picker_sets_default: false,
             folder_picker_dir: None,
             folder_picker_error: None,
@@ -4853,12 +4859,20 @@ impl Workspace {
             // vertical ones stay with the panel under the pointer.
             if dx != 0.0 {
                 self.pan_strip(row, dx, total_width, viewport_w, false, window, cx);
+                self.note_strip_pan(row, -dx, false, viewport_w, window, cx);
                 cx.notify();
             }
             return false;
         }
+        let lifted = event.touch_phase == gpui::TouchPhase::Ended;
         match self.gesture.feed(dx, dy, event.touch_phase) {
-            Routed::ToPanel => false,
+            Routed::ToPanel => {
+                if lifted {
+                    // Settle a pan whose lock was released before lifting.
+                    self.note_strip_pan(row, 0.0, true, viewport_w, window, cx);
+                }
+                false
+            }
             Routed::Strip {
                 dx,
                 switch,
@@ -4871,6 +4885,9 @@ impl Workspace {
                 }
                 if dx != 0.0 {
                     self.pan_strip(row, dx, total_width, viewport_w, true, window, cx);
+                }
+                if dx != 0.0 || lifted {
+                    self.note_strip_pan(row, -dx, lifted, viewport_w, window, cx);
                 }
                 if switch != 0 {
                     // The vertical pull broke the sticky axis: hop to the

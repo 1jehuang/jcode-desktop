@@ -78,6 +78,8 @@ pub struct WorkspaceConfig {
     /// Show the Jcode account email in the sidebar. Off so a shared or
     /// streamed screen never leaks it.
     pub show_account_email: bool,
+    /// Settle horizontal strip scrolling onto the nearest panel edge.
+    pub snap_scroll: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -129,6 +131,7 @@ impl Default for WorkspaceConfig {
             // without continuously competing with UI work.
             session_refresh_seconds: 60,
             show_account_email: false,
+            snap_scroll: true,
         }
     }
 }
