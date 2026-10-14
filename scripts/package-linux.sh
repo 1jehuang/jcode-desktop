@@ -18,8 +18,24 @@ DEBROOT="$OUT/deb-root"
 for command in cargo tar dpkg-deb install python3 sha256sum; do command -v "$command" >/dev/null || { echo "error: missing $command" >&2; exit 1; }; done
 [[ -f "$JCODE_REPO/Cargo.toml" ]] || { echo "error: set JCODE_REPO to a Jcode checkout" >&2; exit 1; }
 
+BUILD_BACKEND="${LINUX_BUILD_BACKEND:-local}"
+case "$BUILD_BACKEND" in
+  local) ;;
+  hosted)
+    [[ "$TARGET" == x86_64-unknown-linux-gnu && "$(uname -s)" == Linux && "$(uname -m)" == x86_64 ]] || {
+      echo "error: hosted release builds currently require native x86_64 Linux" >&2; exit 1;
+    }
+    [[ "${SKIP_BUILD:-0}" != 1 ]] || {
+      echo "error: hosted builds cannot use SKIP_BUILD (artifact provenance required)" >&2; exit 1;
+    }
+    ;;
+  *) echo "error: invalid LINUX_BUILD_BACKEND: $BUILD_BACKEND (local or hosted)" >&2; exit 1 ;;
+esac
+
 export JCODE_DESKTOP_VERSION="$VERSION"
-if [[ "${SKIP_BUILD:-0}" != 1 ]]; then
+if [[ "$BUILD_BACKEND" == hosted ]]; then
+  "$ROOT/scripts/build-linux-hosted.sh" "$JCODE_REPO"
+elif [[ "${SKIP_BUILD:-0}" != 1 ]]; then
   cargo build --manifest-path "$ROOT/Cargo.toml" --release --target "$TARGET" --bin jcode-desktop
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$TARGET" --bin jcode
   cargo build --manifest-path "$JCODE_REPO/Cargo.toml" --release --target "$TARGET" --package jcode-harness-api-server --bin jcode-harness-api-bridge

@@ -1,0 +1,237 @@
+name: Validate hosted Linux release compilation
+
+# Deliberately manual and nonpublishing until full package acceptance is proven.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version for validation only
+        required: true
+      justrust_revision:
+        description: Reviewed full justrust commit with strict remote release artifact support
+        required: true
+      jcode_revision:
+        description: Reviewed full Jcode runtime commit with metadata snapshot rerun support
+        required: true
+        default: af0dff74f2342245df43d2aa2ba6620a75669414
+      rust_version:
+        description: Exact stable Rust version installed on the hosted fleet (major.minor.patch)
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-hosted-linux-validation
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Require explicit credentials and pinned source/compiler inputs
+        env:
+          JCODE_API_KEY: ${{ secrets.JCODE_API_KEY }}
+          JUSTRUST_REVISION: ${{ inputs.justrust_revision }}
+          JCODE_REVISION: ${{ inputs.jcode_revision }}
+          RUST_VERSION: ${{ inputs.rust_version }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$JCODE_API_KEY" ]] || { echo 'Configure JCODE_API_KEY for hosted validation. No release token fallback.' >&2; exit 1; }
+          [[ "$JUSTRUST_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$JCODE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$RUST_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]
+      - name: Check out reviewed Desktop main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: jcode-desktop
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check out pinned runtime
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: ${{ inputs.jcode_revision }}
+          path: jcode
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+      - name: Check out pinned hosted compiler client
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/justrust
+          ref: ${{ inputs.justrust_revision }}
+          path: justrust
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        with:
+          toolchain: ${{ inputs.rust_version }}
+          targets: x86_64-unknown-linux-gnu
+      - name: Install compiler transport and native package/smoke dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zstd rsync \
+            libasound2-dev libfontconfig-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libgl1-mesa-dri \
+            mesa-vulkan-drivers openbox wayland-utils weston x11-utils xvfb
+      - name: Bootstrap pinned justrust
+        env:
+          RUSTUP_TOOLCHAIN: ${{ inputs.rust_version }}
+          JUSTRUST_REVISION: ${{ inputs.justrust_revision }}
+          JCODE_REVISION: ${{ inputs.jcode_revision }}
+        run: |
+          set -euo pipefail
+          test "$(git -C justrust rev-parse HEAD)" = "$JUSTRUST_REVISION"
+          test "$(git -C jcode rev-parse HEAD)" = "$JCODE_REVISION"
+          cargo install --path justrust --locked --root "$RUNNER_TEMP/justrust"
+          echo "$RUNNER_TEMP/justrust/bin" >> "$GITHUB_PATH"
+      - name: Test hosted packaging contracts
+        run: python3 -m unittest discover -s jcode-desktop/tests -p test_package_linux_hosted.py -v
+      - name: Compile on hosted and package locally
+        env:
+          JCODE_API_KEY: ${{ secrets.JCODE_API_KEY }}
+          RUSTUP_TOOLCHAIN: ${{ inputs.rust_version }}
+          LINUX_BUILD_BACKEND: hosted
+          VERSION: ${{ inputs.version }}
+          TARGET: x86_64-unknown-linux-gnu
+          JCODE_REPO: ${{ github.workspace }}/jcode
+        run: jcode-desktop/scripts/package-linux.sh
+      - name: Verify local Linux packages and checksums
+        run: |
+          python3 jcode-desktop/scripts/verify-release-package.py --target x86_64-unknown-linux-gnu jcode-desktop/dist/linux/*.tar.gz
+          python3 jcode-desktop/scripts/verify-release-package.py --target x86_64-unknown-linux-gnu jcode-desktop/dist/linux/*.deb
+          dpkg-deb --info jcode-desktop/dist/linux/*.deb
+          dpkg-deb --contents jcode-desktop/dist/linux/*.deb
+          (cd jcode-desktop/dist/linux && sha256sum -c SHA256SUMS-linux)
+      - name: Smoke-test Linux package on X11
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find jcode-desktop/dist/linux -type f -name jcode-desktop | head -1)
+          cli=$(dirname "$app")/jcode
+          "$cli" --version
+          smoke="$RUNNER_TEMP/jcode-linux-smoke/x11"
+          runtime="$smoke/runtime"
+          home="$smoke/home"
+          mkdir -p "$runtime" "$home"
+          chmod 700 "$runtime"
+          timeout 25s xvfb-run -a -s '-screen 0 1280x800x24' bash -c '
+            set -euo pipefail
+            app=$1; runtime=$2; home=$3; smoke=$4
+            openbox >"$smoke/openbox.log" 2>&1 &
+            openbox_pid=$!
+            trap '\''kill "$openbox_pid" 2>/dev/null || true'\'' EXIT
+            for _ in {1..50}; do
+              xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1 && break
+              sleep 0.1
+            done
+            xprop -root _NET_SUPPORTING_WM_CHECK >/dev/null
+            env -u WAYLAND_DISPLAY XDG_RUNTIME_DIR="$runtime" HOME="$home" \
+              LIBGL_ALWAYS_SOFTWARE=1 WGPU_BACKEND=vulkan \
+              "$app" >"$smoke/app.log" 2>&1 &
+            pid=$!
+            sleep 8
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || status=$?
+              echo "X11 app exited before smoke completed (status ${status:-0})" >&2
+              exit 1
+            fi
+            kill "$pid"
+            wait "$pid" || true
+          ' bash "$app" "$runtime" "$home" "$smoke"
+      - name: Smoke-test Linux package on native Wayland
+        shell: bash
+        run: |
+          set -euo pipefail
+          app=$(find jcode-desktop/dist/linux -type f -name jcode-desktop | head -1)
+          smoke="$RUNNER_TEMP/jcode-linux-smoke/wayland"
+          runtime="$smoke/runtime"
+          home="$smoke/home"
+          mkdir -p "$runtime" "$home"
+          chmod 700 "$runtime"
+          # Weston's headless backend has no wl_seat, which GPUI requires.
+          # Nest Weston in Xvfb to expose a virtual seat, then remove DISPLAY
+          # from the app so the tested client path is still native Wayland.
+          timeout 30s xvfb-run -a -s '-screen 0 1280x800x24' bash -c '
+            set -euo pipefail
+            app=$1; runtime=$2; home=$3; smoke=$4
+            openbox >"$smoke/openbox.log" 2>&1 &
+            openbox_pid=$!
+            XDG_RUNTIME_DIR="$runtime" LIBGL_ALWAYS_SOFTWARE=1 \
+              weston --backend=x11-backend.so --use-pixman \
+                --socket=jcode-ci-wayland --idle-time=0 >"$smoke/weston.log" 2>&1 &
+            weston_pid=$!
+            trap '\''kill "$weston_pid" "$openbox_pid" 2>/dev/null || true'\'' EXIT
+            ready=0
+            for _ in {1..100}; do
+              if [[ -S "$runtime/jcode-ci-wayland" ]] && \
+                 XDG_RUNTIME_DIR="$runtime" WAYLAND_DISPLAY=jcode-ci-wayland \
+                   timeout 2s wayland-info >"$smoke/registry.log" 2>&1 && \
+                 grep -q wl_seat "$smoke/registry.log"; then
+                ready=1
+                break
+              fi
+              kill -0 "$weston_pid" 2>/dev/null || break
+              sleep 0.1
+            done
+            [[ "$ready" == 1 ]]
+            env -u DISPLAY XDG_RUNTIME_DIR="$runtime" HOME="$home" \
+              WAYLAND_DISPLAY=jcode-ci-wayland LIBGL_ALWAYS_SOFTWARE=1 \
+              WGPU_BACKEND=vulkan "$app" >"$smoke/app.log" 2>&1 &
+            pid=$!
+            sleep 8
+            if ! kill -0 "$pid" 2>/dev/null; then
+              wait "$pid" || status=$?
+              echo "Wayland app exited before smoke completed (status ${status:-0})" >&2
+              exit 1
+            fi
+            kill "$pid"
+            wait "$pid" || true
+          ' bash "$app" "$runtime" "$home" "$smoke"
+      - name: Print Linux smoke diagnostics
+        if: always()
+        shell: bash
+        run: |
+          shopt -s nullglob globstar
+          for file in "$RUNNER_TEMP"/jcode-linux-smoke/**/*.log; do
+            echo "===== $file ====="
+            cat "$file"
+          done
+          for file in "$RUNNER_TEMP"/jcode-linux-smoke/*/home/.local/state/jcode-desktop/*.log; do
+            echo "===== $file ====="
+            cat "$file"
+          done
+      - name: Upload Linux smoke diagnostics
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: linux-smoke-diagnostics-x86_64
+          if-no-files-found: warn
+          include-hidden-files: true
+          retention-days: 7
+          path: ${{ runner.temp }}/jcode-linux-smoke
+      - name: Preserve successful validation packages (never publish)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-linux-x86_64-validation
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            jcode-desktop/dist/linux/Jcode-*.tar.gz
+            jcode-desktop/dist/linux/Jcode-*.deb
+            jcode-desktop/dist/linux/SHA256SUMS-linux
+      - name: Preserve hosted execution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hosted-linux-build-evidence
+          if-no-files-found: warn
+          retention-days: 7
+          path: jcode-desktop/target/hosted-release-evidence/*.json

@@ -19,7 +19,33 @@ fn main() {
         env::var("CARGO_PKG_VERSION").expect("Cargo package version is missing")
     });
     let explicit = env::var("JCODE_DESKTOP_VERSION").ok();
-    let metadata = build_version::resolve(&root, &base, explicit.as_deref());
+    println!("cargo:rerun-if-env-changed=JCODE_DESKTOP_BUILD_METADATA");
+    let snapshot = match env::var("JCODE_DESKTOP_BUILD_METADATA").as_deref() {
+        Ok("1") => {
+            assert!(
+                explicit.is_some(),
+                "release metadata requires JCODE_DESKTOP_VERSION"
+            );
+            for name in ["hash", "status", "subjects", "history"] {
+                println!(
+                    "cargo:rerun-if-changed={}",
+                    root.join(format!(".jcode-release-metadata/{name}.txt"))
+                        .display()
+                );
+            }
+            Some(
+                build_version::ReleaseSnapshot::load(&root)
+                    .expect("invalid release metadata snapshot"),
+            )
+        }
+        Err(env::VarError::NotPresent) | Ok("0") => None,
+        _ => panic!("JCODE_DESKTOP_BUILD_METADATA must be 0 or 1"),
+    };
+    let mut metadata = build_version::resolve(&root, &base, explicit.as_deref());
+    if let Some(snapshot) = &snapshot {
+        metadata.git_hash = snapshot.hash.clone();
+        metadata.git_dirty = false;
+    }
     let version = &metadata.version;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -64,7 +90,7 @@ fn main() {
             .unwrap_or_else(|| now.as_millis().to_string())
     });
     println!("cargo:rustc-env=JCODE_DESKTOP_BUILD_ID={build_id}");
-    generate_changelog(version, &build_id);
+    generate_changelog(version, &build_id, snapshot.as_ref());
 }
 
 // Git is consulted only by Cargo, never by the running desktop application.
@@ -82,7 +108,11 @@ fn git(root: &Path, args: &[&str]) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn generate_changelog(version: &str, build_id: &str) {
+fn generate_changelog(
+    version: &str,
+    build_id: &str,
+    snapshot: Option<&build_version::ReleaseSnapshot>,
+) {
     let manifest = env::var_os("CARGO_MANIFEST_DIR").expect("missing manifest directory");
     let root = Path::new(&manifest).join("../..");
     for path in [
@@ -114,7 +144,10 @@ fn generate_changelog(version: &str, build_id: &str) {
         .expect("root CHANGELOG.md must be available for offline release notes");
     let mut notes = format!("# Jcode Desktop v{version}\n\nBuild `{build_id}`\n\n{curated}");
     notes.push_str("\n## Recent commits\n\nBuild-time history, not a complete list of changes since your last update.\n\n");
-    match git(&root, &["log", "-8", "--format=%s"]) {
+    match snapshot
+        .map(|s| s.subjects.clone())
+        .or_else(|| git(&root, &["log", "-8", "--format=%s"]))
+    {
         Some(log) if !log.trim().is_empty() => {
             for subject in log.lines() {
                 notes.push_str(&format!("- {}\n", escape_markdown(subject)));
@@ -126,16 +159,18 @@ fn generate_changelog(version: &str, build_id: &str) {
     let mut debug = String::from(
         "\n## Development build snapshot\n\nUncommitted paths captured at build time, not release guarantees.\n\n### Uncommitted files\n\n",
     );
-    match git(
-        &root,
-        &[
-            "-c",
-            "core.quotePath=true",
-            "status",
-            "--short",
-            "--untracked-files=normal",
-        ],
-    ) {
+    match snapshot.map(|_| String::new()).or_else(|| {
+        git(
+            &root,
+            &[
+                "-c",
+                "core.quotePath=true",
+                "status",
+                "--short",
+                "--untracked-files=normal",
+            ],
+        )
+    }) {
         Some(status) if status.trim().is_empty() => debug.push_str("Working tree was clean.\n"),
         Some(status) => {
             let lines: Vec<_> = status.lines().collect();
@@ -155,25 +190,29 @@ fn generate_changelog(version: &str, build_id: &str) {
     let out = env::var_os("OUT_DIR").expect("missing output directory");
     // Match the TUI's newest-first, version-boundary history. Keep this
     // structured so the UI can distinguish unseen updates from all releases.
-    let history = Command::new("git")
-        .arg("--no-optional-locks")
-        .arg("-C")
-        .arg(&root)
-        .env("TZ", "UTC")
-        .args([
-            "log",
-            "--first-parent",
-            "--decorate=short",
-            "--decorate-refs=refs/tags/*",
-            "-120",
-            "--date=format-local:%Y-%m-%d %H:%M UTC",
-            "--format=%H%x1e%D%x1e%cd%x1e%s%x1f",
-        ])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| output.stdout)
-        .unwrap_or_default();
+    let history = snapshot
+        .map(|s| s.history.clone().into_bytes())
+        .unwrap_or_else(|| {
+            Command::new("git")
+                .arg("--no-optional-locks")
+                .arg("-C")
+                .arg(&root)
+                .env("TZ", "UTC")
+                .args([
+                    "log",
+                    "--first-parent",
+                    "--decorate=short",
+                    "--decorate-refs=refs/tags/*",
+                    "-120",
+                    "--date=format-local:%Y-%m-%d %H:%M UTC",
+                    "--format=%H%x1e%D%x1e%cd%x1e%s%x1f",
+                ])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .map(|output| output.stdout)
+                .unwrap_or_default()
+        });
     fs::write(Path::new(&out).join("update-history.txt"), history)
         .expect("write embedded update history");
     fs::write(Path::new(&out).join("changelog.md"), notes).expect("write embedded changelog");

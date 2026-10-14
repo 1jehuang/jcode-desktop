@@ -25,6 +25,42 @@ pub fn root_package_version(root: &Path) -> Option<String> {
     None
 }
 
+/// Credential-free Git snapshot generated locally before hosted compilation.
+/// The fixed source-relative directory travels with sources, never `.git`.
+#[derive(Debug)]
+pub struct ReleaseSnapshot {
+    pub hash: String,
+    pub subjects: String,
+    pub history: String,
+}
+
+impl ReleaseSnapshot {
+    pub fn load(root: &Path) -> Result<Self, String> {
+        let directory = root.join(".jcode-release-metadata");
+        let read = |name: &str| {
+            std::fs::read_to_string(directory.join(format!("{name}.txt")))
+                .map_err(|error| format!("read release metadata {name}: {error}"))
+        };
+        let hash = read("hash")?.trim().to_owned();
+        if hash.len() != 40 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err("release metadata hash must be a full Git SHA-1".into());
+        }
+        if !read("status")?.trim().is_empty() {
+            return Err("release metadata requires a clean source checkout".into());
+        }
+        let subjects = read("subjects")?;
+        let history = read("history")?;
+        if subjects.trim().is_empty() || !history.starts_with(&format!("{hash}\x1e")) {
+            return Err("release history must be nonempty and start at the source hash".into());
+        }
+        Ok(Self {
+            hash,
+            subjects,
+            history,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct VersionMetadata {
     /// Machine-readable package/update identity, never the auto-numbered version.
@@ -164,6 +200,37 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn release_snapshot_preserves_history_without_git() {
+        let repo = Fixture::directory();
+        let dir = repo.0.join(".jcode-release-metadata");
+        fs::create_dir(&dir).unwrap();
+        let hash = "a".repeat(40);
+        let history = format!("{hash}\x1eHEAD\x1e2026-10-14 UTC\x1eRelease\x1f\n");
+        for (name, contents) in [
+            ("hash", hash.as_str()),
+            ("status", ""),
+            ("subjects", "Release\n"),
+            ("history", history.as_str()),
+        ] {
+            fs::write(dir.join(format!("{name}.txt")), contents).unwrap();
+        }
+        let snapshot = ReleaseSnapshot::load(&repo.0).unwrap();
+        assert_eq!(snapshot.hash, hash);
+        assert_eq!(snapshot.subjects, "Release\n");
+        assert_eq!(snapshot.history, history);
+        fs::write(dir.join("hash.txt"), "not a hash").unwrap();
+        assert!(ReleaseSnapshot::load(&repo.0).is_err());
+        fs::write(dir.join("hash.txt"), &hash).unwrap();
+        fs::write(dir.join("status.txt"), " M source.rs\n").unwrap();
+        assert!(ReleaseSnapshot::load(&repo.0).is_err());
+        fs::write(dir.join("status.txt"), "").unwrap();
+        fs::write(dir.join("history.txt"), "b".repeat(40)).unwrap();
+        assert!(ReleaseSnapshot::load(&repo.0).is_err());
+        fs::remove_file(dir.join("history.txt")).unwrap();
+        assert!(ReleaseSnapshot::load(&repo.0).is_err());
     }
 
     #[test]
