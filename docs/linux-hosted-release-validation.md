@@ -21,7 +21,9 @@ Use a reviewed immutable justrust commit supporting native explicit GNU Linux
 targets, release artifact retrieval (including warm-cache outputs), the Desktop
 and CLI build metadata allowlist, `JUSTRUST_REMOTE_REQUIRED=1`, and
 `JUSTRUST_TOOLCHAIN_REQUIRED=1`. The workflow requires the full justrust revision
-as an input and builds that client with `cargo install --locked`. It never
+as an input and builds that client with `cargo install --locked`. Its reviewed
+default is `c3e8cdb43cee1896e0f50966ef0e7bb811de314b`, including strict compiler
+fallback guards for ordinary, nested, and unrecorded execution. It never
 installs a floating latest client. All third-party actions are pinned by SHA.
 
 `RUSTUP_TOOLCHAIN` must be an exact stable Rust release, not `stable`, `nightly`,

@@ -10,6 +10,7 @@ on:
       justrust_revision:
         description: Reviewed full justrust commit with strict remote release artifact support
         required: true
+        default: c3e8cdb43cee1896e0f50966ef0e7bb811de314b
       jcode_revision:
         description: Reviewed full Jcode runtime commit with metadata snapshot rerun support
         required: true
