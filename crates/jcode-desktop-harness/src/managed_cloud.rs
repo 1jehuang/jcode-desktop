@@ -239,6 +239,7 @@ pub fn connect(
     )?;
     progress("Connecting to your Jcode Cloud machine…");
     let options = SshConnectOptions {
+        supports_user_response: true,
         port: Some(port),
         user: Some(user),
         identity_file: Some(key.private_key()),

@@ -130,6 +130,8 @@ pub(crate) mod applet_panel;
 pub(crate) mod demo_replay;
 #[path = "panel_gmail_draft_card.rs"]
 mod gmail_draft_card;
+#[path = "panel_user_response.rs"]
+mod user_response;
 #[path = "panel_gmail_read_card.rs"]
 mod gmail_read_card;
 #[path = "panel_mcp_list_card.rs"]
@@ -3637,6 +3639,7 @@ impl Panel {
         index: usize,
         item: &Item,
         _show_avatar: bool,
+        response_viewport_height: gpui::Pixels,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -3832,6 +3835,21 @@ impl Panel {
                 done,
                 error,
             } => {
+                if let Some(response) = error
+                    .is_none()
+                    .then(|| user_response::parse(name, input))
+                    .flatten()
+                {
+                    return user_response::render(
+                        &response,
+                        index,
+                        response_viewport_height,
+                        &self.transcript_selection,
+                        self.media_preview_handler(cx),
+                        window,
+                        cx,
+                    );
+                }
                 if display.screenshot_mode {
                     return div()
                         .px_1()
@@ -4837,6 +4855,10 @@ impl Render for Panel {
         } else if row_count == 0 {
             transcript_shell.into_any_element()
         } else {
+            // Capture before List mutably borrows its state during row rendering.
+            let response_viewport_height = (self.transcript_list.viewport_bounds().size.height
+                - px(dock_pad + prompt::PROMPT_TOP_PADDING))
+                .max(px(1.));
             transcript_shell
                 .child(
                     list(
@@ -4895,8 +4917,14 @@ impl Render for Panel {
                                 } else {
                                     prompt::PROMPT_TOP_PADDING
                                 };
-                                let element =
-                                    panel.render_item(row.index, item, row.show_label, window, cx);
+                                let element = panel.render_item(
+                                    row.index,
+                                    item,
+                                    row.show_label,
+                                    response_viewport_height,
+                                    window,
+                                    cx,
+                                );
                                 div()
                                     .debug_selector(move || {
                                         format!("transcript-row-{row_index}").into()
@@ -9618,6 +9646,14 @@ fn demo_items(fixture: Option<&str>) -> Vec<Item> {
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("mcp-list") {
         return mcp_list_card::fixture_items();
+    }
+    if crate::harness::screenshot_mode()
+        && matches!(
+            fixture.as_deref(),
+            Some("user-response" | "user-response-short" | "user-response-long")
+        )
+    {
+        return user_response::fixture_items_for(fixture.as_deref().unwrap());
     }
     if crate::harness::screenshot_mode() && fixture.as_deref() == Some("gmail-read") {
         return gmail_read_card::fixture_items();

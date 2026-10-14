@@ -54,6 +54,7 @@ mod transport {
                 });
             }
             jcode_sdk::JcodeClient::connect_ssh(jcode_sdk::SshConnectOptions {
+                supports_user_response: true,
                 client_name: format!("jcode-desktop-remote/{}", crate::client_version()),
                 connect_timeout: std::time::Duration::from_secs(20),
                 request_timeout: Some(std::time::Duration::from_secs(30)),
@@ -470,6 +471,7 @@ fn connect(client_name: &str) -> jcode_sdk::Result<JcodeClient> {
         JcodeClient::connect(ConnectOptions {
             client_name: format!("jcode-desktop-{client_name}/{}", crate::client_version()),
             ensure_runtime: false,
+            supports_user_response: true,
             ..Default::default()
         })
     };
