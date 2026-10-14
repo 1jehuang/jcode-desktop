@@ -1235,6 +1235,7 @@ impl Workspace {
             );
         } else if harness::screenshot_mode() {
             let session = jcode_sdk::SessionInfo {
+                user_connected: false,
                 session_id: "screenshot-fixture".into(),
                 // Keep this longer than the sidebar to exercise single-line ellipsis.
                 title: Some("Review markdown rendering with a very long session title".into()),
@@ -1399,6 +1400,7 @@ impl Workspace {
     fn open_startup_draft(&mut self, cx: &mut Context<Self>) {
         self.active = self.open_session(
             jcode_sdk::SessionInfo {
+                user_connected: false,
                 session_id: Panel::STARTUP_SESSION_ID.into(),
                 title: Some(self.remotes.default_host.as_ref().map_or_else(
                     || "New session".into(),
@@ -2087,6 +2089,7 @@ impl Workspace {
                     continue;
                 }
                 sessions.push(jcode_sdk::SessionInfo {
+                    user_connected: false,
                     session_id: panel.session_id.clone(),
                     working_dir: panel.working_dir.clone(),
                     title: Some(panel.title.to_string()),
@@ -2644,6 +2647,7 @@ impl Workspace {
             .find(|session| session.session_id == unfinished.session_id)
             .cloned()
             .unwrap_or_else(|| jcode_sdk::SessionInfo {
+                user_connected: false,
                 session_id: unfinished.session_id,
                 working_dir: unfinished.working_dir,
                 title: Some(unfinished.title),
@@ -4094,15 +4098,6 @@ impl Workspace {
         }));
     }
 
-    /// The sidebar is a persistent chrome column, so hiding it is a view
-    /// preference rather than a workspace mutation: panels keep their slots and
-    /// only the horizontal budget in `render` changes.
-    fn toggle_sidebar(&mut self, _: &ToggleSidebar, _: &mut Window, cx: &mut Context<Self>) {
-        self.compact_sidebar_open = false;
-        self.show_sidebar = !self.show_sidebar;
-        cx.notify();
-    }
-
     fn select_theme(&mut self, preset: ThemePreset, cx: &mut Context<Self>) {
         if preset == Theme::active_preset() {
             cx.notify();
@@ -5410,6 +5405,7 @@ impl Workspace {
         let open_marks = self
             .slots
             .iter()
+            .filter(|slot| !slot.closing)
             .map(|slot| {
                 let panel = slot.panel.read(cx);
                 (panel.session_id.clone(), panel.sidebar_activity())
@@ -5461,6 +5457,7 @@ impl Workspace {
                 && known.insert(panel.session_id.clone())
             {
                 catalog.push(jcode_sdk::SessionInfo {
+                    user_connected: false,
                     session_id: panel.session_id.clone(),
                     working_dir: panel.working_dir.clone(),
                     title: Some(panel.title.to_string()),
@@ -5511,10 +5508,23 @@ impl Workspace {
                 }
             }
         }
+        // Fading local panels stay mounted, but must not reappear as history
+        // or stale globally connected rows before their close completes.
+        let closing_sessions = self
+            .slots
+            .iter()
+            .filter(|slot| slot.closing)
+            .map(|slot| slot.panel.read(cx).session_id.clone())
+            .collect::<HashSet<_>>();
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
-            .filter(|session| !nested.contains(&session.session_id))
-            .partition(|session| open_marks.contains_key(&session.session_id));
+            .filter(|session| {
+                !nested.contains(&session.session_id)
+                    && !closing_sessions.contains(&session.session_id)
+            })
+            .partition(|session| {
+                open_marks.contains_key(&session.session_id) || session.user_connected
+            });
         let mut panel_positions = self.slots.iter().enumerate().collect::<Vec<_>>();
         panel_positions.sort_by_key(|(slot_index, slot)| (slot.row, *slot_index));
         let panel_positions = panel_positions
@@ -5528,11 +5538,8 @@ impl Workspace {
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        open_sessions.retain(|session| {
-            self.slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id)
-        });
+        // External user clients are live too, but are not locally open panels.
+        // Keep their rows without changing navigation or selection semantics.
         // Group by project (Git repository, else spawn directory). Projects
         // appear in the order of their first open panel, then by history
         // recency. Inside a project, threads group by checkout (the main
@@ -5564,7 +5571,11 @@ impl Workspace {
             .collect::<Vec<_>>();
         // Stable: open-before-history and recency survive inside each group.
         grouped.sort_by_key(|(_, session)| rank_collection(session));
-        for (open, session) in grouped {
+        for (live, session) in grouped {
+            let open = self
+                .slots
+                .iter()
+                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
             let collection = self
                 .collections
                 .collection_of(&session.session_id)
@@ -5614,11 +5625,12 @@ impl Workspace {
                     .map(|relative| relative.to_string_lossy().into_owned()),
                 _ => subdirectory,
             };
-            groups[index].1 += usize::from(open);
+            groups[index].1 += usize::from(live);
             groups[index].2 += 1;
             let agents = agents.get(&session.session_id).copied().unwrap_or_default();
             members[index].push(SidebarRow {
                 open,
+                live,
                 session,
                 project: index,
                 subdirectory,
@@ -5676,14 +5688,14 @@ impl Workspace {
             || groups
                 .first()
                 .is_some_and(|(project, _, _)| project.key != sidebar_projects::OTHER);
-        let any_open = groups.iter().any(|(_, open, _)| *open > 0);
+        let any_live = groups.iter().any(|(_, live, _)| *live > 0);
         let collapsed_projects = groups
             .iter()
-            .map(|(project, open, _)| {
+            .map(|(project, live, _)| {
                 // A collection the user built stays open unless they fold it.
                 let default = sidebar_collections::id_from_key(&project.key).is_none()
-                    && any_open
-                    && *open == 0;
+                    && any_live
+                    && *live == 0;
                 headers && self.sidebar_projects.collapsed(&project.key, default)
             })
             .collect::<Vec<_>>();
@@ -5705,14 +5717,14 @@ impl Workspace {
                     previous = None;
                 }
                 previous_checkout = Some(checkout);
-                // Label where live panels start and where history begins, so
-                // open work and past sessions read as separate groups.
-                if !collapsed && previous.is_none_or(|(open, _)| open != row.open) {
-                    row.section = Some(if row.open { "Live" } else { "Past" });
+                // Live includes externally connected user clients, while
+                // row.open continues to mean navigation to a local panel.
+                if !collapsed && previous.is_none_or(|(live, _)| live != row.live) {
+                    row.section = Some(if row.live { "Live" } else { "Past" });
                 }
-                row.divider = !row.open
-                    && previous.is_some_and(|(open, saved)| !open && saved && !row.session.saved);
-                previous = Some((row.open, row.session.saved));
+                row.divider = !row.live
+                    && previous.is_some_and(|(live, saved)| !live && saved && !row.session.saved);
+                previous = Some((row.live, row.session.saved));
                 ordered_sessions.push(row);
             }
         }
@@ -9137,7 +9149,10 @@ struct SidebarSessionLayout {
 }
 
 struct SidebarRow {
+    /// Local panel membership drives selection and navigation.
     open: bool,
+    /// A local panel or an externally connected user client, not a loaded agent.
+    live: bool,
     session: jcode_sdk::SessionInfo,
     project: usize,
     subdirectory: Option<String>,
@@ -9969,6 +9984,7 @@ mod tests {
 
     pub(super) fn session_info(id: &str, title: Option<&str>) -> jcode_sdk::SessionInfo {
         jcode_sdk::SessionInfo {
+            user_connected: false,
             session_id: id.into(),
             working_dir: None,
             title: title.map(str::to_owned),
@@ -10811,6 +10827,125 @@ mod tests {
             vcx.debug_bounds("sidebar-section-1").is_some(),
             "sessions without a panel are labelled apart from open panels"
         );
+    }
+
+    #[gpui::test]
+    fn sidebar_closing_panels_do_not_reappear_from_cached_history(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            for id in ["closing-idle", "closing-connected", "keep"] {
+                workspace.push_test_panel(id, cx);
+                let mut session = session_info(id, Some(id));
+                session.user_connected = id == "closing-connected";
+                workspace.sessions.push(session);
+            }
+            workspace.slots[0].closing = true;
+            workspace.slots[1].closing = true;
+            workspace.active = 2;
+            workspace
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| {
+            assert_eq!(
+                workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .map(|row| row.session_id.as_str())
+                    .collect::<Vec<_>>(),
+                ["keep"]
+            );
+            assert!(workspace.sidebar_session_layout[0].open);
+            assert_eq!(
+                workspace.sessions.len(),
+                3,
+                "sidebar suppression must preserve durable history"
+            );
+        });
+    }
+
+    #[gpui::test]
+    fn sidebar_external_user_connections_are_live_without_becoming_local_panels(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("local-user", cx);
+            workspace
+                .slots
+                .last()
+                .unwrap()
+                .panel
+                .update(cx, |panel, _| {
+                    panel.working_dir = Some("/presence/local".into())
+                });
+            workspace
+        });
+        for status in ["idle", "active"] {
+            workspace.update(vcx, |workspace, cx| {
+                let mut external = session_info("external-user", Some("Standalone user"));
+                external.working_dir = Some("/presence/external".into());
+                external.user_connected = true;
+                external.status = status.into();
+                let mut history = session_info("loaded-history", Some("Loaded but disconnected"));
+                history.working_dir = external.working_dir.clone();
+                history.status = "active".into();
+                workspace.apply(
+                    Update::Sessions {
+                        sessions: vec![history, external],
+                    },
+                    cx,
+                );
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |workspace, _| {
+                let external = workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .find(|row| row.session_id == "external-user")
+                    .unwrap();
+                assert_eq!(external.section, Some("Live"));
+                assert!(
+                    !external.open,
+                    "external presence must not turn into local panel membership"
+                );
+                assert!(
+                    !external.collapsed,
+                    "live external project must not default to collapsed history"
+                );
+                let history = workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .find(|row| row.session_id == "loaded-history")
+                    .unwrap();
+                assert_eq!(history.section, Some("Past"));
+                assert!(!history.open);
+                assert_eq!(
+                    workspace.slots.len(),
+                    1,
+                    "listing must not attach to or open external sessions"
+                );
+            });
+        }
+        workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_projects
+                .collapsed
+                .insert("/presence/external".into(), true);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, _| {
+            assert!(
+                workspace
+                    .sidebar_session_layout
+                    .iter()
+                    .find(|row| row.session_id == "external-user")
+                    .unwrap()
+                    .collapsed,
+                "explicit manual collapse must survive connected presence"
+            );
+        });
     }
 
     #[gpui::test]

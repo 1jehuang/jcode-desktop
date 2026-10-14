@@ -228,6 +228,7 @@ impl Workspace {
                 && !sessions.iter().any(|s| s.session_id == panel.session_id)
             {
                 sessions.push(jcode_sdk::SessionInfo {
+                    user_connected: false,
                     session_id: panel.session_id.clone(),
                     title: Some(panel.title.to_string()),
                     working_dir: panel.working_dir.clone(),
@@ -469,6 +470,7 @@ impl Workspace {
             .find(|session| session.session_id == session_id)
             .cloned()
             .unwrap_or(jcode_sdk::SessionInfo {
+                user_connected: false,
                 edit_stats: None,
                 session_id,
                 parent_session_id: None,

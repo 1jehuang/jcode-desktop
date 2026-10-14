@@ -1562,6 +1562,7 @@ pub fn merge_persisted_sessions(
         disk_sessions.push((
             recency,
             SessionInfo {
+                user_connected: false,
                 session_id: id,
                 working_dir: record.working_dir,
                 title,
@@ -2712,8 +2713,10 @@ mod tests {
         .unwrap();
         std::fs::write(home.path().join("todos/empty.json"), "[]").unwrap();
         let session = |id: &str| {
-            serde_json::from_value::<SessionInfo>(serde_json::json!({"session_id": id, "status": "idle"}))
-                .unwrap()
+            serde_json::from_value::<SessionInfo>(
+                serde_json::json!({"session_id": id, "status": "idle"}),
+            )
+            .unwrap()
         };
         let progress = todo_progress_in(
             home.path(),
@@ -2898,6 +2901,7 @@ mod tests {
 
     fn session_info(id: &str) -> SessionInfo {
         SessionInfo {
+            user_connected: false,
             session_id: id.into(),
             working_dir: None,
             title: None,
@@ -2913,6 +2917,59 @@ mod tests {
             agent_label: None,
             swarm_status: None,
             edit_stats: None,
+        }
+    }
+
+    #[test]
+    fn sdk_connection_presence_survives_lifecycle_enrichment() {
+        let home = tempfile::tempdir().unwrap();
+        let directory = home.path().join("sessions");
+        std::fs::create_dir_all(&directory).unwrap();
+        for id in ["connected", "loaded-history", "disk-only"] {
+            std::fs::write(
+                directory.join(format!("{id}.json")),
+                serde_json::json!({
+                    "title": id,
+                    "status": "Active",
+                    "last_pid": std::process::id(),
+                })
+                .to_string(),
+            )
+            .unwrap();
+        }
+
+        // Exercise both compatibility disk enrichment and the authoritative
+        // full-page path. A daemon-owned history record is not a user client.
+        for full_page in [false, true] {
+            let mut connected = session_info("connected");
+            connected.user_connected = true;
+            let mut sessions = vec![connected, session_info("loaded-history")];
+            if full_page {
+                for index in sessions.len()..MAX_PERSISTED_SIDEBAR_SESSIONS {
+                    sessions.push(session_info(&format!("filler-{index}")));
+                }
+            }
+            let merged = merge_persisted_sessions(sessions, Some(home.path()));
+            let connected = merged
+                .iter()
+                .find(|entry| entry.session_id == "connected")
+                .unwrap();
+            assert!(connected.user_connected);
+            assert_eq!(connected.status, "active");
+            let history = merged
+                .iter()
+                .find(|entry| entry.session_id == "loaded-history")
+                .unwrap();
+            assert!(!history.user_connected);
+            assert_eq!(history.status, "active");
+            if !full_page {
+                let disk = merged
+                    .iter()
+                    .find(|entry| entry.session_id == "disk-only")
+                    .unwrap();
+                assert!(!disk.user_connected);
+                assert_eq!(disk.status, "active");
+            }
         }
     }
 

@@ -114,6 +114,7 @@ mod interaction_tests {
             for id in ["first", "second", "third", "fourth"] {
                 w.push_test_panel(id, cx);
                 w.sessions.push(jcode_sdk::SessionInfo {
+                    user_connected: false,
                     session_id: id.into(),
                     working_dir: None,
                     title: Some(id.into()),

@@ -3,6 +3,7 @@ use super::*;
 
 fn created(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
+        user_connected: false,
         session_id: id.into(),
         title: None,
         working_dir: Some("/workspace".into()),

@@ -51,9 +51,10 @@ def verify(output, env, root):
         if width < 1100:
             assert current["canvas_width"] >= width - 72, current
             before = current["canvas_width"]
-            # Compact navigation starts at the top of the headerless window.
-            # Its 36px hamburger is inset 10px, so y=48 hits the gap below it.
-            native("mousemove", 24, current["header_height"] + 28, "click", 1)
+            # The 28px compact menu follows the variable-width version pill.
+            # The tab row starts 6px below the header, with a 4px left inset.
+            native("mousemove", current["version_header_width"] + 18,
+                   current["header_height"] + 20, "click", 1)
             opened = wait_for(lambda n: n["sidebar_overlay"])
             assert opened["canvas_width"] == before, opened
             if width == 800:
@@ -61,6 +62,17 @@ def verify(output, env, root):
             native("key", "Escape")
             closed = wait_for(lambda n: not n["sidebar_overlay"])
             assert closed["keyboard_panel"] == original["focused_slot"], closed
+            # Reveal the same drawer from composer focus without shrinking
+            # the session canvas or changing the keyboard panel.
+            native("key", "super+b")
+            shortcut_opened = wait_for(lambda n: n["sidebar_overlay"])
+            assert shortcut_opened["canvas_width"] == before, shortcut_opened
+            assert shortcut_opened["keyboard_panel"] == original["focused_slot"], shortcut_opened
+            if width == 800:
+                results.append({"shortcut_drawer": capture("shortcut-drawer")})
+            native("key", "super+b")
+            shortcut_closed = wait_for(lambda n: not n["sidebar_overlay"])
+            assert shortcut_closed["keyboard_panel"] == original["focused_slot"], shortcut_closed
             # Tabs remain a pointer-accessible way to reach every conversation.
             for slot in [0, 1]:
                 current = nav()
@@ -74,7 +86,8 @@ def verify(output, env, root):
         results.append({"size": [width, height], "screenshot": capture(f"{width}x{height}"),
                         "compact": current["compact_sidebar"], "canvas_width": current["canvas_width"]})
     report = {"passed": True, "stable_panel_ids": original_ids, "frames": results,
-              "native_sidebar_open_close_cycles": 3, "native_tab_selections": 6,
+              "native_sidebar_open_close_cycles": 3, "native_keyboard_sidebar_open_close_cycles": 3,
+              "native_tab_selections": 6,
               "native_resizes": 4, "width_presets_preserved": True}
     output.with_suffix(".responsive.json").write_text(json.dumps(report, indent=2) + "\n")
-    print("Responsive layout PASS: four native resizes, three drawers, six tab selections, preserved panel widths")
+    print("Responsive layout PASS: four native resizes, three pointer drawers, three Super+B drawers, six tab selections, preserved panel widths")

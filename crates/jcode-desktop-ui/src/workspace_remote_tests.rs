@@ -3,6 +3,7 @@ use super::*;
 
 fn session(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
+        user_connected: false,
         session_id: id.into(),
         title: Some("Remote work".into()),
         working_dir: Some("/remote/project".into()),

@@ -20,6 +20,7 @@ impl jcode_sdk::Transport for Transport {
 
 fn info(id: &str) -> SessionInfo {
     SessionInfo {
+        user_connected: false,
         session_id: id.into(),
         working_dir: Some("/remote/project".into()),
         title: Some("Remote test".into()),

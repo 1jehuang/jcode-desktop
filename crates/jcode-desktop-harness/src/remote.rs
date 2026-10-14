@@ -97,6 +97,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn remote_namespace_preserves_source_connection_presence() {
+        for connected in [false, true] {
+            let session: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+                "session_id": "same-id",
+                "status": "idle",
+                "user_connected": connected,
+            }))
+            .unwrap();
+            let address = SessionAddress::parse("ssh://remote.example/same-id").unwrap();
+            let namespaced = address.session_info(session);
+            assert_eq!(namespaced.session_id, "ssh://remote.example/same-id");
+            assert_eq!(namespaced.user_connected, connected);
+        }
+        let legacy: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({
+            "session_id": "legacy", "status": "active",
+        }))
+        .unwrap();
+        assert!(!legacy.user_connected);
+    }
+
+    #[test]
     fn sidebar_swarm_remote_ownership_uses_the_same_host_namespace() {
         let address = SessionAddress::parse(&namespace("server", "child")).unwrap();
         let session: jcode_sdk::SessionInfo = serde_json::from_value(serde_json::json!({

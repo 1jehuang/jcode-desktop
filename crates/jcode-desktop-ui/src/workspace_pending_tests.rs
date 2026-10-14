@@ -4,6 +4,7 @@ use base64::Engine as _;
 
 fn created(id: &str) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
+        user_connected: false,
         session_id: id.into(),
         title: None,
         working_dir: Some("/project".into()),

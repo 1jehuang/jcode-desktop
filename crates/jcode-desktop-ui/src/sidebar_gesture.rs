@@ -208,6 +208,7 @@ mod tests {
             workspace.active_row = row;
             workspace.push_test_panel(id, cx);
             workspace.sessions.push(jcode_sdk::SessionInfo {
+                user_connected: false,
                 session_id: id.into(),
                 title: Some(id.into()),
                 working_dir: None,

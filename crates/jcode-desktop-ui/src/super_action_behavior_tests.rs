@@ -305,6 +305,7 @@ fn super_shift_slash_creates_correlated_help_and_records_its_prompt(cx: &mut gpu
             w.apply(
                 Update::SessionCreated {
                     session: jcode_sdk::SessionInfo {
+                        user_connected: false,
                         session_id: session_id.clone(),
                         title: Some("Help".into()),
                         working_dir: default_working_dir(),

@@ -111,6 +111,7 @@ impl Workspace {
     ) {
         let inserted = self.open_session(
             jcode_sdk::SessionInfo {
+                user_connected: false,
                 session_id: request_id.clone(),
                 title: Some(title),
                 working_dir: directory.clone(),

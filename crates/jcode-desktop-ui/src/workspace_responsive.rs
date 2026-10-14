@@ -25,6 +25,27 @@ pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
 pub(super) type VisibilityMotion = jcode_desktop_motion::MenuEntrance;
 
 impl Workspace {
+    /// Toggle the visible sidebar surface, not the hidden column preference.
+    /// Narrow windows use a drawer and keep sessions at full width. Wide
+    /// windows toggle the persistent column without changing panel slots.
+    pub(super) fn toggle_sidebar(
+        &mut self,
+        _: &ToggleSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if is_compact(f32::from(window.viewport_size().width)) {
+            self.compact_sidebar_open = !self.compact_sidebar_open;
+            if self.compact_sidebar_open {
+                self.show_sidebar = true;
+            }
+        } else {
+            self.compact_sidebar_open = false;
+            self.show_sidebar = !self.show_sidebar;
+        }
+        cx.notify();
+    }
+
     /// The only compact sidebar affordance: a pill in the tab row where the
     /// FPS readout normally sits. Workspaces stay reachable through the
     /// numbered tab groups, so no extra column is spent on them.
@@ -154,6 +175,110 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn super_b_opens_and_closes_compact_sidebar(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Draft", cx);
+            w
+        });
+        vcx.update(|_, cx| cx.set_reduce_motion(true));
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+
+        // Reveal both a responsive-hidden sidebar and an explicitly hidden one.
+        for preference in [true, false] {
+            workspace.update(vcx, |w, cx| {
+                w.show_sidebar = preference;
+                w.compact_sidebar_open = false;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("sidebar").is_none());
+            vcx.update(|window, cx| {
+                let w = workspace.read(cx);
+                let focus = if preference {
+                    w.focus_handle.clone()
+                } else {
+                    w.slots[0].panel.read(cx).input_focus_handle(cx)
+                };
+                window.focus(&focus, cx);
+                assert!(focus.is_focused(window));
+            });
+            vcx.simulate_keystrokes("super-b");
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("compact-sidebar-overlay").is_some());
+            assert!(vcx.debug_bounds("sidebar").is_some());
+            workspace.read_with(vcx, |w, _| {
+                assert!(w.show_sidebar);
+                assert!(w.compact_sidebar_open);
+            });
+            let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
+            assert_eq!(canvas.left(), px(0.0));
+            assert_eq!(canvas.right(), px(800.0));
+
+            vcx.simulate_keystrokes("super-b");
+            vcx.run_until_parked();
+            assert!(vcx.debug_bounds("compact-sidebar-overlay").is_none());
+            assert!(vcx.debug_bounds("sidebar").is_none());
+            workspace.read_with(vcx, |w, _| {
+                assert!(
+                    w.show_sidebar,
+                    "closing the drawer keeps the column preference"
+                );
+                assert!(!w.compact_sidebar_open);
+            });
+        }
+
+        // Growing while the drawer is open restores the column and clears
+        // overlay state before the next shrink.
+        vcx.simulate_keystrokes("super-b");
+        vcx.run_until_parked();
+        vcx.simulate_window_resize(handle, gpui::size(px(1600.), px(900.)));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("compact-sidebar-overlay").is_none());
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        workspace.read_with(vcx, |w, _| assert!(!w.compact_sidebar_open));
+        vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar").is_none());
+    }
+
+    #[gpui::test]
+    fn super_b_toggles_wide_sidebar_column(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Draft", cx);
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1600.), px(900.)));
+        vcx.run_until_parked();
+        vcx.update(|window, cx| {
+            let focus = workspace.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+        });
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        vcx.simulate_keystrokes("super-b");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar").is_none());
+        workspace.read_with(vcx, |w, _| {
+            assert!(!w.show_sidebar);
+            assert!(!w.compact_sidebar_open);
+        });
+        assert_eq!(
+            vcx.debug_bounds("workspace-canvas").unwrap().left(),
+            px(0.0)
+        );
+        vcx.simulate_keystrokes("super-b");
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar").is_some());
+        workspace.read_with(vcx, |w, _| assert!(w.show_sidebar));
+    }
 
     #[test]
     fn drawer_entrance_has_intermediate_frames_and_bounded_idle() {

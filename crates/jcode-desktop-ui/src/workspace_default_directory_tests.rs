@@ -551,6 +551,7 @@ fn invalid_typed_default_path_confirm_click_keeps_escape_working(cx: &mut gpui::
 
 fn directory_session(id: &str, directory: &Path) -> jcode_sdk::SessionInfo {
     jcode_sdk::SessionInfo {
+        user_connected: false,
         session_id: id.into(),
         working_dir: Some(directory.to_string_lossy().into_owned()),
         title: None,
