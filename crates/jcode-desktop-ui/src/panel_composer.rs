@@ -40,27 +40,36 @@ impl Panel {
     ) -> gpui::AnyElement {
         let _ = window;
         let theme = Theme::global();
-        let account_label =
-            account_method_label(self.provider.as_deref(), self.auth_method.as_deref());
+        let screenshot_mode = crate::config::display().screenshot_mode;
+        let account_label = if screenshot_mode {
+            "Account hidden".to_string()
+        } else {
+            account_method_label(self.provider.as_deref(), self.auth_method.as_deref())
+        };
         let model_label = pretty_model_label(self.model.as_deref());
-        let limits = self.limits_summary(cx);
+        let limits = (!screenshot_mode)
+            .then(|| self.limits_summary(cx))
+            .flatten();
         let effort = self
             .reasoning_effort
             .as_deref()
             .map(str::trim)
             .filter(|effort| !effort.is_empty() && self.model.is_some())
             .map(str::to_string);
-        let remote_machine = crate::harness::remote_host(&self.session_id).map(|host| {
-            if host == crate::managed_cloud::HOST {
-                "Jcode Cloud".to_string()
-            } else {
-                host
-            }
-        });
+        let remote_machine = (!screenshot_mode)
+            .then(|| crate::harness::remote_host(&self.session_id))
+            .flatten()
+            .map(|host| {
+                if host == crate::managed_cloud::HOST {
+                    "Jcode Cloud".to_string()
+                } else {
+                    host
+                }
+            });
         let location = self
             .working_dir
             .as_deref()
-            .filter(|dir| !dir.is_empty())
+            .filter(|dir| !screenshot_mode && !dir.is_empty())
             .map(|dir| {
                 if remote_machine.is_some() {
                     remote_location_label(dir)
@@ -100,7 +109,7 @@ impl Panel {
                     .children(self.render_usage_meters())
                     .children(self.render_image_pane_toggle(cx)),
             )
-            .when(self.show_build_footer, |el| {
+            .when(self.show_build_footer && !screenshot_mode, |el| {
                 el.child(
                     div()
                         .id("panel-build")

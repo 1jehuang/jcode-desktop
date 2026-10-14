@@ -55,7 +55,7 @@ impl Server {
                     ApiRequest::Hello { .. } => ApiEvent::HelloOk {
                         version: jcode_sdk::api::API_VERSION_MAJOR,
                         server: "remote-test".into(),
-                        capabilities: vec![],
+                        capabilities: vec!["runtime_commands".into()],
                     },
                     ApiRequest::Ping => ApiEvent::Pong,
                     ApiRequest::CreateSession { .. } | ApiRequest::AttachSession { .. } => {
@@ -75,6 +75,19 @@ impl Server {
                         routes: vec![],
                         reasoning_effort: None,
                         auth_method: None,
+                    },
+                    ApiRequest::RuntimeCommand {
+                        session_id,
+                        command,
+                        args,
+                    } => ApiEvent::RuntimeCommandResult {
+                        session_id: session_id.clone(),
+                        command: *command,
+                        data: serde_json::json!({ "args": args, "runtime": "remote-test" }),
+                        message: "Remote runtime result".into(),
+                    },
+                    ApiRequest::TransferSession { .. } => ApiEvent::SessionForked {
+                        session: info("transfer-id"),
                     },
                     ApiRequest::ForkSession { .. } => ApiEvent::SessionForked {
                         session: info("fork-id"),
@@ -206,6 +219,21 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         matches!(server.next(), ApiRequest::SoftInterrupt { session_id, urgent: true, .. } if session_id == "same-id")
     );
 
+    commands
+        .send(SessionCommand::RuntimeCommand(
+            jcode_sdk::api::RuntimeCommand::Memory,
+            vec!["search".into(), "remote/path".into()],
+        ))
+        .unwrap();
+    assert!(
+        matches!(server.next(), ApiRequest::RuntimeCommand { session_id, command: jcode_sdk::api::RuntimeCommand::Memory, args }
+        if session_id == "same-id" && args == vec!["search", "remote/path"])
+    );
+    wait_update(&updates, |u| {
+        matches!(u, Update::Event { session_id, event: ApiEvent::RuntimeCommandResult { session_id: inner, data, message, .. } }
+        if session_id == &ui_id && inner == &ui_id && data["runtime"] == "remote-test" && message == "Remote runtime result")
+    });
+
     commands.send(SessionCommand::Cancel).unwrap();
     commands
         .send(SessionCommand::SetModel("model".into()))
@@ -233,6 +261,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         .send(SessionCommand::Operation(SessionOperation::RewindUndo))
         .unwrap();
     commands.send(SessionCommand::Fork).unwrap();
+    commands.send(SessionCommand::Transfer).unwrap();
     for expected in [
         "cancel",
         "set_model",
@@ -243,6 +272,7 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         "rewind",
         "rewind_undo",
         "fork_session",
+        "transfer_session",
     ] {
         let request = serde_json::to_value(server.next()).unwrap();
         assert_eq!(request["session_id"], "same-id", "{expected}: {request}");
@@ -252,6 +282,10 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
         &updates,
         |u| matches!(u, Update::SessionForked { session } if session.session_id == remote::namespace("user@desktop", "fork-id")),
     );
+    wait_update(&updates, |u| {
+        matches!(u, Update::SessionForked { session }
+        if session.session_id == remote::namespace("user@desktop", "transfer-id"))
+    });
     // A different remote session must not leak into this panel, even for images.
     server.event(ApiEvent::SidePaneImages {
         session_id: "other-id".into(),

@@ -13,6 +13,7 @@ pub(super) struct TranscriptTextDocument {
     /// from live text, and disclosure changes, need hashing again. Streaming
     /// changes only those, many times a second.
     settled_revision: Option<u64>,
+    display: Option<crate::config::DisplayConfig>,
 }
 
 impl TranscriptTextDocument {
@@ -25,8 +26,15 @@ impl TranscriptTextDocument {
         expanded_prompts: &HashSet<(usize, bool)>,
         expanded_tools: &HashSet<String>,
     ) -> Option<Segments> {
+        let display = crate::config::display();
+        let preferences_changed = self.display.as_ref() != Some(&display);
+        if preferences_changed {
+            self.rows.clear();
+            self.settled_revision = None;
+            self.display = Some(display.clone());
+        }
         let order: Vec<_> = rows.iter().map(|row| row.index).collect();
-        let mut changed = self.order != order;
+        let mut changed = preferences_changed || self.order != order;
         let settled_unchanged = self.settled_revision == Some(items.revision());
         for row in rows {
             let item = match &row.source {
@@ -34,8 +42,16 @@ impl TranscriptTextDocument {
                 TranscriptRowSource::Owned(item) => item,
             };
             let prompt_expanded = expanded_prompts.contains(&(row.index, false));
-            let tool_expanded =
-                matches!(item, Item::Tool { call_id, .. } if expanded_tools.contains(call_id));
+            let tool_expanded = match item {
+                Item::Tool { call_id, name, .. } => {
+                    expanded_tools.contains(call_id)
+                        ^ (name == "agentgrep" && display.show_agentgrep_output)
+                }
+                Item::Stopped(_) | Item::CacheMiss(_) => {
+                    expanded_tools.contains(&format!("notice:{}", row.index))
+                }
+                _ => false,
+            };
             let flags = (u64::from(prompt_expanded) << 1) | u64::from(tool_expanded);
             if settled_unchanged
                 && matches!(row.source, TranscriptRowSource::Settled(_))
@@ -113,6 +129,39 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
 }
 
 fn segments(item: &Item, index: usize, prompt_expanded: bool, tool_expanded: bool) -> Segments {
+    segments_with_display(
+        item,
+        index,
+        prompt_expanded,
+        tool_expanded,
+        &crate::config::display(),
+    )
+}
+
+pub(super) fn segments_with_display(
+    item: &Item,
+    index: usize,
+    prompt_expanded: bool,
+    tool_expanded: bool,
+    display: &crate::config::DisplayConfig,
+) -> Segments {
+    if display.screenshot_mode {
+        match item {
+            Item::Tool { .. } | Item::BackgroundTask { .. } | Item::Image(_) | Item::Error(_) => {
+                return Vec::new();
+            }
+            Item::Stopped(notice) => {
+                return vec![(
+                    format!("{index}-notice-title").into(),
+                    notice.title.clone().into(),
+                )];
+            }
+            Item::CacheMiss(_) => {
+                return vec![(format!("{index}-notice-title").into(), "Cache miss".into())];
+            }
+            _ => {}
+        }
+    }
     let mut result = Vec::new();
     let mut push = |key: String, text: String| {
         if !text.is_empty() {

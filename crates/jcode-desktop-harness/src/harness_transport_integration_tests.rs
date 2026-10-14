@@ -61,7 +61,7 @@ impl Fixture {
                         ApiRequest::Hello { .. } => ApiEvent::HelloOk {
                             version: jcode_sdk::api::API_VERSION_MAJOR,
                             server: "pool-integration-test".into(),
-                            capabilities: vec![],
+                            capabilities: vec!["runtime_commands".into()],
                         },
                         ApiRequest::Ping => ApiEvent::Pong,
                         ApiRequest::CreateSession { .. } => ApiEvent::Attached {
@@ -82,6 +82,16 @@ impl Fixture {
                             routes: vec![],
                             reasoning_effort: None,
                             auth_method: None,
+                        },
+                        ApiRequest::RuntimeCommand {
+                            session_id,
+                            command,
+                            ..
+                        } => ApiEvent::RuntimeCommandResult {
+                            session_id: session_id.clone(),
+                            command: *command,
+                            data: serde_json::json!({"connection": index}),
+                            message: "Remote result".into(),
                         },
                         ApiRequest::ForkSession { .. } => ApiEvent::SessionForked {
                             session: session(&format!("fork-{index}")),
@@ -206,6 +216,94 @@ fn two_remote_creates_keep_request_correlation_and_adopt_without_extra_connectio
 }
 
 #[test]
+fn fork_prompt_adopts_same_host_child_and_preserves_parent() {
+    let fixture = Fixture::new();
+    let (commands, updates, bridge) = bridge_loop(fixture.pool);
+    let parent_id = remote::namespace("fork-host", "parent");
+    commands
+        .send(Command::Watch {
+            session_id: parent_id.clone(),
+        })
+        .unwrap();
+    let (host, parent_index, parent_socket) = fixture
+        .connections
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(host, "fork-host");
+    until(
+        &updates,
+        |update| matches!(update, Update::SessionConnected { session_id } if session_id == &parent_id),
+    );
+    commands
+        .send(Command::ForkWithPrompt {
+            session_id: parent_id.clone(),
+            prompt: "child-only question".into(),
+        })
+        .unwrap();
+    let (child_host, child_index, child_socket) = fixture
+        .connections
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap();
+    assert_eq!(child_host, "fork-host");
+    assert_ne!(parent_index, child_index);
+    let child_native = format!("fork-{parent_index}");
+    let child_id = remote::namespace("fork-host", &child_native);
+    until(
+        &updates,
+        |update| matches!(update, Update::SessionForked { session } if session.session_id == child_id),
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        assert!(Instant::now() < deadline, "child prompt was not submitted");
+        let (index, request) = fixture
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        if let ApiRequest::SendMessage {
+            session_id,
+            content,
+            ..
+        } = request
+        {
+            assert_eq!(index, child_index);
+            assert_eq!(session_id, child_native);
+            assert_eq!(content, "child-only question");
+            break;
+        }
+    }
+    commands
+        .send(Command::Watch {
+            session_id: child_id,
+        })
+        .unwrap();
+    commands
+        .send(Command::SetModel {
+            session_id: parent_id,
+            model: "parent-still-attached".into(),
+        })
+        .unwrap();
+    loop {
+        let (index, request) = fixture
+            .requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        if let ApiRequest::SetModel { session_id, model } = request {
+            assert_eq!(index, parent_index);
+            assert_eq!(session_id, "parent");
+            assert_eq!(model, "parent-still-attached");
+            break;
+        }
+    }
+    assert!(
+        fixture.connections.try_recv().is_err(),
+        "UI Watch must reuse adopted child"
+    );
+    commands.send(Command::Shutdown).unwrap();
+    bridge.join().unwrap();
+    drop((parent_socket, child_socket));
+}
+
+#[test]
 fn every_remote_worker_spawn_path_and_adopted_reconnect_uses_run_pool() {
     let fixture = Fixture::new();
     let (commands, updates, bridge) = bridge_loop(fixture.pool);
@@ -225,6 +323,11 @@ fn every_remote_worker_spawn_path_and_adopted_reconnect_uses_run_pool() {
         },
         Command::RefreshRuntime {
             session_id: id("runtime"),
+        },
+        Command::RuntimeCommand {
+            session_id: id("runtime-command"),
+            command: jcode_sdk::api::RuntimeCommand::Info,
+            args: vec![],
         },
         Command::SessionOperation {
             session_id: id("operation"),
@@ -250,6 +353,10 @@ fn every_remote_worker_spawn_path_and_adopted_reconnect_uses_run_pool() {
         }
         sockets.push(socket);
     }
+    until(&updates, |update| {
+        matches!(update, Update::Event { session_id, event: ApiEvent::RuntimeCommandResult { session_id: inner, message, .. } }
+        if session_id == &id("runtime-command") && inner == session_id && message == "Remote result")
+    });
     commands
         .send(Command::CreateRemoteSession {
             host: "same-host".into(),

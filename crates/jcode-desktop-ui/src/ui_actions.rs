@@ -9,6 +9,15 @@
 //! Action names are unchanged: unit actions keep their `workspace` and
 //! `panel_shortcuts` namespaces, and the data actions are un-namespaced.
 
+/// Route Desktop-local slash commands to the workspace containing the source.
+/// Raw input is retained so validation never silently drops command arguments.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct WorkspaceSlashCommand {
+    pub source: gpui::EntityId,
+    pub content: String,
+}
+
 /// Open the Accounts panel, optionally starting a login command.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

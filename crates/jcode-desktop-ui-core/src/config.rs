@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs, path::PathBuf, sync::OnceLock, time::Duration};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct DesktopConfig {
     pub appearance: AppearanceConfig,
@@ -11,10 +11,11 @@ pub struct DesktopConfig {
     pub terminal: TerminalConfig,
     pub sounds: SoundsConfig,
     pub voice: VoiceConfig,
+    pub display: DisplayConfig,
 }
 
 /// Background microphone access and physical input devices require explicit opt-in.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct VoiceConfig {
     pub global_hold: bool,
@@ -25,13 +26,13 @@ pub struct VoiceConfig {
 }
 
 /// Desktop feedback is opt-in and independent of the terminal client's bell.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SoundsConfig {
     pub enabled: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AppearanceConfig {
     /// Overall workspace presentation.
@@ -60,7 +61,7 @@ pub enum LayoutMode {
     FolderTabs,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct WorkspaceConfig {
     /// The optional Jcode account welcome screen was completed or skipped.
@@ -82,7 +83,7 @@ pub struct WorkspaceConfig {
     pub snap_scroll: bool,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default)]
 pub struct TerminalConfig {
     pub scrollback_lines: usize,
@@ -96,6 +97,7 @@ impl Default for DesktopConfig {
             terminal: TerminalConfig::default(),
             sounds: SoundsConfig::default(),
             voice: VoiceConfig::default(),
+            display: DisplayConfig::default(),
         }
     }
 }
@@ -169,6 +171,169 @@ impl DesktopConfig {
 }
 
 static CONFIG: OnceLock<DesktopConfig> = OnceLock::new();
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TextAlignment {
+    #[default]
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ThinkingDisplay {
+    Off,
+    #[default]
+    Full,
+    Current,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffDisplay {
+    Off,
+    #[default]
+    Inline,
+    Full,
+    Pinned,
+    File,
+}
+
+/// Live native chat preferences. Unlike startup configuration, slash-command
+/// changes are reflected in the next render without restarting Desktop.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct DisplayConfig {
+    pub alignment: TextAlignment,
+    pub compact_notifications: bool,
+    pub show_agentgrep_output: bool,
+    pub tool_call_details: bool,
+    pub thinking_display: ThinkingDisplay,
+    pub diff_display: DiffDisplay,
+    pub debug_visual: bool,
+    pub screenshot_mode: bool,
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        Self {
+            alignment: TextAlignment::Left,
+            compact_notifications: true,
+            show_agentgrep_output: false,
+            tool_call_details: false,
+            thinking_display: ThinkingDisplay::Full,
+            diff_display: DiffDisplay::Inline,
+            debug_visual: false,
+            screenshot_mode: false,
+        }
+    }
+}
+
+static DISPLAY: OnceLock<std::sync::RwLock<DisplayConfig>> = OnceLock::new();
+
+pub fn display() -> DisplayConfig {
+    DISPLAY
+        .get_or_init(|| std::sync::RwLock::new(get().display.clone()))
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
+impl DisplayConfig {
+    /// Validate first. Invalid input never changes runtime or persisted state.
+    pub fn with_setting(&self, key: &str, value: &str) -> Result<Self, String> {
+        let mut next = self.clone();
+        let boolean = |current: bool| match value {
+            "on" | "true" => Ok(true),
+            "off" | "false" => Ok(false),
+            "toggle" => Ok(!current),
+            _ => Err("Expected on, off, or toggle.".to_string()),
+        };
+        match key {
+            "alignment" => {
+                next.alignment = match value {
+                    "left" => TextAlignment::Left,
+                    "center" => TextAlignment::Center,
+                    "right" => TextAlignment::Right,
+                    _ => return Err("Expected left, center, or right.".into()),
+                }
+            }
+            "thinking_display" => {
+                next.thinking_display = match value {
+                    "off" => ThinkingDisplay::Off,
+                    "full" => ThinkingDisplay::Full,
+                    "current" => ThinkingDisplay::Current,
+                    _ => return Err("Expected off, full, or current.".into()),
+                }
+            }
+            "diff_display" => {
+                next.diff_display = match value {
+                    "cycle" => match self.diff_display {
+                        DiffDisplay::Off => DiffDisplay::Inline,
+                        DiffDisplay::Inline => DiffDisplay::Full,
+                        DiffDisplay::Full => DiffDisplay::Pinned,
+                        DiffDisplay::Pinned => DiffDisplay::File,
+                        DiffDisplay::File => DiffDisplay::Off,
+                    },
+                    "off" => DiffDisplay::Off,
+                    "inline" => DiffDisplay::Inline,
+                    "full" => DiffDisplay::Full,
+                    "pinned" => DiffDisplay::Pinned,
+                    "file" => DiffDisplay::File,
+                    _ => return Err("Expected off, inline, full, pinned, or file.".into()),
+                }
+            }
+            "compact_notifications" => {
+                next.compact_notifications = boolean(self.compact_notifications)?
+            }
+            "show_agentgrep_output" => {
+                next.show_agentgrep_output = boolean(self.show_agentgrep_output)?
+            }
+            "tool_call_details" => next.tool_call_details = boolean(self.tool_call_details)?,
+            "debug_visual" => next.debug_visual = boolean(self.debug_visual)?,
+            "screenshot_mode" => next.screenshot_mode = boolean(self.screenshot_mode)?,
+            _ => return Err("Unknown Desktop display setting.".into()),
+        }
+        Ok(next)
+    }
+
+    pub fn value(&self, key: &str) -> Option<String> {
+        let values = toml::Value::try_from(self).ok()?;
+        let value = values.get(key)?;
+        Some(
+            value
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| value.to_string()),
+        )
+    }
+}
+
+/// Preserve unrelated settings and comments using the same writer as the
+/// appearance preferences. Runtime state changes only after persistence succeeds.
+pub fn set_display(key: &str, value: &str) -> Result<DisplayConfig, String> {
+    let state = DISPLAY.get_or_init(|| std::sync::RwLock::new(get().display.clone()));
+    let mut state = state
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let next = state.with_setting(key, value)?;
+    #[cfg(not(any(test, feature = "test-support")))]
+    {
+        let values = toml::Value::try_from(&next).map_err(|error| error.to_string())?;
+        persist_value_at(
+            &path(),
+            std::env::var_os("JCODE_DESKTOP_CONFIG").is_some(),
+            "display",
+            key,
+            &values[key].to_string(),
+        )
+        .map_err(|error| format!("Could not save Desktop display setting: {error}"))?;
+    }
+    *state = next.clone();
+    Ok(next)
+}
 
 pub fn get() -> &'static DesktopConfig {
     CONFIG.get_or_init(load)
@@ -526,6 +691,96 @@ fn parse(text: &str, standalone: bool) -> Result<DesktopConfig, toml::de::Error>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn display_settings_validate_every_supported_mode() {
+        let defaults = super::DisplayConfig::default();
+        for mode in ["off", "inline", "full", "pinned", "file"] {
+            assert_eq!(
+                defaults
+                    .with_setting("diff_display", mode)
+                    .unwrap()
+                    .value("diff_display")
+                    .as_deref(),
+                Some(mode)
+            );
+        }
+        let mut cycling = defaults.clone();
+        for _ in 0..5 {
+            cycling = cycling.with_setting("diff_display", "cycle").unwrap();
+        }
+        assert_eq!(cycling.diff_display, defaults.diff_display);
+        for mode in ["off", "full", "current"] {
+            assert_eq!(
+                defaults
+                    .with_setting("thinking_display", mode)
+                    .unwrap()
+                    .value("thinking_display")
+                    .as_deref(),
+                Some(mode)
+            );
+        }
+        for mode in ["left", "center", "right"] {
+            assert_eq!(
+                defaults
+                    .with_setting("alignment", mode)
+                    .unwrap()
+                    .value("alignment")
+                    .as_deref(),
+                Some(mode)
+            );
+        }
+        for key in [
+            "compact_notifications",
+            "show_agentgrep_output",
+            "tool_call_details",
+            "debug_visual",
+            "screenshot_mode",
+        ] {
+            assert_eq!(
+                defaults
+                    .with_setting(key, "on")
+                    .unwrap()
+                    .value(key)
+                    .as_deref(),
+                Some("true")
+            );
+            assert_eq!(
+                defaults
+                    .with_setting(key, "off")
+                    .unwrap()
+                    .value(key)
+                    .as_deref(),
+                Some("false")
+            );
+            assert_ne!(
+                defaults.with_setting(key, "toggle").unwrap().value(key),
+                defaults.value(key)
+            );
+            assert!(defaults.with_setting(key, "maybe").is_err());
+        }
+        assert!(defaults.with_setting("alignment", "up").is_err());
+        assert!(defaults.with_setting("thinking_display", "hidden").is_err());
+        assert!(defaults.with_setting("unknown", "on").is_err());
+        assert_eq!(defaults, super::DisplayConfig::default());
+    }
+
+    #[test]
+    fn display_preferences_roundtrip_without_overwriting_neighbors() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "# user comment\n[desktop.appearance]\ntheme = \"pure_black\"\n[desktop.display]\nthinking_display = \"full\" # retained\n").unwrap();
+        super::persist_value_at(&path, false, "display", "thinking_display", "\"current\"")
+            .unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        assert!(text.contains("# user comment"));
+        assert!(text.contains("# retained"));
+        assert!(text.contains("theme = \"pure_black\""));
+        let config = super::parse(&text, false).unwrap();
+        assert_eq!(
+            config.display.thinking_display,
+            super::ThinkingDisplay::Current
+        );
+    }
     use super::*;
 
     #[test]

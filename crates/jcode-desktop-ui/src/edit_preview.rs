@@ -21,6 +21,43 @@ mod syntax;
 const LINE_HEIGHT: f32 = 22.;
 const MAX_HEIGHT: f32 = 352.;
 
+fn display_layout(
+    mode: crate::config::DiffDisplay,
+    rows: usize,
+    timed_expansion: f32,
+) -> (f32, f32) {
+    use crate::config::DiffDisplay;
+    let expansion = match mode {
+        DiffDisplay::Full | DiffDisplay::Pinned => 1.,
+        DiffDisplay::File | DiffDisplay::Off => 0.,
+        DiffDisplay::Inline => timed_expansion,
+    };
+    let height = rows as f32 * LINE_HEIGHT;
+    (
+        expansion,
+        if mode == DiffDisplay::Full {
+            height
+        } else {
+            height.min(MAX_HEIGHT)
+        },
+    )
+}
+
+#[cfg(test)]
+mod display_mode_tests {
+    use super::*;
+
+    #[test]
+    fn modes_control_expansion_and_height() {
+        use crate::config::DiffDisplay::*;
+        assert_eq!(display_layout(Off, 100, 0.5).0, 0.);
+        assert_eq!(display_layout(File, 100, 0.5).0, 0.);
+        assert_eq!(display_layout(Inline, 100, 0.5), (0.5, MAX_HEIGHT));
+        assert_eq!(display_layout(Pinned, 100, 0.5), (1., MAX_HEIGHT));
+        assert_eq!(display_layout(Full, 100, 0.5), (1., 100. * LINE_HEIGHT));
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct EditPreviews {
     views: std::cell::RefCell<std::collections::HashMap<String, gpui::Entity<TimedPreview>>>,
@@ -48,7 +85,10 @@ impl EditPreviews {
             .clone();
         view.update(cx, |view, cx| {
             let changed_files = !Arc::ptr_eq(&view.files, &files) && view.files != files;
-            let changed = changed_files || view.done != done || view.header != header;
+            let mode = crate::config::display().diff_display;
+            let changed =
+                changed_files || view.done != done || view.header != header || view.mode != mode;
+            view.mode = mode;
             if changed_files {
                 view.files = files;
                 view.prepare_rows();
@@ -73,6 +113,7 @@ pub(crate) struct TimedPreview {
     gutter_width: f32,
     timer: EditPreviewTimer,
     done: bool,
+    mode: crate::config::DiffDisplay,
     header: PreviewHeader,
     last_frame: Instant,
     /// The running header's breathing overlay, its own view so a pulse
@@ -92,6 +133,7 @@ impl TimedPreview {
             gutter_width: 32.,
             timer: EditPreviewTimer::new(),
             done,
+            mode: crate::config::display().diff_display,
             header,
             last_frame: Instant::now(),
             running_veil: None,
@@ -210,10 +252,14 @@ impl Render for TimedPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("TimedPreview");
         let now = Instant::now();
-        self.timer
-            .update(self.done, now.saturating_duration_since(self.last_frame));
+        let mode = crate::config::display().diff_display;
+        let timed = mode == crate::config::DiffDisplay::Inline;
+        if timed {
+            self.timer
+                .update(self.done, now.saturating_duration_since(self.last_frame));
+        }
         self.last_frame = now;
-        if self.timer.needs_animation() {
+        if timed && self.timer.needs_animation() {
             let view = cx.weak_entity();
             window.on_next_frame(move |_, cx| {
                 let _ = view.update(cx, |_, cx| cx.notify());
@@ -231,8 +277,12 @@ impl Render for TimedPreview {
                 .collect();
             self.syntax_theme = theme_key;
         }
-        let expansion = self.timer.expansion_fraction();
-        let countdown = self.timer.state() == EditPreviewState::Countdown;
+        // Full renders every changed line. Pinned stays open in a bounded
+        // scroller. File keeps only clickable file headers. Inline retains
+        // the existing timed, user-expandable preview.
+        let (expansion, height) =
+            display_layout(mode, self.rows.len(), self.timer.expansion_fraction());
+        let countdown = timed && self.timer.state() == EditPreviewState::Countdown;
         let open = expansion > 0.;
         let mut body = div()
             .id("edit-inline-toggle")
@@ -263,7 +313,6 @@ impl Render for TimedPreview {
                 )
             });
         if open && !self.rows.is_empty() {
-            let height = (self.rows.len() as f32 * LINE_HEIGHT).min(MAX_HEIGHT);
             body = body.child(
                 div()
                     .debug_selector(|| "edit-expanded-body".into())

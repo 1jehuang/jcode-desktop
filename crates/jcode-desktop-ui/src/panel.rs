@@ -24,6 +24,29 @@ use crate::text_selection::{self, TextSelection};
 use crate::theme::Theme;
 use crate::todoist::{CreateTask, Project as TodoistProject, Task as TodoistTask, TodoistClient};
 
+#[path = "panel_workspace_commands.rs"]
+pub(crate) mod workspace_commands;
+
+#[path = "panel_special_commands.rs"]
+mod special_commands;
+
+#[path = "panel_command_recovery.rs"]
+mod command_recovery;
+
+#[path = "panel_runtime_commands.rs"]
+mod runtime_commands;
+
+#[path = "panel_commands.rs"]
+mod desktop_commands;
+
+#[cfg(test)]
+#[path = "panel_command_workflow_tests.rs"]
+mod command_workflow_tests;
+
+#[cfg(test)]
+#[path = "panel_display_tests.rs"]
+mod display_tests;
+
 #[cfg(test)]
 #[path = "panel_selection_tests.rs"]
 mod selection_tests;
@@ -292,6 +315,7 @@ struct TranscriptDerivedKey {
     /// Visible live text, reasoning, by pointer-free content hash.
     streaming: u64,
     expansions: u64,
+    display: crate::config::DisplayConfig,
 }
 
 #[derive(Clone)]
@@ -1751,6 +1775,12 @@ impl Panel {
                     cx,
                     "Type something…",
                     move |content, images, queued, _window, app| {
+                        if images.is_empty()
+                            && let Some(panel) = weak.upgrade()
+                            && Panel::dispatch_workspace_command(&panel, &content, _window, app)
+                        {
+                            return;
+                        }
                         if images.is_empty() && crate::commands::is_resume_command(&content) {
                             _window.dispatch_action(Box::new(crate::ui_actions::OpenResume), app);
                             return;
@@ -1773,7 +1803,8 @@ impl Panel {
                             return;
                         }
                         if images.is_empty()
-                            && crate::commands::is_accounts_command(&content)
+                            && (crate::commands::is_accounts_command(&content)
+                                || content.trim() == "/subscribe")
                             && let Some(panel) = weak.upgrade()
                         {
                             _window.dispatch_action(
@@ -1995,6 +2026,40 @@ impl Panel {
             return self.handle_preview_command(content, cx);
         }
         let trimmed = content.trim();
+        if self.handle_special_command(trimmed, cx)
+            || self.handle_recovery_command(trimmed, cx)
+            || self.handle_runtime_command(trimmed, cx)
+            || self.handle_desktop_command(trimmed, cx)
+        {
+            self.stick_to_bottom = true;
+            self.transcript_list.scroll_to_end();
+            return true;
+        }
+        if matches!(trimmed, "/improve stop" | "/refactor stop") {
+            self.pause_queue_for_stop();
+            self.bridge.send(Command::Cancel {
+                session_id: self.session_id.clone(),
+            });
+            self.record_stop(stop_reason::StopNotice::cancel_requested());
+            self.items.push(Item::Assistant("Stopped the active workflow. Queued prompts are preserved and paused, and no continuation was submitted.".into()));
+            cx.notify();
+            return true;
+        }
+        if matches!(trimmed, "/improve status" | "/refactor status") {
+            let payload = self.latest_todo_payload().unwrap_or_default();
+            self.items.push(Item::Todos(payload));
+            self.items.push(Item::Assistant(format!(
+                "Session workflow status: {}. Use `{}` to continue existing work.",
+                self.status,
+                trimmed.replace("status", "resume")
+            )));
+            cx.notify();
+            return true;
+        }
+        if let Some(prompt) = jcode_desktop_model::command_workflows::workflow_prompt(trimmed) {
+            self.submit_or_queue(prompt, Vec::new(), true, cx);
+            return true;
+        }
         if self.login_command(trimmed, cx) {
             return true;
         }
@@ -2339,7 +2404,7 @@ impl Panel {
         true
     }
 
-    fn run_session_operation(&mut self, operation: SessionOperation, message: impl Into<String>) {
+    fn run_session_operation(&mut self, operation: SessionOperation, _message: impl Into<String>) {
         if self.is_side_document() || self.preview_state.is_some() {
             return;
         }
@@ -2347,7 +2412,9 @@ impl Panel {
             session_id: self.session_id.clone(),
             operation,
         });
-        self.items.push(Item::Assistant(message.into()));
+        self.items.push(Item::Assistant(
+            "Requested the session change. The conversation will refresh after the runtime confirms it.".into(),
+        ));
     }
 
     fn submit_command_prompt(&mut self, prompt: &str, cx: &mut Context<Self>) {
@@ -2726,6 +2793,22 @@ impl Panel {
             crate::sounds::play(cue, cx);
         }
         match event {
+            ApiEvent::RuntimeCommandResult {
+                session_id,
+                command,
+                data,
+                message,
+            } => {
+                let output = jcode_sdk::api::RuntimeCommandOutput {
+                    session_id: session_id.clone(),
+                    command: *command,
+                    data: data.clone(),
+                    message: message.clone(),
+                };
+                self.items.push(Item::Assistant(output.message.clone()));
+                self.apply_special_command_artifacts(&output, cx);
+                self.stick_to_bottom = true;
+            }
             ApiEvent::MessageAccepted { .. } => {
                 acknowledge_next(
                     &mut self.pending_users,
@@ -3338,12 +3421,20 @@ impl Panel {
             applet_rows_version: self.applet_rows_version,
             streaming,
             expansions,
+            display: crate::config::display(),
         };
         if self
             .transcript_derived
             .as_ref()
             .is_none_or(|derived| derived.key != key)
         {
+            if self
+                .transcript_derived
+                .as_ref()
+                .is_some_and(|derived| derived.key.display != key.display)
+            {
+                self.transcript_measurements.dirty = true;
+            }
             let rows = Arc::new(self.transcript_render_rows());
             if let Some(document) = self.transcript_text_document.sync(
                 &self.items,
@@ -3391,6 +3482,13 @@ impl Panel {
     }
 
     fn transcript_render_rows(&self) -> Vec<TranscriptRenderRow> {
+        self.transcript_render_rows_with_display(&crate::config::display())
+    }
+
+    fn transcript_render_rows_with_display(
+        &self,
+        display: &crate::config::DisplayConfig,
+    ) -> Vec<TranscriptRenderRow> {
         let mut rows: Vec<TranscriptRenderRow> = Vec::with_capacity(self.items.len() + 2);
         let mut previous_role = None;
         let mut applets = self.applet_rows.iter().enumerate().peekable();
@@ -3408,6 +3506,15 @@ impl Panel {
                 applets.next_if(|(_, (position, _))| *position <= index)
             {
                 rows.push(applet_row(ordinal, instance));
+            }
+            // Filter presentation only, never persisted items.
+            if matches!(item, Item::Reasoning(_))
+                && display.thinking_display != crate::config::ThinkingDisplay::Full
+            {
+                continue;
+            }
+            if display.screenshot_mode && matches!(item, Item::ResponseStats(_)) {
+                continue;
             }
             if matches!(item, Item::Todos(_))
                 || matches!(item, Item::Tool { name, .. } if name == "todo")
@@ -3452,16 +3559,18 @@ impl Panel {
         }
 
         for (index, item) in [
-            (!self.streaming_reasoning.is_empty()).then(|| {
-                (
-                    usize::MAX - 1,
-                    Item::Reasoning(
-                        self.reasoning_reveal
-                            .visible(&self.streaming_reasoning)
-                            .to_owned(),
-                    ),
-                )
-            }),
+            (!self.streaming_reasoning.is_empty()
+                && display.thinking_display != crate::config::ThinkingDisplay::Off)
+                .then(|| {
+                    (
+                        usize::MAX - 1,
+                        Item::Reasoning(
+                            self.reasoning_reveal
+                                .visible(&self.streaming_reasoning)
+                                .to_owned(),
+                        ),
+                    )
+                }),
             (!self.streaming_text.is_empty()).then(|| {
                 (
                     usize::MAX,
@@ -3531,6 +3640,35 @@ impl Panel {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let display = crate::config::display();
+        if display.screenshot_mode && matches!(item, Item::Error(_) | Item::BackgroundTask { .. }) {
+            return div()
+                .px_1()
+                .text_size(px(11.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(if matches!(item, Item::Error(_)) {
+                    "Error details hidden"
+                } else {
+                    "Background task"
+                })
+                .into_any_element();
+        }
+        let notice_title = match item {
+            Item::Stopped(notice) => Some(notice.title.as_str()),
+            Item::CacheMiss(_) => Some("Cache miss"),
+            _ => None,
+        };
+        if display.screenshot_mode
+            && let Some(title) = notice_title
+        {
+            return div()
+                .px_2()
+                .py_1()
+                .text_size(px(11.))
+                .text_color(Theme::global().TEXT_DIM)
+                .child(title.to_owned())
+                .into_any_element();
+        }
         match item {
             Item::Applet(instance) => {
                 let selection = self.applet_selection.clone();
@@ -3545,14 +3683,18 @@ impl Panel {
             }
             Item::User(text) => self.render_user_prompt(index, text, false, window, cx),
             Item::Image(image) => {
-                if self.image_pane_open {
+                if self.image_pane_open && !display.screenshot_mode {
                     return self.render_image_pane_link(index, image, cx);
                 }
                 let panel = cx.entity().downgrade();
-                let label = image
-                    .label
-                    .clone()
-                    .unwrap_or_else(|| "Image attachment".to_string());
+                let label = if display.screenshot_mode {
+                    "Image attachment".to_string()
+                } else {
+                    image
+                        .label
+                        .clone()
+                        .unwrap_or_else(|| "Image attachment".to_string())
+                };
                 div()
                     .id(("transcript-image", index))
                     .debug_selector(|| "transcript-image".into())
@@ -3690,6 +3832,17 @@ impl Panel {
                 done,
                 error,
             } => {
+                if display.screenshot_mode {
+                    return div()
+                        .px_1()
+                        .text_size(px(12.))
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child(format!(
+                            "{name} · {}",
+                            if *done { "finished" } else { "running" }
+                        ))
+                        .into_any_element();
+                }
                 let (offset, opacity, animating) = self
                     .arriving_tools
                     .get(call_id)
@@ -3743,15 +3896,17 @@ impl Panel {
                         ))
                         .into_any_element();
                 }
-                if let Some(preview) = self.render_edit_metadata(
-                    call_id,
-                    name,
-                    input,
-                    output,
-                    *done,
-                    error.as_deref(),
-                    cx,
-                ) {
+                if display.diff_display != crate::config::DiffDisplay::Off
+                    && let Some(preview) = self.render_edit_metadata(
+                        call_id,
+                        name,
+                        input,
+                        output,
+                        *done,
+                        error.as_deref(),
+                        cx,
+                    )
+                {
                     return div()
                         .id(("tool", index))
                         .debug_selector(|| "tool-edit".into())
@@ -3857,7 +4012,8 @@ impl Panel {
                         .child(card)
                         .into_any_element();
                 }
-                let expanded = self.expanded_tools.contains(call_id);
+                let expanded = self.expanded_tools.contains(call_id)
+                    ^ (name == "agentgrep" && display.show_agentgrep_output);
                 let detail_progress = self
                     .tool_detail_motion
                     .get(call_id)
@@ -3867,13 +4023,18 @@ impl Panel {
                     })
                     .unwrap_or(if expanded { 1.0 } else { 0.0 });
                 let detail_visible = expanded || self.tool_detail_motion.contains_key(call_id);
-                let summary = tool_summary(input);
+                let summary = if display.screenshot_mode {
+                    String::new()
+                } else {
+                    tool_summary(input)
+                };
                 // Pretty-printing the arguments and stripping ANSI from the
                 // whole output is the costly part of a tool row, and it was
                 // done for every collapsed row on every frame. The detail
                 // always has a header line, so only build it while it shows.
                 let has_detail = true;
-                let detail = detail_visible.then(|| tool_detail(name, input, output));
+                let detail = (detail_visible && !display.screenshot_mode)
+                    .then(|| tool_detail(name, input, output));
                 let (token_label, token_color) = tool_output_token_badge(output);
                 let call_id = call_id.clone();
                 let running_veil = (!*done && error.is_none()).then(|| {
@@ -3988,8 +4149,8 @@ impl Panel {
                                         .text_color(token_color)
                                         .on_click(cx.listener(move |this, _event, _window, cx| {
                                             cx.stop_propagation();
-                                            let was_expanded = this.expanded_tools.remove(&call_id);
-                                            if !was_expanded {
+                                            let was_expanded = expanded;
+                                            if !this.expanded_tools.remove(&call_id) {
                                                 this.expanded_tools.insert(call_id.clone());
                                             }
                                             let duration = crate::transition::policy(
@@ -4722,7 +4883,12 @@ impl Render for Panel {
                                         };
                                         matches!(previous, Item::Tool { .. })
                                     });
-                                let top_padding = if matches!(item, Item::ResponseStats(_)) {
+                                let display = crate::config::display();
+                                let top_padding = if display.compact_notifications
+                                    && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
+                                {
+                                    2.0
+                                } else if matches!(item, Item::ResponseStats(_)) {
                                     2.0
                                 } else if matches!(item, Item::Tool { .. }) && follows_tool {
                                     2.0
@@ -4739,7 +4905,44 @@ impl Render for Panel {
                                     .px_3()
                                     .pt(px(top_padding))
                                     .pb(px(end_pad))
+                                    .map(|el| match display.alignment {
+                                        crate::config::TextAlignment::Left => el.text_left(),
+                                        crate::config::TextAlignment::Center => el.text_center(),
+                                        crate::config::TextAlignment::Right => el.text_right(),
+                                    })
+                                    .when(display.debug_visual, |el| {
+                                        el.border_1().border_color(Theme::global().TOOL_BORDER)
+                                    })
                                     .child(element)
+                                    .when(
+                                        display.tool_call_details && !display.screenshot_mode,
+                                        |el| {
+                                            if let Item::Tool {
+                                                call_id,
+                                                input,
+                                                done,
+                                                ..
+                                            } = item
+                                            {
+                                                el.child(
+                                                    div()
+                                                        .px_1()
+                                                        .text_size(px(10.))
+                                                        .text_color(Theme::global().TEXT_FAINT)
+                                                        .child(format!(
+                                                            "call {call_id} · {} · {input}",
+                                                            if *done {
+                                                                "finished"
+                                                            } else {
+                                                                "running"
+                                                            }
+                                                        )),
+                                                )
+                                            } else {
+                                                el
+                                            }
+                                        },
+                                    )
                                     .when(row_index + 1 == row_count, |el| {
                                         el.child(latest::end_marker(
                                             row_end_visible.clone(),

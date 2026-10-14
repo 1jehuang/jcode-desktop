@@ -134,16 +134,21 @@ impl Panel {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let compact = crate::config::display().compact_notifications;
         div()
             .debug_selector(|| "response-stop-notice".into())
             .flex()
             .flex_col()
-            .gap_1()
-            .px_3()
-            .py_2()
+            .map(|el| {
+                if compact {
+                    el.gap_0().px_2().py_1()
+                } else {
+                    el.gap_1().px_3().py_2()
+                }
+            })
             .rounded_xl()
             .bg(Theme::global().HEADER_BG)
-            .text_size(px(12.))
+            .text_size(px(if compact { 11. } else { 12. }))
             .text_color(Theme::global().TEXT_DIM)
             .child(
                 div()

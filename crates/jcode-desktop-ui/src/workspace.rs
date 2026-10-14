@@ -4,6 +4,9 @@
 //! Panels live on one of four infinite horizontal strips. Focus moves
 //! left/right within a strip and up/down between strips.
 
+#[path = "workspace_commands.rs"]
+mod commands;
+
 #[path = "workspace_account_sign_in.rs"]
 mod account_sign_in;
 
@@ -1892,7 +1895,10 @@ impl Workspace {
             .and_then(restored)
             .map(|index| self.slots[index].panel.entity_id());
         self.camera_x = snapshot.camera_x;
-        self.camera_target = snapshot.camera_target;
+        // Resume from what was actually visible. With no restored animation
+        // clock, retaining the old destination would snap there on first paint.
+        // The dirty camera resolves a fresh smooth transition if focus needs it.
+        self.camera_target = snapshot.camera_x;
         self.camera_from = snapshot.camera_x;
         self.camera_started = [None; STRIP_COUNT];
         self.camera_touch_pan = [false; STRIP_COUNT];
@@ -1927,6 +1933,7 @@ impl Workspace {
             }
             self.folder_search = Some(search);
         }
+        self.restore_workspace_live_views(cx);
     }
 
     fn create_folder_search(&self, cx: &mut Context<Self>) -> Entity<PromptInput> {
@@ -8680,6 +8687,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::focus_first))
             .capture_action(cx.listener(Self::focus_last))
             .capture_action(cx.listener(Self::focus_previous))
+            .on_action(cx.listener(Self::workspace_slash_command))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))
             .on_action(cx.listener(Self::move_panel_up))

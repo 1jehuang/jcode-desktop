@@ -214,6 +214,13 @@ pub enum Command {
     Fork {
         session_id: String,
     },
+    ForkWithPrompt {
+        session_id: String,
+        prompt: String,
+    },
+    Transfer {
+        session_id: String,
+    },
     /// Read the session's todo state for the auto-poke/quality-gate policy.
     /// Answered with `Update::TodoState`.
     TodoState {
@@ -228,6 +235,11 @@ pub enum Command {
         session_id: String,
         model: String,
     },
+    RuntimeCommand {
+        session_id: String,
+        command: jcode_sdk::api::RuntimeCommand,
+        args: Vec<String>,
+    },
     SessionOperation {
         session_id: String,
         operation: SessionOperation,
@@ -238,6 +250,12 @@ pub enum Command {
     SetSessionSaved {
         session_id: String,
         saved: bool,
+    },
+    /// Retain a fork child connection and queue its first prompt after adoption.
+    ForkedInternal {
+        session: SessionInfo,
+        client: JcodeClient,
+        prompt: String,
     },
     /// Internal handoff from the asynchronous creator back to the bridge loop.
     CreatedInternal {
@@ -280,7 +298,13 @@ enum SessionCommand {
     Cancel,
     BackgroundTool,
     Fork,
+    ForkWithPrompt {
+        prompt: String,
+        internal: Sender<Command>,
+    },
+    Transfer,
     SetModel(String),
+    RuntimeCommand(jcode_sdk::api::RuntimeCommand, Vec<String>),
     Operation(SessionOperation),
     Stop,
 }
@@ -695,6 +719,27 @@ fn run_with_transports(
                     })
                     .expect("spawn remote create thread");
             }
+            Command::ForkedInternal {
+                session,
+                client,
+                prompt,
+            } => {
+                let session_id = session.session_id.clone();
+                let _ = updates.send(Update::SessionForked { session });
+                let worker = spawn_attached_session_worker(
+                    session_id.clone(),
+                    client,
+                    &updates,
+                    &transports,
+                );
+                let _ = worker.send(SessionCommand::Send {
+                    content: prompt,
+                    images: vec![],
+                });
+                if let Some(old) = workers.insert(session_id, worker) {
+                    let _ = old.send(SessionCommand::Stop);
+                }
+            }
             Command::CreatedInternal {
                 session,
                 client,
@@ -773,6 +818,18 @@ fn run_with_transports(
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
+            Command::RuntimeCommand {
+                session_id,
+                command,
+                args,
+            } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::RuntimeCommand(command, args),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
             Command::SessionOperation {
                 session_id,
                 operation,
@@ -813,6 +870,25 @@ fn run_with_transports(
                     &mut workers,
                     session_id,
                     SessionCommand::AckTodoFollowUp(effects),
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::ForkWithPrompt { session_id, prompt } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::ForkWithPrompt {
+                        prompt,
+                        internal: internal.clone(),
+                    },
+                    |session_id| spawn_session_worker(session_id, &updates, &transports),
+                );
+            }
+            Command::Transfer { session_id } => {
+                send_to_session_worker(
+                    &mut workers,
+                    session_id,
+                    SessionCommand::Transfer,
                     |session_id| spawn_session_worker(session_id, &updates, &transports),
                 );
             }
@@ -1988,6 +2064,46 @@ fn session_worker_with_connector(
                     SessionCommand::BackgroundTool => {
                         let _ = client.background_tool(real_id);
                     }
+                    SessionCommand::ForkWithPrompt { prompt, internal } => {
+                        let fork = (|| -> jcode_sdk::Result<(SessionInfo, JcodeClient)> {
+                            let session = client.fork_session(real_id)?;
+                            let child_address = remote::SessionAddress {
+                                host: address.host.clone(),
+                                session_id: session.session_id.clone(),
+                            };
+                            let child = connector(&child_address)?;
+                            child.attach_session(&session.session_id)?;
+                            Ok((address.session_info(session), child))
+                        })();
+                        match fork {
+                            Ok((session, child)) => {
+                                let _ = internal.send(Command::ForkedInternal {
+                                    session,
+                                    client: child,
+                                    prompt,
+                                });
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Failed to fork session with prompt: {error}"),
+                                });
+                            }
+                        }
+                    }
+                    SessionCommand::Transfer => match client.transfer_session(real_id) {
+                        Ok(session) => {
+                            let _ = updates.send(Update::SessionForked {
+                                session: address.session_info(session),
+                            });
+                        }
+                        Err(error) => {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Failed to transfer session: {error}"),
+                            });
+                        }
+                    },
                     SessionCommand::Fork => match client.fork_session(real_id) {
                         Ok(session) => {
                             let session = address.session_info(session);
@@ -2006,6 +2122,30 @@ fn session_worker_with_connector(
                                 session_id: session_id.clone(),
                                 reason: format!("Failed to switch model: {error}"),
                             });
+                        }
+                    }
+                    SessionCommand::RuntimeCommand(command, args) => {
+                        // Route through the session's own client and native id,
+                        // including remote transports, never the local runtime.
+                        match client.runtime_command(real_id, command, args) {
+                            Ok(mut output) => {
+                                output.session_id = session_id.clone();
+                                let _ = updates.send(Update::Event {
+                                    session_id: session_id.clone(),
+                                    event: ApiEvent::RuntimeCommandResult {
+                                        session_id: output.session_id,
+                                        command: output.command,
+                                        data: output.data,
+                                        message: output.message,
+                                    },
+                                });
+                            }
+                            Err(error) => {
+                                let _ = updates.send(Update::CommandFailed {
+                                    session_id: session_id.clone(),
+                                    reason: format!("Runtime command failed: {error}"),
+                                });
+                            }
                         }
                     }
                     SessionCommand::Operation(operation) => {
@@ -2296,6 +2436,7 @@ fn send_retry_phase(updates: &UpdateSender, session_id: &str, phase: String) {
 
 fn event_session_id(event: &ApiEvent) -> Option<&str> {
     match event {
+        ApiEvent::RuntimeCommandResult { session_id, .. } => Some(session_id),
         ApiEvent::TextDelta { session_id, .. }
         | ApiEvent::ReasoningDelta { session_id, .. }
         | ApiEvent::ReasoningDone { session_id, .. }
@@ -2365,6 +2506,9 @@ fn namespace_event(mut event: ApiEvent, address: &remote::SessionAddress) -> Api
         | ApiEvent::Compacted { session_id, .. }
         | ApiEvent::SessionRenamed { session_id, .. }
         | ApiEvent::History { session_id, .. } => *session_id = address.ui_id(session_id),
+        ApiEvent::RuntimeCommandResult { session_id, .. } => {
+            *session_id = address.ui_id(session_id);
+        }
         ApiEvent::Attached { session } | ApiEvent::SessionForked { session } => {
             session.session_id = address.ui_id(&session.session_id);
         }

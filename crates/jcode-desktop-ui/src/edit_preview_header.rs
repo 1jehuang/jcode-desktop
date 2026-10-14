@@ -30,7 +30,8 @@ impl TimedPreview {
         });
         let theme = Theme::global();
         let index = self.index;
-        let countdown = self.timer.state() == EditPreviewState::Countdown;
+        let countdown = self.mode == crate::config::DiffDisplay::Inline
+            && self.timer.state() == EditPreviewState::Countdown;
         let file = &self.files[index];
         let request = self.header.review.clone();
         let focus = self.header.focus.clone();

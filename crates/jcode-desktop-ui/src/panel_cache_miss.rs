@@ -65,9 +65,13 @@ impl Panel {
             .debug_selector(|| "kv-cache-miss-notice".into())
             .flex()
             .items_center()
-            .gap_2()
-            .px_3()
-            .py_1()
+            .map(|el| {
+                if crate::config::display().compact_notifications {
+                    el.gap_1().px_2().py_1()
+                } else {
+                    el.gap_2().px_3().py_2()
+                }
+            })
             .rounded_full()
             .bg(theme.HEADER_BG)
             .text_size(px(11.))

@@ -59,10 +59,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/btw", "Ask a side question in the side panel"),
     RegisteredCommand::public("/ssh", "Connect to a remote machine using system SSH"),
     RegisteredCommand::public("/git", "Show git status for the session working directory"),
-    RegisteredCommand::public("/colors", "List, configure, and score every TUI color"),
+    RegisteredCommand::public("/colors", "List or change Desktop color themes"),
     RegisteredCommand::hidden("/color", "Alias for /colors"),
-    RegisteredCommand::public("/hotkeys", "List hotkeys with your personal usage"),
-    RegisteredCommand::public("/terminal-setup", "Fix Shift+Enter newlines"),
+    RegisteredCommand::public("/hotkeys", "List registered Desktop hotkeys and contexts"),
+    RegisteredCommand::public("/terminal-setup", "Explain Desktop's built-in terminal setup"),
     RegisteredCommand::public("/commit", "Make logical commits from current changes"),
     RegisteredCommand::public(
         "/commit-push",
@@ -75,16 +75,16 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     ),
     RegisteredCommand::public(
         "/fast-release",
-        "Publish Linux immediately from the warm selfdev cache; CI adds other platforms",
+        "Open Desktop's standard validated publish tracker",
     ),
     RegisteredCommand::public(
         "/fast-macos-release",
-        "Publish a prepared macOS arm64 build immediately; CI adds other platforms",
+        "Open Desktop's cross-platform publish tracker",
     ),
     RegisteredCommand::public("/remote", "Reach this session from another machine"),
     RegisteredCommand::public(
         "/remote-release",
-        "Push the release tag immediately; CI builds and publishes every platform",
+        "Open Desktop's publish tracker with CI-managed platform builds",
     ),
     RegisteredCommand::hidden("/cut-release", "Alias for /fast-release"),
     RegisteredCommand::hidden("/commit-push-release", "Alias for /cut-release"),
@@ -140,7 +140,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/test", "Verify a claim/current changes with layered tests"),
     RegisteredCommand::public(
         "/initiatives",
-        "Open initiatives overview / resume tracked initiatives",
+        "Show current session goals and explain retired legacy initiatives",
     ),
     RegisteredCommand::public("/goals", "Legacy alias for /initiatives"),
     RegisteredCommand::public("/swarm", "Toggle swarm feature"),
@@ -173,7 +173,7 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/log", "Mark the current location in the jcode logs"),
     RegisteredCommand::public(
         "/keys",
-        "Show keybinding conflicts with your terminal and OS (/keys refresh to rescan)",
+        "List Desktop keybindings and contexts (/keys refresh to refresh the list)",
     ),
     RegisteredCommand::hidden("/keybindings", "Alias for /keys"),
     RegisteredCommand::public(
@@ -218,11 +218,11 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/accounts", "Alias for /account"),
     RegisteredCommand::public("/cache", "Show cache stats or set cache TTL"),
     RegisteredCommand::public("/debug-visual", "Toggle visual debug overlay"),
-    RegisteredCommand::public("/screenshot-mode", "Toggle screenshot capture mode"),
-    RegisteredCommand::public("/screenshot", "Capture a screenshot debug state"),
-    RegisteredCommand::public("/record", "Record a demo capture"),
-    RegisteredCommand::remote("/client-reload", "Force reload client binary"),
-    RegisteredCommand::remote("/server-reload", "Force reload server binary"),
+    RegisteredCommand::public("/screenshot-mode", "Hide identifying interface metadata"),
+    RegisteredCommand::public("/screenshot", "Export a private JSON screenshot debug snapshot"),
+    RegisteredCommand::public("/record", "Record a bounded debug snapshot timeline (JSONL)"),
+    RegisteredCommand::remote("/client-reload", "Rebuild and hot-reload the Desktop UI"),
+    RegisteredCommand::remote("/server-reload", "Request a graceful server binary reload"),
     RegisteredCommand::remote(
         "/continue",
         "Continue every interrupted live session that would auto-resume",

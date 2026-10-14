@@ -140,6 +140,7 @@ impl Workspace {
             // Deliberately omit new/move/resize/overview/sidebar/workspace
             // actions. The host still handles Ctrl+R, and the panel owns chat,
             // model, login, clipboard, image and transcript shortcuts.
+            .on_action(cx.listener(Self::workspace_slash_command))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::fork_panel))
             .on_action(cx.listener(Self::cycle_theme))
