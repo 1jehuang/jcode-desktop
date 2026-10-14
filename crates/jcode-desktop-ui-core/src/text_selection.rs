@@ -69,6 +69,7 @@ struct LeafGeometry {
 #[derive(Default)]
 struct PaintedGeometry {
     leaves: HashMap<SharedString, LeafGeometry>,
+    selected_row: Option<(usize, Bounds<Pixels>)>,
     surface_bounds: Option<Bounds<Pixels>>,
     /// Painted bounds of the last selected visual line, in window space.
     tail_bounds: Option<Bounds<Pixels>>,
@@ -659,11 +660,32 @@ pub fn selectable_with_prefix(
                     if let Some(range) = model.read(cx).range_for(&key, text.len())
                         && !range.is_empty()
                     {
-                        let lines = selected_line_bounds(
+                        let selection = model.read(cx);
+                        let index = selection.document_index.get(&key).copied();
+                        let continues = index
+                            .zip(selection.document_range())
+                            .is_some_and(|(index, (_, _, last, _))| index < last);
+                        let mut lines = selected_line_bounds(
                             &layout,
                             range.start + prefix_len..range.end + prefix_len,
                             window.text_style().text_align,
                         );
+                        if continues && let Some((last, _, _)) = lines.last_mut() {
+                            last.size.width =
+                                layout.bounds().right() + px(SELECTION_PAD_X) - last.left();
+                        }
+                        // Bridge paragraph spacing only between consecutive
+                        // selected leaves, never across columns or skipped rows.
+                        let mut painted = selection.painted.borrow_mut();
+                        if let Some((first, _, _)) = lines.first()
+                            && let Some((previous_index, previous)) = painted.selected_row
+                            && index == Some(previous_index + 1)
+                            && let Some(bridge) = selection_bridge(previous, *first)
+                        {
+                            window.paint_quad(gpui::fill(bridge, Theme::global().SELECTION));
+                        }
+                        painted.selected_row = index.zip(lines.last().map(|(row, _, _)| *row));
+                        drop(painted);
                         paint_selection(&lines, window);
                         let mask = window.content_mask().bounds;
                         let visible = lines
@@ -808,6 +830,7 @@ pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::A
                 let selection = model.read(cx);
                 let mut painted = selection.painted.borrow_mut();
                 painted.leaves.clear();
+                painted.selected_row = None;
                 painted.surface_bounds = Some(bounds);
                 // Leaves repaint after the surface and rebuild the union.
                 painted.selection_bounds = None;
@@ -902,8 +925,19 @@ pub fn surface(model: Entity<TextSelection>, list: Option<ListState>) -> gpui::A
 }
 
 const SELECTION_PAD_X: f32 = 3.;
-const SELECTION_RADIUS: f32 = 6.;
-const SELECTION_GAP: f32 = 2.;
+const SELECTION_RADIUS: f32 = 0.;
+
+fn selection_bridge(previous: Bounds<Pixels>, next: Bounds<Pixels>) -> Option<Bounds<Pixels>> {
+    let gap = next.top() - previous.bottom();
+    let left = previous.left().max(next.left());
+    let right = previous.right().min(next.right());
+    (gap >= px(0.) && gap <= px(64.) && right > left).then(|| {
+        Bounds::new(
+            gpui::point(left, previous.bottom()),
+            gpui::size(right - left, gap),
+        )
+    })
+}
 
 /// Visual line rectangles covering a display-index range of a shaped layout.
 fn selected_line_bounds(
@@ -943,6 +977,11 @@ fn selected_line_bounds(
                 let base = unwrapped.x_for_index(start);
                 let left = unwrapped.x_for_index(from.min(segment.end) - line_start) - base;
                 let mut right = unwrapped.x_for_index(to.max(from) - line_start) - base;
+                // Include the rest of a row when selection continues onto
+                // the next one, preserving precise first and last endpoints.
+                if range.end > segment.end {
+                    right = bounds.size.width - offset;
+                }
                 if includes_break {
                     right = right.max(left + px(4.));
                 }
@@ -965,9 +1004,7 @@ fn selected_line_bounds(
     result
 }
 
-/// Paint the selection as rounded cards in the prompt card style. Soft-wrapped
-/// rows of one source line form one stepped shape. Every explicit newline
-/// starts a new card, so the highlight follows the text's own line structure.
+/// Paint touching selected rows as one continuous, softly stepped shape.
 fn paint_selection(lines: &[(Bounds<Pixels>, usize, Pixels)], window: &mut Window) {
     let color = Theme::global().SELECTION;
     let lines: Vec<_> = lines
@@ -981,30 +1018,20 @@ fn paint_selection(lines: &[(Bounds<Pixels>, usize, Pixels)], window: &mut Windo
     }
 }
 
-/// Split visual rows into cards at explicit newlines and horizontal gaps.
-/// A hairline inset keeps vertically adjacent cards visibly separate.
+/// Join adjacent rows across both soft wraps and explicit newlines.
+/// Genuinely separate blocks and columns remain independent.
 fn selection_groups(lines: &[(Bounds<Pixels>, usize)]) -> Vec<Vec<Bounds<Pixels>>> {
     let mut groups: Vec<Vec<Bounds<Pixels>>> = Vec::new();
-    for (i, (bounds, logical)) in lines.iter().enumerate() {
+    for (i, (bounds, _)) in lines.iter().enumerate() {
         let joins = i > 0 && {
-            let (previous, previous_logical) = &lines[i - 1];
-            previous_logical == logical
+            let (previous, _) = &lines[i - 1];
+            (bounds.top() - previous.bottom()).abs() <= px(0.5)
                 && bounds.right() > previous.left()
                 && bounds.left() < previous.right()
         };
         match groups.last_mut() {
             Some(group) if joins => group.push(*bounds),
             _ => groups.push(vec![*bounds]),
-        }
-    }
-    for group in &mut groups {
-        let inset = px(SELECTION_GAP / 2.);
-        if let Some(first) = group.first_mut() {
-            first.origin.y += inset;
-            first.size.height -= inset;
-        }
-        if let Some(last) = group.last_mut() {
-            last.size.height -= inset;
         }
     }
     groups
@@ -1216,7 +1243,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_newlines_split_selection_cards_but_soft_wraps_join() {
+    fn explicit_newlines_and_soft_wraps_form_one_selection() {
         let row = |x: f32, y: f32, w: f32| {
             Bounds::new(gpui::point(px(x), px(y)), gpui::size(px(w), px(20.)))
         };
@@ -1228,13 +1255,22 @@ mod tests {
             (row(0., 60., 60.), 2),
         ];
         let groups = selection_groups(&lines);
-        assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(), [2, 1, 1]);
-        // Adjacent cards never touch, so each newline reads as a break.
-        for pair in groups.windows(2) {
-            let above = pair[0].last().unwrap().bottom();
-            let below = pair[1].first().unwrap().top();
-            assert!(below - above >= px(SELECTION_GAP) - px(0.01));
+        assert_eq!(groups.iter().map(Vec::len).collect::<Vec<_>>(), [4]);
+        assert_eq!(groups[0][0].top(), px(0.));
+        assert_eq!(groups[0][3].bottom(), px(80.));
+        for pair in groups[0].windows(2) {
+            assert_eq!(pair[0].bottom(), pair[1].top());
         }
+        let separated = [(row(0., 0., 100.), 0), (row(0., 40., 100.), 1)];
+        assert_eq!(selection_groups(&separated).len(), 2);
+        let columns = [(row(0., 0., 100.), 0), (row(200., 20., 100.), 1)];
+        assert_eq!(selection_groups(&columns).len(), 2);
+        let bridge = selection_bridge(row(0., 0., 200.), row(0., 32., 120.)).unwrap();
+        assert_eq!(bridge.top(), px(20.));
+        assert_eq!(bridge.bottom(), px(32.));
+        assert_eq!(bridge.size.width, px(120.));
+        assert!(selection_bridge(row(0., 0., 100.), row(200., 32., 100.)).is_none());
+        assert!(selection_bridge(row(0., 0., 100.), row(0., 100., 100.)).is_none());
     }
 
     #[gpui::test]

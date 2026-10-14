@@ -155,6 +155,8 @@ def main():
         "graphite", "slate", "paper", "silver", "light-neutral", "chatgpt-light", "dark-neutral", "pure-black", "glass",
     ), help="render a built-in palette with isolated settings")
     parser.add_argument("--ai-font", help="assistant-only font family for the isolated fixture")
+    parser.add_argument("--selection-drag", nargs=4, type=int, metavar=("X1", "Y1", "X2", "Y2"),
+                        help="drag a native text selection on the private display before capture")
     args = parser.parse_args()
     if args.onboarding_interact:
         others = any(value for key, value in vars(args).items()
@@ -578,6 +580,12 @@ def main():
                     subprocess.run(["xdotool", "key", "--clearmodifiers", "Escape"],
                                    env=env, cwd=root, check=True, timeout=10)
                     time.sleep(0.3)
+                if args.selection_drag:
+                    x1, y1, x2, y2 = map(str, args.selection_drag)
+                    subprocess.run(["xdotool", "mousemove", x1, y1, "mousedown", "1",
+                                    "sleep", "0.1", "mousemove", x2, y2, "sleep", "0.2",
+                                    "mouseup", "1"], env=env, cwd=root, check=True, timeout=10)
+                    time.sleep(1.2)
                 if args.pinned_todo_interact:
                     from pinned_todo_acceptance import verify
                     verify(output, env)
