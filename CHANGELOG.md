@@ -1,5 +1,46 @@
 ## What's new
 
+### Jcode Desktop 0.6.0
+
+A project-first sidebar, connected transcript selections, and a calmer workspace with native workflow commands.
+
+#### Themes
+
+- A redesigned sidebar keeps projects and live sessions within reach, with a stable project dock and user-created chat collections.
+- Transcript selections form continuous connected blocks, including text across edit tool cards.
+- Native slash commands and adaptive response cards keep more agent workflows inside Desktop.
+
+#### Highlights
+
+- Reveal the compact sidebar with Super+B. Connected Desktop sessions appear as live, and session rows show todo progress instead of a working timer.
+- Older sessions are hidden by default. Keep up to five recently closed chats within reach for 30 minutes, or use Show past sessions to browse the full history.
+- The Chat section menu is a single compact icon, and zero-line diff counters are omitted from session rows.
+- Group chats into your own collections without changing their project.
+- Select and copy transcript text across edit tool cards without disconnected highlight fragments.
+- Use Desktop slash commands for account selection, usage resets, and agent workflows through native UI and runtime APIs.
+- Update Desktop in place on Linux, FreeBSD, and Windows. The version pill checks for updates and shows progress and results inline.
+
+#### Improvements
+
+- Pinned todos stay expanded and show intent, goal gates, and confidence, with compact single-line status rows and hover explanations.
+- Streaming text settles in calmer blocks, with a steady activity spinner and smoother scrolling. Scrolled-up history passes beneath a frosted composer.
+- Tabs show progress fills and an unseen-completion glow. Horizontal workspace scrolling snaps to the nearest panel.
+- Onboarding offers detected email choices, inline sign-in, and a folded theme picker with Pure Black as the default.
+- Error notices are shorter and calmer, with a Copy pill for full diagnostic details.
+- Account sections move by dragging, reducing accidental rearrangement.
+
+#### Fixes
+
+- Project dock entries stay stable while sessions spawn, and connected sessions no longer appear as past sessions.
+- Queued prompts resume correctly after automatic retries, and replayed reconnect notices coalesce across usage footers.
+- Windows launches avoid stray console windows and reuse a single application instance.
+- Hot reload refuses UI builds with incompatible shared state types rather than risking a crash.
+- macOS update checks wait for Sparkle to extract and validate the downloaded update.
+
+Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
+
+## Previous releases
+
 ### Jcode Desktop 0.5.1
 
 An account menu, drag and drop, self-healing turns, and a faster workspace. This is the first public build of the 0.5 line, since 0.5.0 never cleared its FreeBSD release gate.
@@ -38,8 +79,6 @@ An account menu, drag and drop, self-healing turns, and a faster workspace. This
 - FreeBSD builds again. The opt-in codemode tool is unavailable there.
 
 Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
-
-## Previous releases
 
 ### Jcode Desktop 0.4.0
 
