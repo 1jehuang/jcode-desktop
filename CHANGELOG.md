@@ -1,8 +1,8 @@
 ## What's new
 
-### Jcode Desktop 0.6.0
+### Jcode Desktop 0.6.1
 
-A project-first sidebar, connected transcript selections, and a calmer workspace with native workflow commands.
+A project-first sidebar, connected transcript selections, and a calmer workspace with native workflow commands. This is the first public release in this line, following a runtime packaging fix.
 
 #### Themes
 
@@ -31,6 +31,7 @@ A project-first sidebar, connected transcript selections, and a calmer workspace
 
 #### Fixes
 
+- Native release builds use a compatible, immutable Jcode runtime with every required Desktop dependency and SDK API.
 - Project dock entries stay stable while sessions spawn, and connected sessions no longer appear as past sessions.
 - Queued prompts resume correctly after automatic retries, and replayed reconnect notices coalesce across usage footers.
 - Windows launches avoid stray console windows and reuse a single application instance.

@@ -32,7 +32,7 @@ SHOTS = {
         (2, "accounts", ["--accounts"], "1190x480+236+150", 1000),
         (3, "model-picker", ["--model-interact"], "1200x460+232+505", 1000),
     ],
-    "0.6.0": [
+    "0.6.1": [
         # A zero-distance native drag clicks Show past sessions so the dock and
         # populated collections are visible without changing fixture defaults.
         (1, "project-sidebar", ["--collections", "--selection-drag", "80", "132", "80", "132"],

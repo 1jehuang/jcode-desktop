@@ -58,9 +58,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 29d17a9aee1851d90d8a7a061d4535e2d1864994 # current Jcode runtime: SDK todo/soft-interrupt APIs Desktop main uses, plus Desktop fleet telemetry
+          ref: 1f612a7d376e06e4eb8641736197f61a21106131 # verified runtime: native voice, collections, commands, user responses and session presence
           path: jcode
           submodules: recursive
+      - name: Verify runtime source compatibility
+        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit 1f612a7d376e06e4eb8641736197f61a21106131
       - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin

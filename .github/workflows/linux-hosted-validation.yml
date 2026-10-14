@@ -14,7 +14,7 @@ on:
       jcode_revision:
         description: Reviewed full Jcode runtime commit with metadata snapshot rerun support
         required: true
-        default: af0dff74f2342245df43d2aa2ba6620a75669414
+        default: 1f612a7d376e06e4eb8641736197f61a21106131
       rust_version:
         description: Exact stable Rust version installed on the hosted fleet (major.minor.patch)
         required: true
@@ -62,6 +62,10 @@ jobs:
           fetch-depth: 0
           submodules: recursive
           persist-credentials: false
+      - name: Verify runtime source compatibility
+        env:
+          JCODE_REVISION: ${{ inputs.jcode_revision }}
+        run: python3 jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit "$JCODE_REVISION"
       - name: Check out pinned hosted compiler client
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
