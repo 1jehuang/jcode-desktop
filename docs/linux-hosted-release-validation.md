@@ -22,8 +22,9 @@ targets, release artifact retrieval (including warm-cache outputs), the Desktop
 and CLI build metadata allowlist, `JUSTRUST_REMOTE_REQUIRED=1`, and
 `JUSTRUST_TOOLCHAIN_REQUIRED=1`. The workflow requires the full justrust revision
 as an input and builds that client with `cargo install --locked`. Its reviewed
-default is `c3e8cdb43cee1896e0f50966ef0e7bb811de314b`, including strict compiler
-fallback guards for ordinary, nested, and unrecorded execution. It never
+default is `cbeea7d74f122d31d8d40854d9c744bcde6edfc1`, including strict compiler
+fallback guards for ordinary, nested, and unrecorded execution, plus artifact
+retrieval that survives an atomic client upgrade during a build. It never
 installs a floating latest client. All third-party actions are pinned by SHA.
 
 `RUSTUP_TOOLCHAIN` must be an exact stable Rust release, not `stable`, `nightly`,
@@ -106,3 +107,45 @@ CLI version/hash/history, inspect artifact dependencies, verify both archives an
 checksums, and pass both native launch gates. A successful tiny compiler fixture
 or merely declaring remote mode is insufficient. Missing credentials or any
 unproven gate keeps production release compilation on the existing local path.
+
+## Genuine package acceptance, October 14, 2026
+
+An isolated clean-source trial completed at 04:25:55 UTC using the exact client
+above, official Rust `1.99.0`, and native `x86_64-unknown-linux-gnu`. Its frozen
+client binary SHA-256 was
+`57d39f0bcc6bdac593942cbf835d03f3152e6a43d3dfad74f92010e8a0e8fcee`,
+verified before and after the trial. No public release was created.
+
+Source snapshots were Desktop
+`92ed11784e0769e039df9b7b842732fddd83da2f` and Jcode runtime
+`af0dff74f2342245df43d2aa2ba6620a75669414`. All three genuine release binaries
+compiled on hosted, downloaded, and passed matching successful/hosted/compiler/
+locked-target report checks:
+
+| Binary | Recorded build | Result |
+| --- | --- | --- |
+| `jcode-desktop` | `20261013-212446226-1350571` | Hosted, Rust 1.99.0, exit 0 |
+| `jcode` | `20261013-212510500-1358374` | Hosted, Rust 1.99.0, exit 0 |
+| `jcode-harness-api-bridge` | `20261013-212518911-1358770` | Hosted, Rust 1.99.0, exit 0 |
+
+Local assembly produced `Jcode-0.3.0-linux-x86_64.tar.gz` and
+`Jcode-0.3.0-linux-amd64.deb`. Both passed the genuine release-package verifier
+and `SHA256SUMS-linux` verification. The bundled Desktop reported version
+`0.3.0` with its exact full source hash, the CLI reported package version
+`0.95.0` and source hash `af0dff74f`, and the bridge help command succeeded.
+The assembled package launched on a private Xvfb/Openbox X11 display and remained
+alive for eight seconds with a fresh isolated HOME and no inherited credentials.
+
+The first real trial also exposed an artifact-lookup failure when another
+process atomically reinstalled the running client. The pinned fix is covered by
+a Linux subprocess regression that replaces a running artifact-server binary
+before its metadata request, plus a regression preserving original Cargo error
+diagnostics. The frozen-client retry above passed end to end.
+
+This is real compilation, transport, package, and local X11 acceptance, not a
+synthetic compiler fixture or a performance comparison. Actual Actions execution
+still requires the missing `JCODE_API_KEY` secret. Native Wayland was unavailable
+on this local validation host, so its launch gate remains required on the Ubuntu
+runner before any production promotion. The automatic publishing path remains
+unchanged. The full Desktop workspace also retained its independently reproduced
+pre-existing viewport-position test failure, separate from these release checks.
