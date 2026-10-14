@@ -3,6 +3,10 @@ use gpui::{Context, IntoElement, Render, SharedString, Window, div, prelude::*, 
 
 use crate::theme::Theme;
 
+pub(super) fn has_changes(stats: &jcode_sdk::SessionEditStats) -> bool {
+    stats.added > 0 || stats.removed > 0
+}
+
 pub(super) fn refresh_after(event: &jcode_sdk::ApiEvent) -> bool {
     match event {
         // A failed multi-file patch can still contain successful file mutations.
@@ -123,12 +127,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sidebar_edit_totals_only_show_when_lines_changed() {
+        for approximate in [false, true] {
+            for (added, removed, visible) in [
+                (0, 0, false),
+                (1, 0, true),
+                (0, 1, true),
+                (1, 1, true),
+                (u64::MAX, u64::MAX, true),
+            ] {
+                let mut totals = stats(added, removed);
+                totals.approximate = approximate;
+                assert_eq!(super::has_changes(&totals), visible);
+            }
+        }
+    }
+
     #[gpui::test]
     fn sidebar_edit_totals_are_session_scoped_and_refresh_without_losing_navigation(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, vcx) =
-            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_history.show_all = true;
+            workspace
+        });
         let mut first = session_info("first", Some("First session"));
         first.working_dir = Some("/same/repo".into());
         first.edit_stats = Some(stats(128, 37));
@@ -200,8 +224,11 @@ mod tests {
     fn sidebar_edit_metadata_remeasures_root_without_rendering_swarm_counts(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, vcx) =
-            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_history.show_all = true;
+            workspace
+        });
         let root = session_info("root", Some("Parent"));
         workspace.update(vcx, |w, cx| {
             w.layout_mode = crate::config::LayoutMode::Normal;
@@ -217,6 +244,22 @@ mod tests {
         let before = vcx.debug_bounds("sidebar-session-0").unwrap().size.height;
         let mut root_with_stats = root.clone();
         root_with_stats.edit_stats = Some(stats(0, 0));
+        workspace.update(vcx, |w, cx| {
+            w.apply(
+                Update::Sessions {
+                    sessions: vec![root_with_stats.clone()],
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            vcx.debug_bounds("sidebar-session-0").unwrap().size.height,
+            before
+        );
+        assert!(vcx.debug_bounds("sidebar-edits-root").is_none());
+        root_with_stats.edit_stats = Some(stats(0, 1));
         workspace.update(vcx, |w, cx| {
             w.apply(
                 Update::Sessions {
@@ -254,6 +297,8 @@ mod tests {
         assert!(vcx.debug_bounds("sidebar-session-1").is_none());
         assert_eq!(vcx.debug_bounds("sidebar-edits-root").unwrap(), root_badge);
         assert_eq!(vcx.debug_bounds("sidebar-session-0").unwrap(), root_row);
+        let mut root = root;
+        root.edit_stats = Some(stats(0, 0));
         workspace.update(vcx, |w, cx| {
             w.apply(
                 Update::Sessions {

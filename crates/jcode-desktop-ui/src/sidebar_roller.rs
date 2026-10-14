@@ -173,11 +173,8 @@ impl Workspace {
                 div()
                     .id("sidebar-section-trigger")
                     .debug_selector(|| "sidebar-section-trigger".into())
-                    .size_full()
-                    .px_2()
-                    .rounded_md()
-                    .border_1()
-                    .border_color(Theme::global().PANEL_BORDER)
+                    .size(px(28.0))
+                    .rounded_full()
                     .bg(if self.sidebar_roller.expanded {
                         Theme::global().PANEL_BG
                     } else {
@@ -191,6 +188,14 @@ impl Workspace {
                     .text_color(Theme::global().TEXT)
                     .cursor_pointer()
                     .hover(|el| el.bg(Theme::global().PANEL_BG))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| {
+                            remotes::HeaderTooltip(format!(
+                                "Sidebar menu · {label}. Click to open or scroll to switch sections."
+                            ).into())
+                        })
+                        .into()
+                    })
                     .on_mouse_down(
                         gpui::MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
@@ -200,18 +205,10 @@ impl Workspace {
                             cx.notify();
                         }),
                     )
-                    .child(div().debug_selector(move || id.into()).child(label))
                     .child(
                         div()
-                            .debug_selector(|| "sidebar-section-chevron".into())
-                            .absolute()
-                            .right(px(8.0))
-                            .text_color(Theme::global().TEXT_DIM)
-                            .child(if self.sidebar_roller.expanded {
-                                "⌃"
-                            } else {
-                                "⌄"
-                            }),
+                            .debug_selector(move || id.into())
+                            .child("☰"),
                     ),
             );
         div()
@@ -477,15 +474,18 @@ mod tests {
         vcx.run_until_parked();
         let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         let label = vcx.debug_bounds("sidebar-sessions-tab").unwrap();
-        let chevron = vcx.debug_bounds("sidebar-section-chevron").unwrap();
+        let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        assert_eq!(trigger.size.width, px(28.0));
+        assert_eq!(trigger.size.height, px(28.0));
+        assert!(trigger.size.width < header.size.width / 2.0);
         assert!(label.left() >= trigger.left());
         assert_eq!(
             label.center().x,
             trigger.center().x,
-            "section title is centered independently of the chevron"
+            "menu icon is centered in its compact trigger"
         );
-        assert!(label.right() < chevron.left());
-        assert!(chevron.right() <= trigger.right());
+        assert!(label.right() <= trigger.right());
+        assert!(vcx.debug_bounds("sidebar-section-chevron").is_none());
         assert!(vcx.debug_bounds("sidebar-learn-tab").is_none());
         assert!(vcx.debug_bounds("sidebar-roller-previous").is_none());
         assert!(vcx.debug_bounds("sidebar-roller-next").is_none());

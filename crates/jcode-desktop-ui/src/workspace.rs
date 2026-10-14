@@ -829,11 +829,8 @@ pub struct Workspace {
     sidebar_scroll: ScrollHandle,
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
-    /// Last known "header is below the list" answer per project key. Spawning
-    /// sessions remeasures rows, and an unmeasured header must keep its dock
-    /// entry rather than blinking out for a frame.
-    sidebar_dock_below: HashMap<String, bool>,
     sidebar_projects: sidebar_projects::State,
+    sidebar_history: sidebar_selection::History,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     /// Session row under the pointer. Hovering swaps its spinner for actions.
@@ -1147,8 +1144,8 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
-            sidebar_dock_below: HashMap::new(),
             sidebar_projects: Default::default(),
+            sidebar_history: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
@@ -1531,8 +1528,8 @@ impl Workspace {
             sidebar_scroll: ScrollHandle::new(),
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
-            sidebar_dock_below: HashMap::new(),
             sidebar_projects: Default::default(),
+            sidebar_history: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
@@ -3913,6 +3910,7 @@ impl Workspace {
             && !self.slots[closed].panel.read(cx).is_machines()
             && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
+            self.sidebar_history.closed(session_id.clone(), Instant::now());
             self.bridge.send(Command::Unwatch { session_id });
         }
         if self.previous == Some(closed_id) {
@@ -5521,6 +5519,9 @@ impl Workspace {
             .filter(|session| {
                 !nested.contains(&session.session_id)
                     && !closing_sessions.contains(&session.session_id)
+                    && (open_marks.contains_key(&session.session_id)
+                        || session.user_connected
+                        || self.sidebar_history.visible(&session.session_id, Instant::now()))
             })
             .partition(|session| {
                 open_marks.contains_key(&session.session_id) || session.user_connected
@@ -5756,7 +5757,7 @@ impl Workspace {
                     details: (row.subdirectory.is_some()
                         || sidebar_session_created_ms(&session.session_id).is_some()
                         || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
-                        || session.edit_stats.is_some()),
+                        || session.edit_stats.as_ref().is_some_and(sidebar_edits::has_changes)),
                     menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
                 }
             })
@@ -5788,6 +5789,7 @@ impl Workspace {
             .overflow_hidden();
         list = list.flex().flex_col();
         list = list.child(self.render_sidebar_quick_actions(cx));
+        list = list.child(self.render_sidebar_history_toggle(cx));
         if let Some(applets) = self.sidebar_applets.take() {
             list = list.child(applets);
         }
@@ -5852,128 +5854,7 @@ impl Workspace {
             );
         }
         if !ordered_sessions.is_empty() {
-            // Projects whose header sits below the visible list. They stay
-            // reachable in a dock at the bottom, so one large project never
-            // hides the others. Uses the last layout, and list scrolling
-            // re-renders this view.
-            let below = if groups.len() > 1 {
-                let list = &self.sidebar_sessions_list;
-                let memory = &mut self.sidebar_dock_below;
-                let mut seen = HashSet::new();
-                let below = ordered_sessions
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, row)| row.header)
-                    .filter(|(index, row)| {
-                        let key = &groups[row.project].0.key;
-                        seen.insert(key.clone());
-                        // Unmeasured rows (just spliced in or remeasured) give
-                        // no answer. Hold the last one so the dock stays put.
-                        match list.item_is_below_viewport(*index) {
-                            Some(below) => {
-                                memory.insert(key.clone(), below);
-                                below
-                            }
-                            None => memory.get(key).copied().unwrap_or(false),
-                        }
-                    })
-                    .map(|(index, row)| (index, row.project))
-                    .collect::<Vec<_>>();
-                memory.retain(|key, _| seen.contains(key));
-                below
-            } else {
-                self.sidebar_dock_below.clear();
-                Vec::new()
-            };
-            // Like the pinned last prompt in chat, headers that scrolled
-            // below the list stack at its bottom edge, up to a limit.
-            const DOCK_LIMIT: usize = 3;
-            let dock = (!below.is_empty()).then(|| {
-                let overflow = below.len().saturating_sub(DOCK_LIMIT);
-                let next_hidden = below.get(DOCK_LIMIT).map(|(item, _)| *item);
-                fn jump(
-                    item: usize,
-                ) -> impl Fn(
-                    &mut Workspace,
-                    &gpui::MouseDownEvent,
-                    &mut Window,
-                    &mut Context<Workspace>,
-                ) + 'static {
-                    move |this, _, window, cx| {
-                        window.prevent_default();
-                        cx.stop_propagation();
-                        this.sidebar_sessions_list.scroll_to(gpui::ListOffset {
-                            item_ix: item,
-                            offset_in_item: px(0.0),
-                        });
-                        cx.notify();
-                    }
-                }
-                let row = |id: gpui::ElementId| {
-                    div()
-                        .id(id)
-                        .flex_none()
-                        .mx_2()
-                        .pl_2()
-                        .pr_1()
-                        .h(px(24.0))
-                        .flex()
-                        .items_center()
-                        .gap_1()
-                        .rounded_full()
-                        .cursor_pointer()
-                        .text_size(px(11.0))
-                        .text_color(Theme::global().TEXT_DIM)
-                        .hover(|el| {
-                            el.bg(Theme::global().TOOL_BG)
-                                .text_color(Theme::global().TEXT)
-                        })
-                };
-                div()
-                    .id("sidebar-project-dock")
-                    .debug_selector(|| "sidebar-project-dock".into())
-                    .flex_none()
-                    .w_full()
-                    .pr(px(crate::scrollbar::GUTTER))
-                    .pt_1()
-                    .flex()
-                    .flex_col()
-                    .children(below.into_iter().take(DOCK_LIMIT).map(|(item, project)| {
-                        let (info, _, count) = &groups[project];
-                        row(("sidebar-project-dock-item", project).into())
-                            .debug_selector(move || format!("sidebar-project-dock-{project}"))
-                            .child(div().w(px(12.0)).flex_none().text_size(px(10.0)).child("›"))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child(info.label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .w(px(16.0))
-                                    .text_right()
-                                    .text_size(px(10.0))
-                                    .child(count.to_string()),
-                            )
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(jump(item)))
-                    }))
-                    .children(next_hidden.map(|item| {
-                        row("sidebar-project-dock-more".into())
-                            .debug_selector(|| "sidebar-project-dock-more".into())
-                            .text_size(px(10.0))
-                            .text_color(Theme::global().TEXT_FAINT)
-                            .child(div().w(px(12.0)).flex_none())
-                            .child(format!(
-                                "{overflow} more project{}",
-                                if overflow == 1 { "" } else { "s" }
-                            ))
-                            .on_mouse_down(gpui::MouseButton::Left, cx.listener(jump(item)))
-                    }))
-            });
+            let dock = self.render_project_dock(&groups, &ordered_sessions, cx);
             list = list.child(div().relative().w_full().flex_1().min_h_0().child(
                 gpui::list(
                     self.sidebar_sessions_list.clone(),
@@ -6047,7 +5928,7 @@ impl Workspace {
                                 .flatten()
                                 .or_else(|| this.sidebar_todo_progress.get(&session.session_id).copied());
                             let meta = sidebar_session_meta(session);
-                            let edits = session.edit_stats.as_ref().map(|stats| {
+                            let edits = session.edit_stats.as_ref().filter(|stats| sidebar_edits::has_changes(stats)).map(|stats| {
                                 sidebar_edits::render(&session.session_id, stats.added, stats.removed, stats.approximate)
                             });
                             let details = match (directory, meta) {
@@ -10245,6 +10126,7 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_history.show_all = true;
             workspace.sessions = vec![
                 session_info("background-run", Some("Running in the daemon")),
                 session_info("history", Some("Previous session")),
@@ -10574,6 +10456,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.apply(Update::Sessions { sessions }, cx);
             cx.notify();
         });
@@ -10596,6 +10479,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
@@ -10677,6 +10561,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.sessions = (0..500)
                 .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
                 .collect();
@@ -10718,6 +10603,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.sessions = (0..100)
                 .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
                 .collect();
@@ -10773,6 +10659,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             let mut saved = session_info("session_fox_saved", Some("saved work"));
             saved.saved = true;
             workspace.apply(
@@ -10800,6 +10687,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.push_test_panel("session_fox_open", cx);
             workspace.apply(
                 Update::Sessions {
@@ -10869,6 +10757,7 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_history.show_all = true;
             workspace.push_test_panel("local-user", cx);
             workspace
                 .slots
@@ -10954,6 +10843,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: (0..80)
@@ -11019,6 +10909,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
+            w.sidebar_history.show_all = true;
             w.push_test_panel("project", cx);
             w.slots[0].panel.update(cx, |panel, _| {
                 panel.working_dir = Some(project.path().display().to_string());
@@ -11473,6 +11364,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
@@ -11516,6 +11408,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: (0..80)

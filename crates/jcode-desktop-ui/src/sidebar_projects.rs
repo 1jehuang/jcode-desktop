@@ -3,6 +3,9 @@
 //! only. It never closes, moves, or reorders panels.
 use super::*;
 
+#[path = "sidebar_project_dock.rs"]
+mod dock;
+
 /// Key for sessions without any working directory.
 pub(super) const OTHER: &str = "";
 
@@ -545,6 +548,7 @@ mod tests {
     fn sessions_group_under_project_headers_with_open_panels_first(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.sidebar_history.show_all = true;
             panel_in(
                 &mut workspace,
                 "session_fox_alpha_one",

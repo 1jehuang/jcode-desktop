@@ -1,5 +1,61 @@
 use super::*;
 
+const RECENTLY_CLOSED_LIMIT: usize = 5;
+const RECENTLY_CLOSED_AGE: Duration = Duration::from_secs(30 * 60);
+
+#[derive(Default)]
+pub(super) struct History {
+    pub show_all: bool,
+    recently_closed: Vec<(String, Instant)>,
+}
+
+impl History {
+    pub fn closed(&mut self, id: String, now: Instant) {
+        self.recently_closed.retain(|(old, at)| {
+            old != &id && now.saturating_duration_since(*at) < RECENTLY_CLOSED_AGE
+        });
+        self.recently_closed.insert(0, (id, now));
+        self.recently_closed.truncate(RECENTLY_CLOSED_LIMIT);
+    }
+
+    pub fn visible(&self, id: &str, now: Instant) -> bool {
+        self.show_all
+            || self.recently_closed.iter().any(|(closed, at)| {
+                closed == id && now.saturating_duration_since(*at) < RECENTLY_CLOSED_AGE
+            })
+    }
+}
+
+impl Workspace {
+    pub(super) fn render_sidebar_history_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        div().px_3().py_1().child(
+            div()
+                .id("sidebar-history-toggle")
+                .debug_selector(|| "sidebar-history-toggle".into())
+                .rounded_full()
+                .px_3()
+                .py_1()
+                .text_size(px(11.0))
+                .text_color(Theme::global().TEXT_DIM)
+                .cursor_pointer()
+                .child(if self.sidebar_history.show_all {
+                    "Hide past sessions"
+                } else {
+                    "Show past sessions"
+                })
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.sidebar_history.show_all = !this.sidebar_history.show_all;
+                        cx.notify();
+                    }),
+                ),
+        )
+    }
+}
+
 #[derive(Default)]
 pub(super) struct Selection {
     pub ids: HashSet<String>,
@@ -83,6 +139,94 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn sidebar_hides_old_sessions_but_keeps_recent_and_live_sessions(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use super::super::tests::session_info;
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace.push_test_panel("open", cx);
+            let mut external = session_info("external", Some("External user"));
+            external.user_connected = true;
+            workspace.sessions = vec![
+                session_info("open", None),
+                session_info("old", None),
+                session_info("recent", None),
+                external,
+            ];
+            workspace
+                .sidebar_history
+                .closed("recent".into(), Instant::now());
+            workspace
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            let ids = w
+                .sidebar_session_layout
+                .iter()
+                .map(|row| row.session_id.as_str())
+                .collect::<Vec<_>>();
+            assert!(ids.contains(&"open"));
+            assert!(ids.contains(&"external"));
+            assert!(ids.contains(&"recent"));
+            assert!(!ids.contains(&"old"));
+        });
+        let toggle = vcx.debug_bounds("sidebar-history-toggle").unwrap();
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            assert!(
+                w.sidebar_session_layout
+                    .iter()
+                    .any(|row| row.session_id == "old")
+            )
+        });
+        let toggle = vcx.debug_bounds("sidebar-history-toggle").unwrap();
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            assert!(
+                !w.sidebar_session_layout
+                    .iter()
+                    .any(|row| row.session_id == "old")
+            )
+        });
+    }
+
+    #[test]
+    fn history_is_hidden_except_recent_closures_and_can_be_expanded() {
+        let now = Instant::now();
+        let mut history = History::default();
+        assert!(!history.visible("old", now));
+        history.closed("recent".into(), now);
+        assert!(history.visible("recent", now));
+        assert!(!history.visible("recent", now + RECENTLY_CLOSED_AGE));
+        history.show_all = true;
+        assert!(history.visible("old", now));
+        history.show_all = false;
+        assert!(!history.visible("old", now));
+    }
+
+    #[test]
+    fn recent_closures_are_bounded_and_reclosing_refreshes_recency() {
+        let now = Instant::now();
+        let mut history = History::default();
+        for index in 0..6 {
+            history.closed(index.to_string(), now);
+        }
+        assert!(!history.visible("0", now));
+        assert!(history.visible("5", now));
+        history.closed("1".into(), now + Duration::from_secs(1));
+        assert_eq!(history.recently_closed.len(), RECENTLY_CLOSED_LIMIT);
+        assert_eq!(history.recently_closed[0].0, "1");
+        history.closed(
+            "new".into(),
+            now + RECENTLY_CLOSED_AGE + Duration::from_secs(1),
+        );
+        assert_eq!(history.recently_closed.len(), 1);
+    }
+
     #[test]
     fn range_selection_keeps_anchor_and_prunes_removed_sessions() {
         let order = ["a", "b", "c", "d"].map(String::from);
