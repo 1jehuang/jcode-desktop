@@ -6,6 +6,65 @@ fn event(value: serde_json::Value) -> ApiEvent {
 }
 
 #[gpui::test]
+fn queued_follow_up_resumes_after_retry_but_not_after_user_stop(cx: &mut gpui::TestAppContext) {
+    for cancel in [false, true] {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let panel = cx.new(|cx| {
+            let mut p = Panel::new("queue-test".into(), None, None, bridge, cx);
+            p.history_loaded = true;
+            p.status = "running".into();
+            p
+        });
+        panel.update(cx, |p, cx| {
+            p.submit_or_queue("follow up".into(), vec![], true, cx);
+            p.apply(&event(json!({"ev":"error", "code":"internal", "message":"connection reset"})), cx);
+            p.apply(&event(json!({"ev":"turn_done", "session_id":"queue-test"})), cx);
+            p.apply(&event(json!({"ev":"connection_phase", "session_id":"queue-test", "phase":"retrying in 1s (1/3)"})), cx);
+        });
+        cx.run_until_parked();
+        assert!(
+            commands.try_recv().is_err(),
+            "failed attempt must not drain queue"
+        );
+        panel.update(cx, |p, cx| {
+            if cancel {
+                p.pause_queue_for_stop();
+            }
+            p.apply(&event(json!({"ev":"message_accepted", "session_id":"queue-test"})), cx);
+            p.apply(&event(json!({"ev":"text_delta", "session_id":"queue-test", "text":"Recovered answer"})), cx);
+        });
+        cx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "retry is still responding");
+        panel.update(cx, |p, cx| {
+            p.apply(
+                &event(json!({"ev":"turn_done", "session_id":"queue-test"})),
+                cx,
+            );
+            p.apply(
+                &event(json!({"ev":"session_status", "session_id":"queue-test", "status":"idle"})),
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        if cancel {
+            assert!(
+                commands.try_recv().is_err(),
+                "user stop must keep queue paused"
+            );
+            panel.read_with(cx, |p, _| assert_eq!(p.prompt_queue.prompts.len(), 1));
+        } else {
+            assert!(
+                matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "follow up")
+            );
+            assert!(
+                commands.try_recv().is_err(),
+                "completion must send only once"
+            );
+        }
+    }
+}
+
+#[gpui::test]
 fn ctrl_enter_queues_until_completion_and_enter_still_sends(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
     let (bridge, commands) = crate::harness::spawn_recording();

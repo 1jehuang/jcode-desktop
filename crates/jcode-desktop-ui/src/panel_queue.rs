@@ -13,6 +13,9 @@ pub struct PromptQueue {
     prompts: Vec<QueuedPrompt>,
     #[serde(default)]
     pub(super) paused: bool,
+    // Retry state must not survive a window restore or a user stop.
+    #[serde(skip)]
+    resume_after_retry: bool,
     #[serde(default)]
     pub(super) waiting_for_connection: bool,
 }
@@ -26,6 +29,7 @@ struct QueuedPrompt {
 impl Panel {
     pub(super) fn pause_queue_for_stop(&mut self) {
         self.prompt_queue.paused = true;
+        self.prompt_queue.resume_after_retry = false;
         // Keep the session's /poke on|off choice; only end this cycle.
         self.prompt_queue.auto_poke.stop();
     }
@@ -101,12 +105,25 @@ impl Panel {
         self.prompt_queue.auto_poke.observe(event);
         match event {
             ApiEvent::Error { .. } | ApiEvent::TurnStopped { .. } => {
-                self.prompt_queue.paused = true
+                self.prompt_queue.paused = true;
+                self.prompt_queue.resume_after_retry = false;
+            }
+            ApiEvent::ConnectionPhase { phase, .. }
+                if phase.trim().starts_with("retrying") && self.prompt_queue.paused =>
+            {
+                self.prompt_queue.resume_after_retry = true;
+            }
+            ApiEvent::MessageAccepted { .. } if self.prompt_queue.resume_after_retry => {
+                // Resume only once the retry starts, not on the countdown or
+                // TurnDone, which also terminates failed attempts.
+                self.prompt_queue.resume_after_retry = false;
+                self.prompt_queue.paused = false;
             }
             ApiEvent::SessionStatus { status, .. }
                 if matches!(status.as_str(), "cancelled" | "canceled") =>
             {
                 self.prompt_queue.paused = true;
+                self.prompt_queue.resume_after_retry = false;
             }
             ApiEvent::TurnDone { .. } => {
                 let panel = cx.weak_entity();
