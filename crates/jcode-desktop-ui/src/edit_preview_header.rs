@@ -5,12 +5,44 @@ use crate::ui_actions::OpenChangeReview;
 #[derive(Clone, PartialEq)]
 pub(crate) struct PreviewHeader {
     pub intent: Option<String>,
+    pub error: Option<String>,
     pub review: OpenChangeReview,
     pub focus: gpui::FocusHandle,
+    /// Fixtures can omit the transcript model, but live cards share one
+    /// selection and stable document key across every header leaf.
+    pub selection: Option<(
+        gpui::Entity<crate::text_selection::TextSelection>,
+        gpui::SharedString,
+    )>,
+}
+
+impl PreviewHeader {
+    pub(super) fn leaf(
+        &self,
+        part: &str,
+        text: String,
+        window: &Window,
+        cx: &gpui::App,
+    ) -> gpui::AnyElement {
+        match &self.selection {
+            Some((selection, key)) => crate::text_selection::plain(
+                selection.clone(),
+                format!("{key}-{part}"),
+                text,
+                window,
+                cx,
+            ),
+            None => text.into_any_element(),
+        }
+    }
 }
 
 impl TimedPreview {
-    pub(super) fn render_header(&mut self, cx: &mut gpui::Context<Self>) -> gpui::Div {
+    pub(super) fn render_header(
+        &mut self,
+        window: &Window,
+        cx: &mut gpui::Context<Self>,
+    ) -> gpui::Div {
         let running = !self.done && !self.header.review.failed;
         if !running {
             self.running_veil = None;
@@ -42,21 +74,29 @@ impl TimedPreview {
             .truncate()
             .font_family(theme.FONT_MONO)
             .text_color(theme.TEXT_DIM)
-            .child(file.path.clone());
+            .child(self.header.leaf("path", file.path.clone(), window, cx));
         let counts = super::super::counts(file)
             .id("edit-change-counts")
             .debug_selector(move || format!("edit-change-counts-{index}").into())
             .text_size(px(11.))
-            .rounded_md()
+            .rounded_full()
             .cursor_pointer()
             .hover(|style| style.bg(theme.ACCENT_DIM))
             // The counts own their click. Never toggle the inline preview or
             // let the workspace mouse-up handler refocus the source panel.
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.preview_press = None;
+                    cx.stop_propagation();
+                }),
+            )
             .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_click(move |_, window, cx| {
-                focus.focus(window, cx);
-                window.dispatch_action(Box::new(request.clone()), cx);
+            .on_click(move |event, window, cx| {
+                if super::is_preview_click(event) {
+                    focus.focus(window, cx);
+                    window.dispatch_action(Box::new(request.clone()), cx);
+                }
                 cx.stop_propagation();
             });
         let status = if self.header.review.failed {
@@ -116,10 +156,12 @@ impl TimedPreview {
                     .text_size(px(12.))
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(theme.TEXT)
-                    .child(crate::tool_icon::render_badge(
+                    .child(crate::tool_icon::render_badge_with_label(
                         &self.header.review.name,
                         self.done,
                         self.header.review.failed,
+                        self.header
+                            .leaf("name", self.header.review.name.clone(), window, cx),
                     ))
                     .child(
                         div()
@@ -129,10 +171,15 @@ impl TimedPreview {
                             .h(px(20.))
                             .truncate()
                             .child(
-                                self.header
-                                    .intent
-                                    .clone()
-                                    .unwrap_or_else(|| "Edit file".into()),
+                                self.header.leaf(
+                                    "intent",
+                                    self.header
+                                        .intent
+                                        .clone()
+                                        .unwrap_or_else(|| "Edit file".into()),
+                                    window,
+                                    cx,
+                                ),
                             ),
                     )
                     .child(counts),
@@ -163,6 +210,8 @@ mod tests {
                     selected: 0, done: true, failed: false,
                 },
                 focus: cx.focus_handle(),
+                selection: None,
+                error: None,
             })
         });
         // Exercise the real component at narrow and wide panel sizes, in every
@@ -259,6 +308,50 @@ mod tests {
             vcx.simulate_click(counts.center(), gpui::Modifiers::default());
             vcx.run_until_parked();
             assert_eq!(view.read_with(vcx, |view, _| view.timer.state()), before);
+        }
+    }
+
+    #[gpui::test]
+    fn selectable_header_clicks_still_toggle_inline_diff(cx: &mut gpui::TestAppContext) {
+        let (view, vcx) = cx.add_window_view(|_, cx| {
+            let mut header = super::super::tests::header(cx);
+            header.selection = Some((
+                cx.new(crate::text_selection::TextSelection::new),
+                "click-test".into(),
+            ));
+            TimedPreview::new(super::super::tests::fixture(), 0, true, header)
+        });
+        for part in ["name", "intent", "path"] {
+            let selector = match part {
+                "name" => "selectable-text-click-test-name",
+                "intent" => "selectable-text-click-test-intent",
+                "path" => "selectable-text-click-test-path",
+                _ => unreachable!(),
+            };
+            view.update(vcx, |view, cx| {
+                view.timer.expand();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let leaf = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(leaf.center(), gpui::Modifiers::default());
+            assert_eq!(
+                view.read_with(vcx, |view, _| view.timer.state()),
+                EditPreviewState::Collapsing,
+                "{part}"
+            );
+            view.update(vcx, |view, cx| {
+                view.timer.update(true, Duration::from_secs(1));
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            let leaf = vcx.debug_bounds(selector).unwrap();
+            vcx.simulate_click(leaf.center(), gpui::Modifiers::default());
+            assert_eq!(
+                view.read_with(vcx, |view, _| view.timer.state()),
+                EditPreviewState::PinnedOpen,
+                "{part}"
+            );
         }
     }
 }

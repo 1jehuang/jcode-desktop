@@ -20,6 +20,13 @@ mod syntax;
 
 const LINE_HEIGHT: f32 = 22.;
 const MAX_HEIGHT: f32 = 352.;
+const CLICK_SLOP: f32 = 3.;
+
+/// GPUI can deliver a click after a selection drag within the same hitbox.
+pub(super) fn is_preview_click(event: &gpui::ClickEvent) -> bool {
+    !matches!(event, gpui::ClickEvent::Mouse(event)
+        if (event.up.position - event.down.position).magnitude() > f64::from(CLICK_SLOP))
+}
 
 fn display_layout(
     mode: crate::config::DiffDisplay,
@@ -119,6 +126,9 @@ pub(crate) struct TimedPreview {
     /// The running header's breathing overlay, its own view so a pulse
     /// frame does not rebuild this preview's diff rows.
     running_veil: Option<gpui::Entity<crate::pulse_text::Ticker>>,
+    /// Capture the press before a selectable header leaf consumes its bubble
+    /// phase. A release only toggles if the pointer never became a drag.
+    preview_press: Option<(gpui::Point<gpui::Pixels>, bool)>,
 }
 
 impl TimedPreview {
@@ -137,6 +147,7 @@ impl TimedPreview {
             header,
             last_frame: Instant::now(),
             running_veil: None,
+            preview_press: None,
         };
         this.prepare_rows();
         this.timer.update(done, Duration::ZERO);
@@ -287,16 +298,45 @@ impl Render for TimedPreview {
         let mut body = div()
             .id("edit-inline-toggle")
             .cursor_pointer()
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.toggle_inline(cx);
-                cx.stop_propagation();
-                cx.notify();
+            .capture_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, _, _| {
+                if event.button == gpui::MouseButton::Left {
+                    this.preview_press = Some((event.position, false));
+                }
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.preview_press = None))
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, _, _| {
+                if let Some((origin, dragged)) = &mut this.preview_press {
+                    *dragged |= (event.position - *origin).magnitude() > f64::from(CLICK_SLOP);
+                }
+            }))
+            .on_mouse_exit(cx.listener(|this, _, _, _| {
+                if let Some((_, dragged)) = &mut this.preview_press {
+                    *dragged = true;
+                }
+            }))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseUpEvent, _, cx| {
+                    if let Some((origin, dragged)) = this.preview_press.take()
+                        && !dragged
+                        && (event.position - origin).magnitude() <= f64::from(CLICK_SLOP)
+                    {
+                        this.toggle_inline(cx);
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+            .on_click(cx.listener(|this, event, _, cx| {
+                // Mouse activation is handled above, including clicks on plain
+                // selectable leaves whose mouse-down does not bubble here.
+                if !matches!(event, gpui::ClickEvent::Mouse(_)) {
+                    this.toggle_inline(cx);
+                    cx.stop_propagation();
+                }
             }))
             .debug_selector(|| "edit-timed-preview".into())
             .min_w_0()
-            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(self.render_header(cx))
+            .child(self.render_header(window, cx))
             .when(open, |el| {
                 el.child(
                     div().h(px(2.)).w_full().bg(theme.CODE_HEADER_BG).child(
@@ -349,6 +389,25 @@ impl Render for TimedPreview {
         // A collapsed card ends at the metadata row itself, with no footer.
         body.when(open && !self.header.review.failed, |el| {
             el.child(div().h(px(8.)).rounded_b_lg().bg(theme.CODE_BG))
+        })
+        .when_some(self.header.error.clone(), |el, message| {
+            let index = self.index;
+            el.child(
+                div()
+                    .debug_selector(move || format!("edit-preview-footer-{index}").into())
+                    .rounded_b_lg()
+                    .bg(theme.CODE_BG)
+                    .px_3()
+                    .py_1()
+                    .text_size(px(10.))
+                    .child(
+                        div()
+                            .debug_selector(|| "tool-error".into())
+                            .pt_1()
+                            .text_color(theme.ERROR)
+                            .child(self.header.leaf("error", message, window, cx)),
+                    ),
+            )
         })
     }
 }
@@ -425,6 +484,7 @@ mod tests {
     pub(super) fn header<T: 'static>(cx: &mut Context<T>) -> PreviewHeader {
         PreviewHeader {
             intent: Some("Clarify navigation".into()),
+            error: None,
             review: crate::workspace::change_review::OpenChangeReview {
                 source: cx.entity_id(),
                 output: String::new(),
@@ -435,6 +495,7 @@ mod tests {
                 failed: false,
             },
             focus: cx.focus_handle(),
+            selection: None,
         }
     }
 

@@ -349,6 +349,18 @@ pub(super) fn inline_result_files(name: &str, input: &str, output: &str) -> Arc<
     })
 }
 
+pub(super) fn edit_preview_key(call_id: &str, index: usize) -> String {
+    format!("tool-edit-{call_id}-{index}")
+}
+
+pub(super) fn edit_preview_intent(input: &str) -> String {
+    serde_json::from_str::<serde_json::Value>(input)
+        .ok()
+        .and_then(|value| value.get("intent")?.as_str().map(str::to_owned))
+        .filter(|intent| !intent.trim().is_empty())
+        .unwrap_or_else(|| "Edit file".into())
+}
+
 impl Panel {
     pub(super) fn render_edit_metadata(
         &self,
@@ -365,10 +377,7 @@ impl Panel {
             return None;
         }
         let failed = error.is_some();
-        let intent = serde_json::from_str::<serde_json::Value>(input)
-            .ok()
-            .and_then(|value| value.get("intent")?.as_str().map(str::to_owned))
-            .filter(|intent| !intent.trim().is_empty());
+        let intent = edit_preview_intent(input);
         let mut card = div()
             .debug_selector(|| "code-edit-preview".into())
             .my_2()
@@ -377,7 +386,8 @@ impl Panel {
             .gap_2();
         for index in 0..files.len() {
             let header = edit_preview::PreviewHeader {
-                intent: intent.clone(),
+                intent: Some(intent.clone()),
+                error: error.map(str::to_owned),
                 review: crate::ui_actions::OpenChangeReview {
                     source: cx.entity_id(),
                     name: name.to_owned(),
@@ -388,6 +398,10 @@ impl Panel {
                     failed,
                 },
                 focus: self.focus_handle.clone(),
+                selection: Some((
+                    self.transcript_selection.clone(),
+                    edit_preview_key(call_id, index).into(),
+                )),
             };
             let preview = self.edit_previews.view(
                 format!("{call_id}-{index}"),
@@ -397,7 +411,6 @@ impl Panel {
                 header,
                 cx,
             );
-            let footer_preview = preview.clone();
             card = card.child(
                 div()
                     .debug_selector(move || format!("edit-preview-card-{index}").into())
@@ -405,39 +418,7 @@ impl Panel {
                     .rounded_lg()
                     .overflow_hidden()
                     .bg(Theme::global().CODE_BG)
-                    .child(preview)
-                    .when_some(error, |el, message| {
-                        el.child(
-                            div()
-                                .id(("edit-preview-footer", index))
-                                .debug_selector(move || {
-                                    format!("edit-preview-footer-{index}").into()
-                                })
-                                .cursor_pointer()
-                                .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                                .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| {
-                                    cx.stop_propagation()
-                                })
-                                .on_click(move |_, _, cx| {
-                                    footer_preview.update(cx, |view, cx| view.toggle_inline(cx));
-                                    cx.stop_propagation();
-                                })
-                                .rounded_b_lg()
-                                .bg(Theme::global().CODE_BG)
-                                .px_3()
-                                .py_1()
-                                .text_size(px(10.))
-                                .child(
-                                    div()
-                                        .debug_selector(|| "tool-error".into())
-                                        .pt_1()
-                                        .text_color(Theme::global().ERROR)
-                                        .child(message.to_owned()),
-                                ),
-                        )
-                    }),
+                    .child(preview),
             );
         }
         Some(card.into_any_element())
@@ -763,6 +744,178 @@ pub(super) fn fixture_items() -> Vec<Item> {
 mod tests {
     use super::*;
 
+    fn selection_tool(name: &str) -> Item {
+        let input = if name == "apply_patch" {
+            serde_json::json!({
+                "intent": "Update labels",
+                "patch_text": "*** Begin Patch\n*** Update File: src/first.rs\n@@\n-old\n+new\n*** Add File: src/second.rs\n+second\n*** End Patch",
+            })
+        } else {
+            serde_json::json!({
+                "intent": "Update labels", "file_path": "src/first.rs",
+                "old_string": "old", "new_string": "new",
+            })
+        };
+        Item::Tool {
+            call_id: "selection-edit".into(),
+            name: name.into(),
+            input: input.to_string(),
+            output: "Invisible tool output must not be copied".into(),
+            done: true,
+            error: None,
+        }
+    }
+
+    fn selection_workspace<'a>(
+        cx: &'a mut gpui::TestAppContext,
+        name: &str,
+    ) -> (
+        gpui::Entity<crate::workspace::Workspace>,
+        gpui::Entity<Panel>,
+        &'a mut gpui::VisualTestContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("edit-selection", cx);
+            workspace
+        });
+        vcx.simulate_resize(gpui::size(px(1200.), px(1000.)));
+        let panel = workspace.read_with(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            *panel.items = vec![
+                Item::Assistant("Before".into()),
+                selection_tool(name),
+                Item::Assistant("After".into()),
+            ];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        (workspace, panel, vcx)
+    }
+
+    fn drag_selection(
+        vcx: &mut gpui::VisualTestContext,
+        start: gpui::Point<gpui::Pixels>,
+        end: gpui::Point<gpui::Pixels>,
+    ) -> String {
+        vcx.simulate_event(gpui::MouseDownEvent {
+            button: gpui::MouseButton::Left,
+            position: start,
+            modifiers: gpui::Modifiers::default(),
+            click_count: 1,
+            first_mouse: false,
+        });
+        vcx.run_until_parked();
+        vcx.simulate_event(gpui::MouseMoveEvent {
+            position: end,
+            pressed_button: Some(gpui::MouseButton::Left),
+            modifiers: gpui::Modifiers::default(),
+        });
+        vcx.run_until_parked();
+        vcx.simulate_event(gpui::MouseUpEvent {
+            button: gpui::MouseButton::Left,
+            position: end,
+            modifiers: gpui::Modifiers::default(),
+            click_count: 1,
+        });
+        vcx.run_until_parked();
+        // Verify keyboard copy retains selection focus, not only copy-on-release.
+        vcx.update(|_, cx| {
+            cx.write_to_clipboard(gpui::ClipboardItem::new_string("sentinel".into()))
+        });
+        vcx.simulate_keystrokes("ctrl-c");
+        vcx.update(|_, cx| cx.read_from_clipboard())
+            .and_then(|item| item.text())
+            .unwrap()
+    }
+
+    #[gpui::test]
+    fn transcript_selection_crosses_edit_cards_and_copies_only_visible_headers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        for name in ["apply_patch", "edit"] {
+            let (workspace, panel, vcx) = selection_workspace(cx, name);
+            let before = vcx.debug_bounds("selectable-text-0-0").unwrap();
+            let after = vcx.debug_bounds("selectable-text-2-0").unwrap();
+            let start = gpui::point(before.left() + px(0.1), before.center().y);
+            let end = gpui::point(after.right() - px(0.1), after.center().y);
+            let mut expected = format!("Before\n{name}\nUpdate labels\nsrc/first.rs\n");
+            if name == "apply_patch" {
+                expected.push_str("apply_patch\nUpdate labels\nsrc/second.rs\n");
+            }
+            expected.push_str("After");
+            for (start, end) in [(start, end), (end, start)] {
+                assert_eq!(drag_selection(vcx, start, end), expected, "{name}");
+                panel.read_with(vcx, |panel, cx| {
+                    let selection = panel.transcript_selection.read(cx);
+                    assert!(!selection.is_dragging());
+                    for part in ["name", "intent", "path"] {
+                        assert!(
+                            selection
+                                .highlight(&format!("tool-edit-selection-edit-0-{part}"), 4)
+                                .is_some()
+                        );
+                    }
+                });
+                assert!(
+                    vcx.debug_bounds("edit-expanded-body").is_some(),
+                    "drag must not toggle"
+                );
+                assert!(workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).is_none()));
+            }
+        }
+    }
+
+    #[gpui::test]
+    fn edit_header_leaves_drag_copy_without_toggling_and_extend_into_transcript(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(crate::input::bind_keys);
+        for name in ["apply_patch", "edit"] {
+            let (workspace, panel, vcx) = selection_workspace(cx, name);
+            for (part, text) in [
+                ("name", name),
+                ("intent", "Update labels"),
+                ("path", "src/first.rs"),
+            ] {
+                let selector = match part {
+                    "name" => "selectable-text-tool-edit-selection-edit-0-name",
+                    "intent" => "selectable-text-tool-edit-selection-edit-0-intent",
+                    "path" => "selectable-text-tool-edit-selection-edit-0-path",
+                    _ => unreachable!(),
+                };
+                let bounds = vcx.debug_bounds(selector).unwrap();
+                let start = gpui::point(bounds.left() + px(0.1), bounds.center().y);
+                let end = gpui::point(bounds.right() - px(0.1), bounds.center().y);
+                assert_eq!(drag_selection(vcx, start, end), text, "{name} {part}");
+                assert!(
+                    vcx.debug_bounds("edit-expanded-body").is_some(),
+                    "leaf drag must not toggle"
+                );
+                assert!(!panel.read_with(vcx, |panel, cx| {
+                    panel.transcript_selection.read(cx).is_dragging()
+                }));
+            }
+            // End a drag from preceding text inside the card's selectable path.
+            let before = vcx.debug_bounds("selectable-text-0-0").unwrap();
+            let path = vcx
+                .debug_bounds("selectable-text-tool-edit-selection-edit-0-path")
+                .unwrap();
+            assert_eq!(
+                drag_selection(
+                    vcx,
+                    gpui::point(before.left() + px(0.1), before.center().y),
+                    gpui::point(path.right() - px(0.1), path.center().y)
+                ),
+                format!("Before\n{name}\nUpdate labels\nsrc/first.rs"),
+            );
+            assert!(vcx.debug_bounds("edit-expanded-body").is_some());
+            assert!(workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).is_none()));
+        }
+    }
+
     #[test]
     fn completion_replaces_snippet_offsets_with_file_positions_and_refreshes_cache() {
         let input = serde_json::json!({"file_path":"src/demo.rs", "old_string":"old();\n", "new_string":"new();\n"}).to_string();
@@ -788,6 +941,42 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("snippet-relative"))
         );
+    }
+
+    #[gpui::test]
+    fn failed_edit_footer_drag_copies_error_and_keeps_preview_open(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::input::bind_keys);
+        let (workspace, panel, vcx) = selection_workspace(cx, "edit");
+        panel.update(vcx, |panel, cx| {
+            if let Item::Tool { error, .. } = &mut panel.items[1] {
+                *error = Some("No matching source text".into());
+            }
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let error = vcx
+            .debug_bounds("selectable-text-tool-edit-selection-edit-0-error")
+            .unwrap();
+        assert_eq!(
+            drag_selection(
+                vcx,
+                gpui::point(error.left() + px(0.1), error.center().y),
+                gpui::point(error.right() - px(0.1), error.center().y)
+            ),
+            "No matching source text"
+        );
+        let before = vcx.debug_bounds("selectable-text-0-0").unwrap();
+        let after = vcx.debug_bounds("selectable-text-2-0").unwrap();
+        assert_eq!(
+            drag_selection(
+                vcx,
+                gpui::point(before.left() + px(0.1), before.center().y),
+                gpui::point(after.right() - px(0.1), after.center().y)
+            ),
+            "Before\nedit\nUpdate labels\nsrc/first.rs\nNo matching source text\nAfter"
+        );
+        assert!(vcx.debug_bounds("edit-expanded-body").is_some());
+        assert!(workspace.read_with(vcx, |workspace, _| workspace.test_panel(1).is_none()));
     }
 
     #[test]

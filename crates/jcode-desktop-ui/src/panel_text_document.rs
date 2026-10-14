@@ -102,12 +102,14 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
             text.hash(&mut state)
         }
         Item::Tool {
+            call_id,
             name,
             input,
             output,
             error,
             ..
         } => {
+            call_id.hash(&mut state);
             name.hash(&mut state);
             input.hash(&mut state);
             output.hash(&mut state);
@@ -187,6 +189,7 @@ pub(super) fn segments_with_display(
         Item::Assistant(text) => return markdown::selection_segments(text, index, false, false),
         Item::Reasoning(text) => return markdown::selection_segments(text, index, true, false),
         Item::Tool {
+            call_id,
             name,
             input,
             output,
@@ -202,19 +205,19 @@ pub(super) fn segments_with_display(
                 if error.is_none() { output } else { "" },
             );
             if !files.is_empty() {
-                // Native edit cards currently own their own leaf selection.
-                // Keep their full metadata in document order when a selection
-                // crosses the whole card, without pretending it has geometry.
-                let mut text = format!("{name}\n{input}");
-                if !output.is_empty() {
-                    text.push('\n');
-                    text.push_str(output);
+                // Match the painted header leaves, including repeated headers
+                // in multi-file patches. Tool arguments and output are not
+                // visible transcript text and must never leak into copying.
+                let intent = diff_review::edit_preview_intent(input);
+                for (file_index, file) in files.iter().enumerate() {
+                    let key = diff_review::edit_preview_key(call_id, file_index);
+                    push(format!("{key}-name"), name.clone());
+                    push(format!("{key}-intent"), intent.clone());
+                    push(format!("{key}-path"), file.path.clone());
+                    if let Some(error) = error {
+                        push(format!("{key}-error"), error.clone());
+                    }
                 }
-                if let Some(error) = error {
-                    text.push('\n');
-                    text.push_str(error);
-                }
-                push(format!("tool-edit-{index}"), text);
             } else {
                 push(format!("tool-name-{index}"), name.clone());
                 push(format!("tool-summary-{index}"), tool_summary(input));
@@ -410,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn edit_card_metadata_is_present_when_crossing_without_geometry() {
+    fn edit_card_document_matches_visible_leaves_without_raw_arguments_or_output() {
         let edit = Item::Tool {
             call_id: "edit".into(),
             name: "edit".into(),
@@ -421,10 +424,72 @@ mod tests {
             error: None,
         };
         let doc = segments(&edit, 5, false, false);
-        assert_eq!(doc.len(), 1);
-        assert_eq!(doc[0].0.as_ref(), "tool-edit-5");
-        assert!(doc[0].1.contains("before"));
-        assert!(doc[0].1.contains("after"));
-        assert!(doc[0].1.contains("Applied"));
+        assert_eq!(
+            doc,
+            vec![
+                ("tool-edit-edit-0-name".into(), "edit".into()),
+                ("tool-edit-edit-0-intent".into(), "Edit file".into()),
+                ("tool-edit-edit-0-path".into(), "src/main.rs".into()),
+            ]
+        );
+        assert_eq!(
+            doc,
+            segments(&edit, 99, false, true),
+            "keys survive row movement"
+        );
+        let mut failed = edit.clone();
+        if let Item::Tool { input, error, .. } = &mut failed {
+            *input = r#"{"intent":"  ","file_path":"src/main.rs","old_string":"before","new_string":"after"}"#.into();
+            *error = Some("Edit failed".into());
+        }
+        let failed_doc = segments(&failed, 5, false, false);
+        assert_eq!(failed_doc[..3], doc);
+        assert_eq!(
+            failed_doc[3],
+            ("tool-edit-edit-0-error".into(), "Edit failed".into())
+        );
+        assert_ne!(
+            fingerprint(&edit, false, false),
+            fingerprint(&failed, false, false)
+        );
+    }
+
+    #[test]
+    fn multi_file_edit_document_keeps_each_header_in_order_with_stable_call_keys() {
+        let mut tool = diff_review::fixture_items().pop().unwrap();
+        let doc = segments(&tool, 12, false, false);
+        assert_eq!(
+            doc,
+            vec![
+                ("tool-edit-diff-fixture-0-name".into(), "apply_patch".into()),
+                (
+                    "tool-edit-diff-fixture-0-intent".into(),
+                    "Improve navigation labels".into()
+                ),
+                (
+                    "tool-edit-diff-fixture-0-path".into(),
+                    "src/navigation.rs".into()
+                ),
+                ("tool-edit-diff-fixture-1-name".into(), "apply_patch".into()),
+                (
+                    "tool-edit-diff-fixture-1-intent".into(),
+                    "Improve navigation labels".into()
+                ),
+                (
+                    "tool-edit-diff-fixture-1-path".into(),
+                    "tests/navigation.rs".into()
+                ),
+            ]
+        );
+        let old_fingerprint = fingerprint(&tool, false, false);
+        if let Item::Tool { call_id, .. } = &mut tool {
+            *call_id = "replacement-call".into();
+        }
+        assert_ne!(old_fingerprint, fingerprint(&tool, false, false));
+        assert!(
+            segments(&tool, 12, false, false)
+                .iter()
+                .all(|(key, _)| key.contains("replacement-call"))
+        );
     }
 }
