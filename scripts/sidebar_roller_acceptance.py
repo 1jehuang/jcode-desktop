@@ -59,9 +59,17 @@ def verify(output, env, root):
         header = ui.words(image, (228, 12, 448, 46), stage + "-header", psm=6)
         phrase_bounds(header, "Sidebar")
         phrase_bounds(header, "Scroll to switch")
-        page_words = words(image, stage + "-pages", header=True)
-        for page in ("chat", "learn", "files", "accounts", "theme", "settings"):
-            phrase_bounds(page_words, page)
+        # Empty right-hand menu paper crosses several transcript lines. Every
+        # pixel must be the same opaque fill even with the Glass palette.
+        paper = {image.getpixel((434, y)) for y in range(50, 150)}
+        assert len(paper) == 1, "transcript pixels bleed through menu paper"
+        page_words = []
+        for index, page in enumerate(("chat", "learn", "files", "accounts", "theme", "settings")):
+            x = 244 + (index % 2) * 99
+            y = 56 + (index // 2) * 36
+            cell = ui.words(image, (x, y, x + 84, y + 22), stage + "-" + page, psm=7)
+            phrase_bounds(cell, page)
+            page_words.extend(cell)
         unchanged(stage)
         return page_words
 
@@ -94,11 +102,14 @@ def verify(output, env, root):
         baseline = identity(navigation())
         assert baseline["count"] > 0 and baseline["keyboard_panel"] is not None, baseline
         unchanged(stage)
-        ui.wait_frame("initial-collapsed", lambda image: visible(image, "chat", "initial-trigger"))
+        ui.wait_frame("initial-collapsed", collapsed)
         stage = "hover-open"
         hover()
         image = ui.capture("persistent-trigger")
-        phrase_bounds(ui.words(image, (0, 0, 264, 52), "persistent-trigger", psm=6), "chat")
+        # The compact trigger is a menu icon, not an OCR-readable page name.
+        # Verify its ink remains visible above the sidebar while the menu is open.
+        low, high = image.crop((18, 12, 34, 28)).convert("L").getextrema()
+        assert high - low > 30, "menu trigger lost its visible ink"
         report["trigger_visible_above_menu"] = True
         shutil.copyfile(ui.artifact(stage + ".png"), output)
 

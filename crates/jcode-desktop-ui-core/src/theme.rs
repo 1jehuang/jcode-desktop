@@ -77,6 +77,14 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// Popovers cover application content, not the desktop. Window vibrancy and
+    /// translucent palettes must never let underlying transcript ink show through.
+    pub fn popover_background(&self) -> Rgba {
+        let mut paper = self.PANEL_BG;
+        paper.a = 1.0;
+        paper
+    }
+
     /// A light wash of the CLI prompt-number rainbow in reverse hue order.
     /// Newest prompts start violet and older prompts move toward red, retaining
     /// the exponential fade back into the palette's card paper rather than gray.
@@ -1181,6 +1189,22 @@ mod tests {
         assert!((old.g - theme.USER_BG.g).abs() < 0.00001);
         assert!((old.b - theme.USER_BG.b).abs() < 0.00001);
         assert_eq!(theme.prompt_background(usize::MAX), theme.USER_BG);
+    }
+
+    #[test]
+    fn popover_paper_is_opaque_and_preserves_palette_rgb() {
+        for mut theme in themes().iter().cloned() {
+            for alpha in [0.0, 0.25, 0.6, 0.78, 1.0] {
+                theme.PANEL_BG.a = alpha;
+                let paper = theme.popover_background();
+                assert_eq!(paper.a, 1.0);
+                assert_eq!(
+                    (paper.r, paper.g, paper.b),
+                    (theme.PANEL_BG.r, theme.PANEL_BG.g, theme.PANEL_BG.b)
+                );
+                assert_eq!(theme.PANEL_BG.a, alpha, "window paper stays translucent");
+            }
+        }
     }
 
     #[test]
