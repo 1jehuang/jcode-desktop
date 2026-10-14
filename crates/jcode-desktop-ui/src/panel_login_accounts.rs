@@ -856,7 +856,7 @@ impl Panel {
             .pr(px(10.))
             .py_1p5()
             .min_h(px(if connected { 56. } else { 44. }))
-            .rounded_full()
+            .rounded_xl()
             .bg(if connected {
                 theme.HEADER_BG
             } else {
@@ -1047,36 +1047,6 @@ impl Panel {
                     .on_click(cx.listener(move |this, _, _, cx| {
                         cx.stop_propagation();
                         this.live_test_providers(Some(provider_id.clone()), cx)
-                    })),
-            );
-        }
-        if let Some(pooled) = pooled {
-            let toggle_id = format!("login-move-{key}");
-            let selector = toggle_id.clone();
-            let move_key = key.clone();
-            let visible = visible.clone();
-            element = element.child(
-                div()
-                    .id(SharedString::from(toggle_id))
-                    .debug_selector(move || selector.clone())
-                    .flex_none()
-                    .w(px(96.))
-                    .flex()
-                    .justify_center()
-                    .py(px(3.))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(theme.PANEL_BORDER)
-                    .text_size(px(11.))
-                    .text_color(theme.TEXT_DIM)
-                    .whitespace_nowrap()
-                    .cursor_pointer()
-                    .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
-                    .child(if pooled { "Make manual" } else { "Auto-switch" })
-                    .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        cx.stop_propagation();
-                        this.place_account(&move_key, !pooled, None, &visible, cx)
                     })),
             );
         }
@@ -1484,23 +1454,22 @@ mod tests {
             "login-group-manual",
         );
         assert!(!pooled(vcx).contains(&"openai:openai-fox".to_string()));
-        // The row pill moves an account back without dragging.
-        let pill = vcx
-            .debug_bounds("login-move-openai:openai-fox")
-            .unwrap()
-            .center();
-        vcx.simulate_click(pill, gpui::Modifiers::default());
-        vcx.run_until_parked();
-        assert_eq!(pooled(vcx).last().unwrap(), "openai:openai-fox");
+        // Move back by dropping onto the Auto-switch section, without a toggle pill.
+        assert!(vcx.debug_bounds("login-move-openai:openai-fox").is_none());
+        drag(
+            vcx,
+            "login-drag-handle-openai:openai-fox",
+            "login-group-auto",
+        );
+        assert!(pooled(vcx).contains(&"openai:openai-fox".to_string()));
         assert!(panel.read_with(vcx, |panel, _| {
             panel.login.as_ref().unwrap().provider.is_none()
         }));
-        let pill = vcx
-            .debug_bounds("login-move-openai:openai-fox")
-            .unwrap()
-            .center();
-        vcx.simulate_click(pill, gpui::Modifiers::default());
-        vcx.run_until_parked();
+        drag(
+            vcx,
+            "login-drag-handle-openai:openai-fox",
+            "login-group-manual",
+        );
         assert!(!pooled(vcx).contains(&"openai:openai-fox".to_string()));
     }
 
