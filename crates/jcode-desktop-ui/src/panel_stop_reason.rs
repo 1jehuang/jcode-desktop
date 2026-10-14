@@ -85,6 +85,20 @@ impl Panel {
     pub(super) fn record_stop(&mut self, notice: StopNotice) {
         self.pause_queue_for_stop();
         self.sound_events.cancel();
+        // Reconnect can replay processing and usage without delivering new
+        // output. Do not append another accounting footer for that replay.
+        let replayed_stop = self.streaming_text.trim().is_empty()
+            && self.streaming_reasoning.trim().is_empty()
+            && matches!(
+                self.items
+                    .iter()
+                    .rev()
+                    .find(|item| !matches!(item, Item::ResponseStats(_))),
+                Some(Item::Stopped(_))
+            );
+        if replayed_stop {
+            self.response_stats.finish();
+        }
         self.finish_response();
         // Settle tool spinners without claiming the underlying command completed
         // successfully. Detached background tasks remain independent.
@@ -101,7 +115,15 @@ impl Panel {
                 *error = Some("Response stopped before the tool result was received.".into());
             }
         }
-        if let Some(Item::Stopped(previous)) = self.items.last_mut() {
+        // Accounting can be appended by finish_response or replayed during
+        // reconnect. It is not new response output, so look past it, but never
+        // cross a user message or any actual assistant/tool output.
+        let previous = self
+            .items
+            .iter_mut()
+            .rev()
+            .find(|item| !matches!(item, Item::ResponseStats(_)));
+        if let Some(Item::Stopped(previous)) = previous {
             // A confirmed reason replaces our optimistic local cancellation or
             // unknown transport outcome. Replayed statuses never erase details.
             if previous.provisional || !notice.provisional {
@@ -189,3 +211,7 @@ impl Panel {
 #[cfg(test)]
 #[path = "panel_stop_reason_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "panel_reconnect_notice_tests.rs"]
+mod reconnect_notice_tests;
