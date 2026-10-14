@@ -4,6 +4,7 @@
 //! keeps addressing them as `crate::diff_model`, `crate::learning`, and so on.
 //! Test a change here with `justrust test -p jcode-desktop-model`.
 
+pub mod command_workflows;
 pub mod diff;
 pub mod diff_model;
 pub mod friendly_error;
