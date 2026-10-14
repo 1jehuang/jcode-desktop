@@ -43,6 +43,7 @@ mod tests {
             w
         });
         workspace.update(vcx, |w, cx| {
+            w.sidebar_history.show_all = true;
             let mut newer =
                 crate::workspace::tests::session_info("session_owl_newer", Some("newer"));
             newer.updated_at_ms = Some(2_000);

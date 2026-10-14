@@ -47,6 +47,7 @@ fn setup(
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
+        w.sidebar_history.show_all = true;
         w.set_test_bridge(bridge);
         w.sessions = sessions;
         w
