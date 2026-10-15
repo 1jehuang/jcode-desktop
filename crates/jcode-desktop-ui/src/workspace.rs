@@ -742,6 +742,8 @@ pub struct Workspace {
     launch: jcode_desktop_api::WindowLaunch,
     resume: Option<resume::State>,
     show_sidebar: bool,
+    sidebar_custom_width: f32,
+    sidebar_resizing: bool,
     // Launch-only chrome. Reload snapshots must never re-open the notice.
     show_beta_notice: bool,
     account_sign_in: account_sign_in::State,
@@ -1084,6 +1086,8 @@ impl Workspace {
             show_minimap: false,
             layout_mode: crate::config::get().appearance.layout_mode,
             folder_frame: Default::default(),
+            sidebar_custom_width: SIDEBAR_WIDTH,
+            sidebar_resizing: false,
             show_sidebar: sidebar_enabled(&launch.args, crate::config::get().workspace.sidebar),
             compact_sidebar_open: false,
             compact_sidebar_motion: responsive::VisibilityMotion::default(),
@@ -1466,6 +1470,8 @@ impl Workspace {
             account_sign_in: account_sign_in::State::default(),
             account_menu: account_menu::State::default(),
             show_sidebar: true,
+            sidebar_custom_width: SIDEBAR_WIDTH,
+            sidebar_resizing: false,
             show_minimap: false,
             layout_mode: crate::config::LayoutMode::FolderTabs,
             folder_frame: Default::default(),
@@ -6262,7 +6268,11 @@ impl Workspace {
         }
 
         div()
-            .w(px(SIDEBAR_WIDTH))
+            .w(px(if self.compact_sidebar_open {
+                SIDEBAR_WIDTH
+            } else {
+                self.sidebar_custom_width
+            }))
             .h_full()
             .flex_none()
             .flex()
@@ -8343,7 +8353,11 @@ impl Render for Workspace {
         if self.compact_sidebar_motion.is_animating() {
             window.request_animation_frame();
         }
-        let sidebar_width = responsive::sidebar_width(self.show_sidebar, compact);
+        let sidebar_width = if self.show_sidebar && !compact {
+            self.sidebar_custom_width
+        } else {
+            0.0
+        };
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
         // Compact windows spend every pixel on the session: no sidebar column,
         // no connector gutter, and no decorative right margin.
@@ -8631,6 +8645,7 @@ impl Render for Workspace {
                     .flex_row()
                     .when(self.show_sidebar && !compact, |root| {
                         root.child(self.render_sidebar(fullscreen, cx))
+                            .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
                         div()
@@ -8709,7 +8724,10 @@ impl Render for Workspace {
             })
             .children(self.render_applet_overlays(window, cx))
             .children(self.render_applet_consent(cx))
-            .children(self.render_applet_toast(cx));
+            .children(self.render_applet_toast(cx))
+            .when(self.sidebar_resizing, |root| {
+                root.child(self.render_sidebar_resize_overlay(cx))
+            });
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
         let action_capture_pending = self

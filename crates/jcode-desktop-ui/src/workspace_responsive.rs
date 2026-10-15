@@ -25,6 +25,75 @@ pub(super) fn sidebar_width(visible: bool, compact: bool) -> f32 {
 pub(super) type VisibilityMotion = jcode_desktop_motion::MenuEntrance;
 
 impl Workspace {
+    pub(super) fn render_sidebar_resize_handle(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .id("sidebar-resize-handle")
+            .debug_selector(|| "sidebar-resize-handle".into())
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(self.sidebar_custom_width - 4.0))
+            .w(px(8.0))
+            .cursor(gpui::CursorStyle::ResizeLeftRight)
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if event.click_count == 2 {
+                        this.sidebar_custom_width = SIDEBAR_WIDTH;
+                    } else {
+                        this.sidebar_resizing = true;
+                    }
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_sidebar_resize_overlay(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        div()
+            .id("sidebar-resize-overlay")
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left_0()
+            .right_0()
+            .occlude()
+            .cursor(gpui::CursorStyle::ResizeLeftRight)
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui::MouseMoveEvent, window, cx| {
+                    if event.dragging() {
+                        this.sidebar_custom_width = f32::from(event.position.x).clamp(
+                            180.0,
+                            (f32::from(window.viewport_size().width) * 0.4)
+                                .min(480.0)
+                                .max(180.0),
+                        );
+                    } else {
+                        this.sidebar_resizing = false;
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.sidebar_resizing = false;
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .on_mouse_up_out(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, _, cx| {
+                    this.sidebar_resizing = false;
+                    cx.notify();
+                }),
+            )
+            .into_any_element()
+    }
     /// Toggle the visible sidebar surface, not the hidden column preference.
     /// Narrow windows use a drawer and keep sessions at full width. Wide
     /// windows toggle the persistent column without changing panel slots.
@@ -175,6 +244,48 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn sidebar_edge_drag_resizes_and_clamps_without_changing_compact_drawer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.push_test_panel("Resize", cx);
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(1600.), px(900.)));
+        vcx.run_until_parked();
+        for (target, expected) in [(320., 320.), (900., 480.), (100., 180.)] {
+            let edge = vcx.debug_bounds("sidebar-resize-handle").unwrap();
+            let start = gpui::point(edge.left() + px(1.), edge.center().y);
+            let end = gpui::point(px(target), start.y);
+            vcx.simulate_mouse_down(start, gpui::MouseButton::Left, Default::default());
+            vcx.run_until_parked();
+            vcx.simulate_mouse_move(end, gpui::MouseButton::Left, Default::default());
+            vcx.run_until_parked();
+            vcx.simulate_mouse_up(end, gpui::MouseButton::Left, Default::default());
+            vcx.run_until_parked();
+            assert_eq!(
+                vcx.debug_bounds("sidebar").unwrap().size.width,
+                px(expected)
+            );
+            workspace.read_with(vcx, |w, _| assert!(!w.sidebar_resizing));
+        }
+        vcx.simulate_window_resize(handle, gpui::size(px(800.), px(600.)));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-resize-handle").is_none());
+        workspace.update(vcx, |w, cx| {
+            w.compact_sidebar_open = true;
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            vcx.debug_bounds("sidebar").unwrap().size.width,
+            px(SIDEBAR_WIDTH)
+        );
+    }
 
     #[gpui::test]
     fn super_b_opens_and_closes_compact_sidebar(cx: &mut gpui::TestAppContext) {
