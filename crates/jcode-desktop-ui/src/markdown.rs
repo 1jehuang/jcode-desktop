@@ -1445,8 +1445,11 @@ pub(crate) fn mermaid_natural_size(body: &str) -> (f32, f32) {
     (rendered.native.width(), rendered.native.height())
 }
 
-pub(crate) type MediaPreviewHandler =
-    std::rc::Rc<dyn Fn(Arc<gpui::Image>, &mut gpui::Window, &mut gpui::App)>;
+#[derive(Clone, Default)]
+pub(crate) struct MediaPreviewHandler {
+    pub(crate) fit_scroll: Option<crate::inline_image::FitScroll>,
+    pub(crate) on_gesture: Option<crate::inline_image::GestureHandler>,
+}
 
 /// Paint mmdr vector primitives directly into the native transcript. Incomplete streamed
 /// diagrams retain the lightweight text representation until they become
@@ -1458,34 +1461,20 @@ fn mermaid_diagram(
 ) -> gpui::AnyElement {
     let theme = mermaid_theme(Theme::selected());
     if let Ok(rendered) = render_mermaid_scene(body, theme.clone()) {
+        let navigation = on_preview.unwrap_or_default();
+        // Source and palette identity keep gestures stable across cache eviction
+        // and concurrent scene preparation, but reset state for streamed edits.
+        let diagram_key = format!("{key}-{}", hash(&format!("{body}\0{theme:?}"))).into();
         return div()
             .id(key)
             .debug_selector(|| "md-mermaid".into())
-            .when_some(on_preview, |el, on_preview| {
-                // The existing media viewer accepts an SVG. Generate that only
-                // on explicit enlargement. Inline chat never creates an image.
-                let source = body.to_owned();
-                el.cursor_pointer().on_click(move |_, window, cx| {
-                    let options = mermaid_rs_renderer::RenderOptions {
-                        theme: theme.clone(),
-                        ..Default::default()
-                    };
-                    if let Ok(Ok(svg)) = std::panic::catch_unwind(|| {
-                        mermaid_rs_renderer::render_with_options(&source, options)
-                    }) {
-                        let image = Arc::new(gpui::Image::from_bytes(
-                            gpui::ImageFormat::Svg,
-                            svg.into_bytes(),
-                        ));
-                        on_preview(image, window, cx);
-                    }
-                    cx.stop_propagation();
-                })
-            })
             .my_1()
             .w_full()
             .min_w_0()
-            .child(rendered.native.element())
+            .child(
+                crate::inline_image::InlineImage::diagram(diagram_key, rendered.native.clone())
+                    .navigation(navigation.fit_scroll, navigation.on_gesture),
+            )
             .into_any_element();
     }
 
@@ -2241,7 +2230,7 @@ mod tests {
                 window: &mut gpui::Window,
                 cx: &mut gpui::Context<Self>,
             ) -> impl IntoElement {
-                let preview: MediaPreviewHandler = std::rc::Rc::new(|_, _, _| {});
+                let preview = MediaPreviewHandler::default();
                 div()
                     .size_full()
                     .flex()

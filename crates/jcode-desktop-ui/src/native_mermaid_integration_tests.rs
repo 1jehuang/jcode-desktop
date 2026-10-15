@@ -102,8 +102,8 @@ fn stream_and_resize(
             assert!(canvas.size.width <= px(natural_width + 1.));
             assert!(canvas.size.height <= px(natural_height.min(520.) + 1.));
             assert!(
-                (frame.size.height - canvas.size.height).abs() <= px(1.),
-                "the transcript must reserve content height, not a forced giant display: {frame:?} / {canvas:?}"
+                (frame.size.height - canvas.size.height - px(32.)).abs() <= px(1.),
+                "the transcript reserves only canvas height plus the shared image footer: {frame:?} / {canvas:?}"
             );
             eprintln!(
                 "native Mermaid at window {width}: natural={natural_width}x{natural_height}, frame={:?}, canvas={:?}",
@@ -160,4 +160,23 @@ fn native_mermaid_wide_diagram_scales_both_axes_with_transcript_width(
     assert!(sizes[1].canvas.size.width > sizes[0].canvas.size.width + px(100.));
     assert!(sizes[1].canvas.size.height > sizes[0].canvas.size.height);
     assert_eq!(sizes[0].canvas.size, sizes[2].canvas.size);
+}
+
+#[gpui::test]
+fn native_mermaid_tall_diagram_fits_shared_viewport_without_clipping(
+    cx: &mut gpui::TestAppContext,
+) {
+    let source = format!(
+        "flowchart TD\n{}",
+        (0..20)
+            .map(|i| format!("N{i}[Step {i}] --> N{}[Step {}]", i + 1, i + 1))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let (_, height) = crate::markdown::mermaid_natural_size(&source);
+    assert!(height > 1500., "fixture must require vertical fitting");
+    let sizes = stream_and_resize(cx, &source, &[480., 1600., 480.]);
+    for size in sizes {
+        assert!((size.canvas.size.height - px(520.)).abs() <= px(1.));
+    }
 }

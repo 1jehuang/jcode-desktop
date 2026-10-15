@@ -9,13 +9,36 @@ use gpui::{
 };
 use std::{rc::Rc, sync::Arc};
 
-type GestureHandler = Rc<dyn Fn(&mut Window, &mut App)>;
-type FitScroll = Rc<dyn Fn(&ScrollWheelEvent, &mut Window, &mut App)>;
+pub(crate) type GestureHandler = Rc<dyn Fn(&mut Window, &mut App)>;
+pub(crate) type FitScroll = Rc<dyn Fn(&ScrollWheelEvent, &mut Window, &mut App)>;
+
+#[derive(Clone)]
+enum Media {
+    Image(Arc<Image>),
+    Diagram(Arc<crate::native_mermaid::NativeMermaid>),
+}
+
+impl Media {
+    fn element(&self) -> gpui::AnyElement {
+        match self {
+            Self::Image(image) => img(crate::image_cache::source(image.clone()))
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full()
+                .rounded_md()
+                .object_fit(ObjectFit::Contain)
+                .into_any_element(),
+            Self::Diagram(diagram) => diagram.viewport_element(),
+        }
+    }
+}
 
 #[derive(IntoElement)]
 pub(crate) struct InlineImage {
     key: SharedString,
-    image: Arc<Image>,
+    media: Media,
+    fit_size: Option<(f32, f32)>,
     metadata: Option<SharedString>,
     fit_scroll: Option<FitScroll>,
     on_gesture: Option<GestureHandler>,
@@ -25,7 +48,8 @@ impl InlineImage {
     pub(crate) fn new(row: usize, image: Arc<Image>) -> Self {
         Self {
             key: format!("inline-image-{row}-{}", image.id).into(),
-            image,
+            fit_size: None,
+            media: Media::Image(image),
             metadata: None,
             fit_scroll: None,
             on_gesture: None,
@@ -34,6 +58,32 @@ impl InlineImage {
 }
 
 impl InlineImage {
+    /// Reuse image gestures while painting Mermaid's cached vector scene.
+    pub(crate) fn diagram(
+        key: SharedString,
+        diagram: Arc<crate::native_mermaid::NativeMermaid>,
+    ) -> Self {
+        let scale = (crate::native_mermaid::MAX_DIAGRAM_HEIGHT / diagram.height()).min(1.0);
+        Self {
+            key: format!("inline-diagram-{key}").into(),
+            fit_size: Some((diagram.width() * scale, diagram.height() * scale)),
+            media: Media::Diagram(diagram),
+            metadata: Some("Mermaid diagram".into()),
+            fit_scroll: None,
+            on_gesture: None,
+        }
+    }
+
+    pub(crate) fn navigation(
+        mut self,
+        fit_scroll: Option<FitScroll>,
+        on_gesture: Option<GestureHandler>,
+    ) -> Self {
+        self.fit_scroll = fit_scroll;
+        self.on_gesture = on_gesture;
+        self
+    }
+
     pub(crate) fn metadata(mut self, metadata: impl Into<SharedString>) -> Self {
         self.metadata = Some(metadata.into());
         self
@@ -58,8 +108,11 @@ impl InlineImage {
 impl RenderOnce for InlineImage {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let state = window.use_keyed_state(self.key, cx, |_, _| ImageView {
-            fit_size: inline_fit_size(&self.image),
-            image: self.image,
+            fit_size: self.fit_size.unwrap_or_else(|| match &self.media {
+                Media::Image(image) => inline_fit_size(image),
+                Media::Diagram(_) => unreachable!("diagram fit size is explicit"),
+            }),
+            media: self.media,
             metadata: self.metadata.clone(),
             fit_scroll: self.fit_scroll.clone(),
             on_gesture: self.on_gesture.clone(),
@@ -106,7 +159,7 @@ fn inline_fit_size(image: &Image) -> (f32, f32) {
 
 struct ImageView {
     fit_size: (f32, f32),
-    image: Arc<Image>,
+    media: Media,
     metadata: Option<SharedString>,
     fit_scroll: Option<FitScroll>,
     on_gesture: Option<GestureHandler>,
@@ -264,14 +317,13 @@ impl Render for ImageView {
                             .relative()
                             .flex_none()
                             .child(
-                                img(crate::image_cache::source(self.image.clone()))
+                                div()
                                     .debug_selector(|| "inline-image-content".into())
                                     .absolute()
                                     .top_0()
                                     .left_0()
                                     .size_full()
-                                    .rounded_md()
-                                    .object_fit(ObjectFit::Contain),
+                                    .child(self.media.element()),
                             ),
                     )
                     .child({
@@ -335,7 +387,6 @@ impl Render for ImageView {
                             .flex_none()
                             .flex()
                             .items_center()
-                            .flex_wrap()
                             .gap_2()
                             .text_size(px(11.0))
                             .text_color(Theme::global().TEXT_DIM)
@@ -358,7 +409,7 @@ impl Render for ImageView {
                                         .flex_none()
                                         .px_2()
                                         .py_1()
-                                        .rounded_md()
+                                        .rounded_full()
                                         .cursor_pointer()
                                         .hover(|s| s.bg(Theme::global().QUOTE_BG))
                                         .child("Fit")

@@ -450,7 +450,7 @@ def main():
     if not drivers:
         parser.error("missing Mesa lavapipe: install vulkan-swrast (Arch) or mesa-vulkan-drivers (Debian/Ubuntu)")
     if not args.no_build:
-        subprocess.run(["cargo", "build", "-p", "jcode-desktop"], cwd=repo, check=True)
+        subprocess.run(["justrust", "build", "-p", "jcode-desktop"], cwd=repo, check=True)
     binary = args.binary.resolve(strict=True)
     output = args.output.resolve()
     output.parent.mkdir(parents=True, exist_ok=True)

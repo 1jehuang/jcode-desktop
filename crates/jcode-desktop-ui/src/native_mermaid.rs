@@ -122,27 +122,20 @@ impl NativeMermaid {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn width(&self) -> f32 {
         self.width
     }
-    #[cfg(test)]
     pub(crate) fn height(&self) -> f32 {
         self.height
     }
 
-    /// Intrinsic size is an upper bound, never a target to upscale toward.
-    /// Width and aspect ratio drive Taffy layout together, so tall diagrams
-    /// reserve precisely their scaled height rather than a clipped fixed box.
-    pub(crate) fn element(&self) -> AnyElement {
+    /// Paint inside the shared image viewport, including its zoomed bounds.
+    pub(crate) fn viewport_element(&self) -> AnyElement {
         let diagram = self.clone();
-        let max_width = self
-            .width
-            .min(MAX_DIAGRAM_HEIGHT * self.width / self.height);
         let canvas = canvas(
             |_, _, _| (),
             move |bounds, _, window, _| {
-                let transform = fit(diagram.width, diagram.height, bounds);
+                let transform = fit_viewport(diagram.width, diagram.height, bounds);
                 if transform.scale <= 0. {
                     return;
                 }
@@ -171,11 +164,8 @@ impl NativeMermaid {
         .size_full();
         div()
             .debug_selector(|| "md-mermaid-native".into())
-            .w_full()
-            .max_w(px(max_width))
-            .max_h(px(self.height.min(MAX_DIAGRAM_HEIGHT)))
-            .aspect_ratio(self.width / self.height)
-            .flex_none()
+            .absolute()
+            .size_full()
             .child(canvas)
             .into_any_element()
     }
@@ -387,10 +377,9 @@ impl Fit {
     }
 }
 
-fn fit(width: f32, height: f32, bounds: Bounds<Pixels>) -> Fit {
+fn fit_viewport(width: f32, height: f32, bounds: Bounds<Pixels>) -> Fit {
     let scale = (f32::from(bounds.size.width) / width)
         .min(f32::from(bounds.size.height) / height)
-        .min(1.)
         .max(0.);
     Fit {
         scale,
@@ -408,19 +397,19 @@ mod tests {
     use gpui::size;
 
     #[test]
-    fn small_diagrams_are_centered_without_upscaling() {
-        let fitted = fit(
+    fn zoomed_viewport_upscales_native_geometry() {
+        let fitted = fit_viewport(
             100.,
             80.,
             Bounds::new(point(px(10.), px(20.)), size(px(600.), px(520.))),
         );
-        assert_eq!(fitted.scale, 1.);
-        assert_eq!(fitted.origin, point(px(260.), px(240.)));
+        assert_eq!(fitted.scale, 6.);
+        assert_eq!(fitted.origin, point(px(10.), px(40.)));
     }
 
     #[test]
     fn tall_diagrams_fit_height_without_clipping() {
-        let fitted = fit(
+        let fitted = fit_viewport(
             400.,
             1600.,
             Bounds::new(point(px(0.), px(0.)), size(px(130.), px(520.))),
@@ -434,7 +423,7 @@ mod tests {
 
     #[test]
     fn narrow_transcript_scales_both_axes() {
-        let fitted = fit(
+        let fitted = fit_viewport(
             1000.,
             500.,
             Bounds::new(point(px(3.), px(7.)), size(px(300.), px(150.))),
@@ -448,7 +437,7 @@ mod tests {
 
     #[test]
     fn empty_bounds_have_no_paintable_area() {
-        let fitted = fit(
+        let fitted = fit_viewport(
             100.,
             80.,
             Bounds::new(point(px(0.), px(0.)), size(px(0.), px(0.))),

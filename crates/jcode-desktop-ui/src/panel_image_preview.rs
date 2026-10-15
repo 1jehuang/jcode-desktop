@@ -16,25 +16,29 @@ impl Panel {
         &self,
         cx: &Context<Self>,
     ) -> markdown::MediaPreviewHandler {
-        let panel = cx.entity().downgrade();
-        std::rc::Rc::new(move |preview, window, cx| {
-            let _ = panel.update(cx, |panel, cx| {
-                panel.open_image_preview(
-                    TranscriptImage {
-                        media_type: "image/svg+xml".into(),
-                        data: String::new(),
-                        label: Some("Mermaid diagram".into()),
-                        preview: Some(preview),
-                        source: jcode_sdk::RenderedImageSource::Other {
-                            role: "assistant".into(),
-                        },
-                        anchor: None,
-                    },
-                    window,
-                    cx,
-                );
-            });
-        })
+        let scroll_panel = cx.entity().downgrade();
+        let gesture_panel = scroll_panel.clone();
+        markdown::MediaPreviewHandler {
+            fit_scroll: Some(std::rc::Rc::new(move |event, window, cx| {
+                let _ = scroll_panel.update(cx, |panel, cx| {
+                    if panel.transcript_list.is_scrollbar_dragging() {
+                        return;
+                    }
+                    let y = f32::from(event.delta.pixel_delta(window.line_height()).y);
+                    if y == 0.0 {
+                        return;
+                    }
+                    if event.delta.precise() {
+                        panel.glide_transcript_input(-y, true, cx);
+                    } else {
+                        panel.glide_transcript_wheel(-y, cx);
+                    }
+                });
+            })),
+            on_gesture: Some(std::rc::Rc::new(move |_, cx| {
+                let _ = gesture_panel.update(cx, |panel, _| panel.cancel_transcript_momentum());
+            })),
+        }
     }
 
     pub(super) fn open_image_preview(
@@ -659,10 +663,10 @@ mod tests {
         assert!(panel.read_with(vcx, |panel, _| panel.image_preview.is_none()));
     }
     #[gpui::test]
-    fn mermaid_preview_streamed_click_close_and_escape_preserve_transcript(
+    fn mermaid_streamed_inline_zoom_pan_fit_preserves_transcript_and_draft(
         cx: &mut gpui::TestAppContext,
     ) {
-        cx.update(|cx| crate::input::bind_keys(cx));
+        cx.update(crate::input::bind_keys);
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace =
                 crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
@@ -672,143 +676,125 @@ mod tests {
         let panel = workspace
             .read_with(vcx, |workspace, _| workspace.test_panel(0))
             .unwrap();
-        panel.update(vcx, |panel, cx| {
-            panel.input.update(cx, |input, cx| {
-                input.set_content("diagram draft".into(), cx)
-            });
-            panel.apply(
-                &ApiEvent::TextDelta {
-                    message_id: None,
-                    session_id: "diagram-session".into(),
-                    text: "```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```".into(),
-                },
-                cx,
-            );
+        vcx.update(|window, cx| {
+            panel.update(cx, |panel, cx| {
+                *panel.items = (0..5)
+                    .map(|i| Item::User(format!("earlier message {i}")))
+                    .collect();
+                panel.input.update(cx, |input, cx| {
+                    input.set_content("diagram draft".into(), cx)
+                });
+                panel.focus_input(window, cx);
+                panel.apply(
+                    &ApiEvent::TextDelta {
+                        message_id: None,
+                        session_id: "diagram-session".into(),
+                        text: "```mermaid\nflowchart LR\nA[Start] --> B[Done]\n```".into(),
+                    },
+                    cx,
+                );
+            })
         });
         vcx.run_until_parked();
-        let scroll_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
-        for close_with_escape in [false, true] {
-            let thumbnail = vcx
-                .debug_bounds("md-mermaid")
-                .expect("streamed diagram paints");
-            vcx.simulate_click(thumbnail.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            assert!(panel.read_with(vcx, |panel, _| {
-                panel.image_preview.as_ref().is_some_and(|image| {
-                    image.media_type == "image/svg+xml"
-                        && image.label.as_deref() == Some("Mermaid diagram")
-                })
-            }));
-            let enlarged = vcx
-                .debug_bounds("image-preview-full")
-                .expect("diagram overlay paints");
-            assert!(enlarged.size.height > thumbnail.size.height);
-            let overlay = vcx.debug_bounds("image-preview").unwrap();
-            let viewport = vcx.update(|window, _| window.viewport_size());
-            assert_eq!(overlay.origin, gpui::point(px(0.0), px(0.0)));
-            assert_eq!(
-                overlay.size, viewport,
-                "preview must cover the whole window"
-            );
-            let zoom_in = vcx.debug_bounds("image-preview-zoom-in").unwrap();
-            vcx.simulate_click(zoom_in.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            assert_eq!(
-                panel.read_with(vcx, |panel, _| panel.image_preview_zoom),
-                1.5
-            );
-            let zoomed = vcx.debug_bounds("image-preview-full").unwrap();
-            assert!(zoomed.size.width > enlarged.size.width * 1.4);
-            assert!(zoomed.size.height > enlarged.size.height * 1.4);
-            // GPUI rounds layout positions to device pixels.
-            assert!((zoomed.center().x - enlarged.center().x).abs() < px(1.0));
-            assert!((zoomed.center().y - enlarged.center().y).abs() < px(1.0));
-            let viewport = vcx.debug_bounds("image-preview-viewport").unwrap();
+        let before = vcx
+            .debug_bounds("inline-image-content")
+            .expect("shared inline viewport paints");
+        let viewport = vcx.debug_bounds("inline-image-viewport").unwrap();
+        let anchor = viewport.center();
+        let transcript_before = panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y());
+        panel.update(vcx, |panel, _| {
+            panel.transcript_wheel_glide.remaining = 70.0
+        });
+        vcx.simulate_event(gpui::MouseMoveEvent {
+            position: anchor,
+            ..Default::default()
+        });
+        vcx.simulate_event(gpui::PinchEvent {
+            position: anchor,
+            delta: 1.0,
+            phase: gpui::TouchPhase::Moved,
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        let zoomed = vcx.debug_bounds("inline-image-content").unwrap();
+        assert!(
+            (zoomed.size.width - before.size.width * 2.0).abs() < px(1.0),
+            "pinch geometry: before={before:?}, zoomed={zoomed:?}, viewport={viewport:?}"
+        );
+        assert!((zoomed.size.height - before.size.height * 2.0).abs() < px(1.0));
+        assert_eq!(
+            vcx.debug_bounds("md-mermaid-native").unwrap().size,
+            zoomed.size
+        );
+        assert_eq!(
+            panel.read_with(vcx, |panel, _| panel.transcript_wheel_glide.remaining),
+            0.0
+        );
+        for (control, x, y) in [(true, 0.0, 10.0), (false, -15.0, -20.0)] {
+            let old = vcx.debug_bounds("inline-image-content").unwrap();
             vcx.simulate_event(gpui::ScrollWheelEvent {
-                position: viewport.center(),
-                delta: gpui::ScrollDelta::Lines(gpui::point(0.0, -3.0)),
-                modifiers: gpui::Modifiers::default(),
+                position: anchor,
+                delta: gpui::ScrollDelta::Pixels(gpui::point(px(x), px(y))),
+                modifiers: gpui::Modifiers {
+                    control,
+                    ..Default::default()
+                },
                 touch_phase: gpui::TouchPhase::Moved,
             });
             vcx.run_until_parked();
-            vcx.simulate_event(gpui::ScrollWheelEvent {
-                position: viewport.center(),
-                delta: gpui::ScrollDelta::Lines(gpui::point(-3.0, 0.0)),
-                modifiers: gpui::Modifiers::default(),
-                touch_phase: gpui::TouchPhase::Moved,
-            });
-            vcx.run_until_parked();
-            let offset = panel.read_with(vcx, |panel, _| panel.image_preview_scroll.offset());
-            assert!(
-                offset.x < px(0.0) && offset.y < px(0.0),
-                "zoomed media pans in both axes: {offset:?}"
-            );
-            assert_eq!(
-                panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
-                scroll_before
-            );
-            let zoom_out = vcx.debug_bounds("image-preview-zoom-out").unwrap();
-            vcx.simulate_click(zoom_out.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            assert_eq!(
-                panel.read_with(vcx, |panel, _| panel.image_preview_zoom),
-                1.0
-            );
-            let zoom_in = vcx.debug_bounds("image-preview-zoom-in").unwrap();
-            vcx.simulate_click(zoom_in.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            let fit = vcx.debug_bounds("image-preview-fit").unwrap();
-            vcx.simulate_click(fit.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            assert_eq!(
-                panel.read_with(vcx, |panel, _| panel.image_preview_zoom),
-                1.0
-            );
-            assert_eq!(
-                vcx.debug_bounds("image-preview-full").unwrap().size,
-                enlarged.size
-            );
-            for _ in 0..8 {
-                let zoom_in = vcx.debug_bounds("image-preview-zoom-in").unwrap();
-                vcx.simulate_click(zoom_in.center(), gpui::Modifiers::default());
-                vcx.run_until_parked();
-            }
-            assert_eq!(
-                panel.read_with(vcx, |panel, _| panel.image_preview_zoom),
-                4.0
-            );
-            let center = vcx.debug_bounds("image-preview-full").unwrap().center();
-            assert!((center.x - enlarged.center().x).abs() < px(2.0));
-            assert!((center.y - enlarged.center().y).abs() < px(2.0));
-            let fit = vcx.debug_bounds("image-preview-fit").unwrap();
-            vcx.simulate_click(fit.center(), gpui::Modifiers::default());
-            vcx.run_until_parked();
-            // Workspace navigation asks the panel for its focus target. An
-            // open viewer must not send that focus to the hidden composer.
-            vcx.update(|window, cx| {
-                panel.update(cx, |panel, cx| panel.focus_input(window, cx));
-            });
-            vcx.simulate_keystrokes("x");
-            assert_eq!(
-                panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
-                "diagram draft"
-            );
-            if close_with_escape {
-                vcx.simulate_keystrokes("escape");
+            let new = vcx.debug_bounds("inline-image-content").unwrap();
+            if control {
+                assert!(new.size.width > old.size.width);
             } else {
-                let close = vcx
-                    .debug_bounds("image-preview-close")
-                    .expect("close control paints");
-                vcx.simulate_click(close.center(), gpui::Modifiers::default());
+                assert!((new.origin.x - old.origin.x - px(x)).abs() < px(1.0));
+                assert!((new.origin.y - old.origin.y - px(y)).abs() < px(1.0));
             }
-            vcx.run_until_parked();
-            assert!(vcx.debug_bounds("image-preview").is_none());
-            assert!(vcx.debug_bounds("md-mermaid").is_some());
             assert_eq!(
                 panel.read_with(vcx, |panel, _| panel.test_scroll_offset_y()),
-                scroll_before
+                transcript_before
             );
         }
+        let old = vcx.debug_bounds("inline-image-content").unwrap();
+        vcx.simulate_event(gpui::MouseDownEvent {
+            position: anchor,
+            button: gpui::MouseButton::Left,
+            ..Default::default()
+        });
+        vcx.simulate_event(gpui::MouseMoveEvent {
+            position: anchor + gpui::point(px(10.0), px(10.0)),
+            pressed_button: Some(gpui::MouseButton::Left),
+            ..Default::default()
+        });
+        vcx.simulate_event(gpui::MouseUpEvent {
+            position: anchor + gpui::point(px(10.0), px(10.0)),
+            button: gpui::MouseButton::Left,
+            ..Default::default()
+        });
+        vcx.run_until_parked();
+        let panned = vcx.debug_bounds("inline-image-content").unwrap();
+        assert!((panned.origin.x - old.origin.x - px(10.0)).abs() < px(1.0));
+        assert_eq!(panned.size, old.size, "drag must not toggle expansion");
+        let fit = vcx.debug_bounds("inline-image-fit").unwrap();
+        vcx.simulate_click(fit.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert_eq!(
+            vcx.debug_bounds("inline-image-content").unwrap().size,
+            before.size
+        );
+        let fitted_viewport = vcx.debug_bounds("inline-image-viewport").unwrap();
+        vcx.simulate_click(fitted_viewport.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("inline-image-viewport")
+                .unwrap()
+                .size
+                .width
+                > viewport.size.width
+        );
+        assert!(
+            vcx.debug_bounds("image-preview").is_none(),
+            "no separate SVG viewer"
+        );
         vcx.simulate_keystrokes("x");
         assert_eq!(
             panel.read_with(vcx, |panel, cx| panel.input.read(cx).snapshot().content),
