@@ -65,7 +65,8 @@ impl RemoteTransports {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
         })?;
         let options = SshConnectOptions {
-            supports_user_response: true,
+            // Temporarily disabled until inline tool responses have broader testing.
+            supports_user_response: false,
             client_name: format!("jcode-desktop-remote/{}", crate::client_version()),
             connect_timeout: Duration::from_secs(20),
             request_timeout: Some(Duration::from_secs(30)),

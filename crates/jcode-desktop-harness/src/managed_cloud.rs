@@ -239,7 +239,8 @@ pub fn connect(
     )?;
     progress("Connecting to your Jcode Cloud machine…");
     let options = SshConnectOptions {
-        supports_user_response: true,
+        // Temporarily disabled until inline tool responses have broader testing.
+        supports_user_response: false,
         port: Some(port),
         user: Some(user),
         identity_file: Some(key.private_key()),
