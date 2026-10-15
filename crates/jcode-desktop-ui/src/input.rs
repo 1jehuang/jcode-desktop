@@ -1440,17 +1440,21 @@ impl PromptInput {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The editor owns this gesture, including repeated clicks. Do not let
+        // it reach a caption-background listener behind a header-area composer.
+        // Focus explicitly because stopping propagation also skips track_focus.
+        window.focus(&self.focus_handle, cx);
+        cx.stop_propagation();
         self.is_selecting = true;
+        let offset = self.index_for_mouse_position(event.position, window.line_height());
         if event.modifiers.shift {
-            self.select_to(
-                self.index_for_mouse_position(event.position, window.line_height()),
-                cx,
-            );
+            self.select_to(offset, cx);
+        } else if event.click_count == 2 {
+            self.selected_range = clicked_word_range(&self.content, offset);
+            self.selection_reversed = false;
+            cx.notify();
         } else {
-            self.move_to(
-                self.index_for_mouse_position(event.position, window.line_height()),
-                cx,
-            )
+            self.move_to(offset, cx)
         }
     }
 
@@ -1591,6 +1595,18 @@ impl PromptInput {
     fn next_word_boundary(&self, offset: usize) -> usize {
         next_word_boundary(&self.content, offset)
     }
+}
+
+fn clicked_word_range(text: &str, offset: usize) -> Range<usize> {
+    // Hit testing returns UTF-8 boundaries. At the end of a line/document,
+    // select the final segment rather than an empty word after the text.
+    let probe = offset.min(text.len().saturating_sub(1));
+    text.split_word_bound_indices()
+        .find_map(|(start, word)| {
+            let end = start + word.len();
+            (start <= probe && probe < end).then_some(start..end)
+        })
+        .unwrap_or(0..0)
 }
 
 fn previous_word_boundary(text: &str, offset: usize) -> usize {
@@ -2543,6 +2559,23 @@ mod tests {
     use gpui::{TestAppContext, WindowOptions};
 
     #[test]
+    fn double_click_word_ranges_are_unicode_safe_and_exclude_adjacent_space() {
+        for (text, offset, selected) in [
+            ("hello world", 1, "hello"),
+            ("hello world", 5, " "),
+            ("hello world", 7, "world"),
+            ("hello world", 11, "world"),
+            ("hello, world", 5, ","),
+            ("héllo 猫 🚀", 2, "héllo"),
+            ("héllo 猫 🚀", 7, "猫"),
+            ("héllo 猫 🚀", usize::MAX, "🚀"),
+            ("", 0, ""),
+        ] {
+            assert_eq!(&text[clicked_word_range(text, offset)], selected);
+        }
+    }
+
+    #[test]
     fn slash_palette_filters_commands_and_models() {
         let models = vec!["gpt-5.6-sol".into(), "claude-fable-5".into()];
         let commands = command_suggestions("/m", &models);
@@ -2617,6 +2650,43 @@ mod tests {
             })
             .unwrap();
         window
+    }
+
+    #[gpui::test]
+    fn composer_double_click_selects_a_word_and_preserves_shift_extension(cx: &mut TestAppContext) {
+        let handle = input_window(cx);
+        handle
+            .update(cx, |input, _, cx| {
+                input.set_content("hello world".into(), cx)
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let origin = input.last_bounds.unwrap().origin;
+                let position = origin
+                    + input
+                        .last_layout
+                        .as_ref()
+                        .unwrap()
+                        .position_for_index(2, window.line_height())
+                        .unwrap();
+                let event = MouseDownEvent {
+                    button: MouseButton::Left,
+                    position: position + point(px(0.), window.line_height() / 2.),
+                    modifiers: Default::default(),
+                    click_count: 2,
+                    first_mouse: false,
+                };
+                input.on_mouse_down(&event, window, cx);
+                assert_eq!(input.selected_range, 0..5);
+                assert!(input.focus_handle.is_focused(window));
+                let mut shift_event = event;
+                shift_event.modifiers.shift = true;
+                input.on_mouse_down(&shift_event, window, cx);
+                assert_eq!(input.selected_range, 0..2);
+            })
+            .unwrap();
     }
 
     #[gpui::test]

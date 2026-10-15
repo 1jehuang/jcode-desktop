@@ -8,7 +8,10 @@
 //! `HTMAXBUTTON` (which opens Snap Layouts on hover) and `HTCLOSE`. Windows
 //! performs the actions itself, so the buttons carry no click listeners.
 //!
-//! Other platforms return their content unchanged.
+//! macOS retains its native traffic lights, but the app owns caption hit-testing
+//! so AppKit cannot interpret clicks on an overlapping composer as titlebar clicks.
+//! Only unoccupied header background starts native dragging or the system's
+//! configured titlebar double-click action. Other platforms return content unchanged.
 
 use gpui::{Rgba, Window, WindowControlArea, div, prelude::*, px};
 
@@ -21,6 +24,54 @@ pub(crate) const BUTTON_WIDTH: f32 = 46.0;
 pub(crate) const HEIGHT: f32 = 34.0;
 /// Width the header must leave free on the right for the three buttons.
 pub(crate) const BUTTONS_WIDTH: f32 = BUTTON_WIDTH * 3.0;
+
+/// Matches the macOS workspace header and its existing traffic-light inset.
+const MACOS_HEIGHT: f32 = 40.0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MacosCaptionAction {
+    Move,
+    DoubleClick,
+}
+
+/// Keep this hitbox behind content. Existing header controls occlude it, and
+/// editors consume mouse-down, so even controls with only on_click never drag.
+fn macos_drag_region(
+    on_action: impl Fn(MacosCaptionAction, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id("macos-caption-drag")
+        .debug_selector(|| "macos-caption-drag".into())
+        .absolute()
+        .top_0()
+        .left_0()
+        .right_0()
+        .h(px(MACOS_HEIGHT))
+        .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+            match event.click_count {
+                1 => on_action(MacosCaptionAction::Move, window, cx),
+                2 => on_action(MacosCaptionAction::DoubleClick, window, cx),
+                _ => return,
+            }
+            cx.stop_propagation();
+        })
+}
+
+fn wrap_macos_with(
+    content: gpui::Div,
+    on_action: impl Fn(MacosCaptionAction, &mut Window, &mut gpui::App) + 'static,
+) -> gpui::Div {
+    div()
+        .debug_selector(|| "macos-caption-root".into())
+        .size_full()
+        .relative()
+        .flex()
+        .flex_col()
+        // macOS callers already reserve traffic-light space where needed.
+        // The caption is an overlay only, not an additional content inset.
+        .child(macos_drag_region(on_action))
+        .child(content.flex_1().min_h_0())
+}
 
 /// The app draws the caption on Windows only.
 pub(crate) const fn enabled() -> bool {
@@ -57,6 +108,12 @@ fn glyph_font(window: &Window) -> &'static str {
 /// `inset` pushes content below the caption row, for screens without a
 /// header row of their own to share it with.
 pub(crate) fn wrap(content: gpui::Div, window: &Window, inset: bool) -> gpui::Div {
+    if cfg!(target_os = "macos") && !window.is_fullscreen() {
+        return wrap_macos_with(content, |action, window, _| match action {
+            MacosCaptionAction::Move => window.start_window_move(),
+            MacosCaptionAction::DoubleClick => window.titlebar_double_click(),
+        });
+    }
     if !enabled() || window.is_fullscreen() {
         return content;
     }
@@ -139,4 +196,111 @@ fn buttons(window: &Window) -> impl IntoElement {
                 .hover(|el| el.bg(CLOSE_HOVER).text_color(gpui::white()))
                 .active(|el| el.bg(CLOSE_HOVER.opacity(0.9)).text_color(gpui::white())),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::{Context, Entity, MouseButton, MouseDownEvent, Render, TestAppContext, point};
+    use std::{cell::RefCell, rc::Rc};
+
+    struct CaptionFixture {
+        input: Entity<crate::input::PromptInput>,
+        actions: Rc<RefCell<Vec<MacosCaptionAction>>>,
+    }
+
+    impl Render for CaptionFixture {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let actions = self.actions.clone();
+            let content = div()
+                .size_full()
+                .relative()
+                // A click-only header control must not initiate a native move
+                // before its on_click gets a chance to run on release.
+                .child(
+                    div()
+                        .id("caption-control")
+                        .absolute()
+                        .left(px(80.))
+                        .top_0()
+                        .w(px(80.))
+                        .h(px(MACOS_HEIGHT))
+                        .occlude()
+                        .rounded_full()
+                        .on_click(|_, _, _| {})
+                        .child("header"),
+                )
+                // Deliberately overlap the caption, reproducing the bad native
+                // hit-test boundary rather than only testing a bottom composer.
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(180.))
+                        .top_0()
+                        .w(px(300.))
+                        .child(self.input.clone()),
+                );
+            wrap_macos_with(content, move |action, _, _| {
+                actions.borrow_mut().push(action);
+            })
+        }
+    }
+
+    #[gpui::test]
+    fn macos_caption_only_empty_header_background_moves_or_zooms(cx: &mut TestAppContext) {
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let recorded = actions.clone();
+        let (fixture, vcx) = cx.add_window_view(|_, cx| CaptionFixture {
+            input: cx.new(|cx| {
+                let mut input = crate::input::PromptInput::new(cx, "test", |_, _, _, _| {});
+                input.set_content("hello world".into(), cx);
+                input
+            }),
+            actions: recorded,
+        });
+        vcx.run_until_parked();
+        let click = |vcx: &mut gpui::VisualTestContext, x, y, click_count, button| {
+            vcx.simulate_event(MouseDownEvent {
+                button,
+                position: point(px(x), px(y)),
+                click_count,
+                modifiers: Default::default(),
+                first_mouse: false,
+            });
+            vcx.simulate_event(gpui::MouseUpEvent {
+                button,
+                position: point(px(x), px(y)),
+                click_count,
+                modifiers: Default::default(),
+            });
+            vcx.run_until_parked();
+        };
+        for count in [1, 2, 3] {
+            click(vcx, 100., 20., count, MouseButton::Left);
+            click(vcx, 220., 20., count, MouseButton::Left);
+            click(vcx, 20., MACOS_HEIGHT + 1., count, MouseButton::Left);
+        }
+        click(vcx, 20., 20., 2, MouseButton::Right);
+        assert!(
+            actions.borrow().is_empty(),
+            "controls and content must never act as caption"
+        );
+        vcx.update(|window, cx| {
+            assert!(
+                fixture
+                    .read(cx)
+                    .input
+                    .read(cx)
+                    .focus_handle
+                    .is_focused(window)
+            );
+        });
+        click(vcx, 20., 20., 1, MouseButton::Left);
+        click(vcx, 20., 20., 2, MouseButton::Left);
+        click(vcx, 20., 20., 3, MouseButton::Left);
+        assert_eq!(
+            actions.borrow().as_slice(),
+            &[MacosCaptionAction::Move, MacosCaptionAction::DoubleClick]
+        );
+    }
 }

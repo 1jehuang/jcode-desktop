@@ -209,7 +209,9 @@ impl Render for HostFallback {
 /// A macOS-native titlebar for a window whose content runs edge to edge.
 ///
 /// The system titlebar stays in place, so the window keeps native traffic
-/// lights, native dragging, double-click zoom, and Window-menu tiling. Making
+/// lights and Window-menu tiling. The app owns caption hit-testing and forwards
+/// only empty header clicks to native dragging and titlebar double-click actions.
+/// This prevents AppKit from treating overlapping input controls as titlebar. Making
 /// it transparent lets the workspace background continue behind it, which is
 /// the unified look Finder, Safari, and Xcode use. The traffic lights are
 /// nudged down so they sit centered against the app's own header row.
@@ -287,6 +289,7 @@ fn restore_window(
             app_id: Some(jcode_desktop_ui::APP_ID.into()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(titlebar_options()),
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
             ..Default::default()
         },
         |_, cx| cx.new(|_| HostFallback),
@@ -464,6 +467,7 @@ fn open_shared_window(
             app_id: Some(jcode_desktop_ui::APP_ID.into()),
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             titlebar: Some(titlebar_options()),
+            app_owns_titlebar_drag: cfg!(target_os = "macos"),
             ..Default::default()
         },
         |_, cx| cx.new(|_| HostFallback),
@@ -660,6 +664,7 @@ fn main() {
                     app_id: Some(jcode_desktop_ui::APP_ID.into()),
                     window_bounds: Some(WindowBounds::Windowed(bounds)),
                     titlebar: Some(titlebar_options()),
+                    app_owns_titlebar_drag: cfg!(target_os = "macos"),
                     ..Default::default()
                 },
                 |_, cx| cx.new(|_| HostFallback),
