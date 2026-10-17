@@ -170,6 +170,7 @@ def run(package, output, timeout):
     app = None
     api = None
     logs = []
+    cleanup_armed = False
 
     def passed(name, **evidence):
         print(f"PASS: {name}: {json.dumps(evidence, ensure_ascii=False)}", flush=True)
@@ -202,6 +203,7 @@ def run(package, output, timeout):
         if processes(package):
             raise AssertionError("Package processes existed before cold start")
         passed("clean state, no pre-existing package processes, no offline fixtures")
+        cleanup_armed = True
         app = launch("cold")
         api = wait_until(connect, timeout, "Desktop auto-started harness handshake")
         daemon, bridge = wait_until(lambda: runtime_processes(package), timeout, "single daemon and bridge")
@@ -223,6 +225,21 @@ def run(package, output, timeout):
             raise AssertionError(f"Context message not persisted: {history}")
         passed("persist context and fetch real history without credentials")
         api.request("detach_session", "ok", session_id=session_id)
+        api.close()
+        api = None
+        # Open the persisted session through the real Desktop UI before failure
+        # injection. A signed-out onboarding window need not hold a live session.
+        app.terminate()
+        app.wait(timeout=15)
+        app = launch("attached", session_id)
+        api = wait_until(connect, timeout, "Desktop opens the requested real session")
+        def desktop_attached():
+            sessions = api.request("list_sessions", "sessions")["sessions"]
+            return next((session for session in sessions if session["session_id"] == session_id
+                         and session.get("user_connected")), None)
+        attached = wait_until(desktop_attached, timeout, "Desktop UI attached before failure injection")
+        passed("Desktop UI attaches before disconnect and recovery checks", session=attached)
+        screenshot(output / "desktop-attached.png")
         api.close()
         api = None
         # Repeated connect-close readiness probes must never bring down the server.
@@ -252,6 +269,8 @@ def run(package, output, timeout):
         new_daemon, new_bridge = runtime_processes(package)
         if new_daemon["ProcessId"] != daemon["ProcessId"] or new_bridge["ProcessId"] == killed_pid:
             raise AssertionError("Bridge recovery replaced the daemon or did not replace the bridge")
+        attached = wait_until(desktop_attached, timeout, "Desktop UI reconnects after bridge termination")
+        passed("Desktop UI reconnects after bridge termination", session=attached)
         api.request("attach_session", "attached", session_id=session_id)
         recovered = api.request("get_history", "history", session_id=session_id)
         if "Windows native acceptance" not in json.dumps(recovered):
@@ -267,10 +286,6 @@ def run(package, output, timeout):
         warm_daemon, warm_bridge = runtime_processes(package)
         if (warm_daemon["ProcessId"], warm_bridge["ProcessId"]) != (daemon["ProcessId"], new_bridge["ProcessId"]):
             raise AssertionError("Warm relaunch spawned duplicate or replacement runtime")
-        def desktop_attached():
-            sessions = api.request("list_sessions", "sessions")["sessions"]
-            return next((session for session in sessions if session["session_id"] == session_id
-                         and session.get("user_connected")), None)
         attached = wait_until(desktop_attached, timeout, "Desktop UI attached to requested session")
         passed("Desktop UI attaches to requested session on warm relaunch", session=attached)
         api.request("attach_session", "attached", session_id=session_id)
@@ -278,7 +293,10 @@ def run(package, output, timeout):
         if "Windows native acceptance" not in json.dumps(history):
             raise AssertionError("History missing after Desktop UI warm relaunch")
         api.request("detach_session", "ok", session_id=session_id)
-        passed("Desktop warm relaunch reuses existing runtime and session")
+        if app.poll() is not None:
+            raise AssertionError(f"Desktop exited during warm session verification: {app.returncode}")
+        attached = wait_until(desktop_attached, timeout, "Desktop remains attached without observer")
+        passed("Desktop warm relaunch reuses existing runtime and session", session=attached)
         screenshot(output / "warm-relaunch.png")
         report["success"] = True
     except Exception as error:
@@ -304,14 +322,21 @@ def run(package, output, timeout):
             cleanup("terminate Desktop", app.terminate)
             cleanup("wait for Desktop", lambda: app.wait(timeout=15))
         report["final_processes"] = cleanup("process census", lambda: processes(package)) or []
-        for process in report["final_processes"]:
-            cleanup("stop package process", lambda: stop(process["ProcessId"]))
+        if cleanup_armed:
+            for process in report["final_processes"]:
+                cleanup("stop package process", lambda: stop(process["ProcessId"]))
+            cleanup("verify package shutdown", lambda: wait_until(
+                lambda: not processes(package), 15, "all test package processes stopped"))
         for log in logs:
             cleanup("close log", log.close)
         report["cleanup_errors"] = cleanup_errors
+        cleanup_failed = bool(report.get("success") and cleanup_errors)
+        if cleanup_failed:
+            report["success"] = False
+            report["error"] = f"Acceptance cleanup failed: {cleanup_errors}"
         (output / "result.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
-        if report.get("success") and cleanup_errors:
-            raise RuntimeError(f"Acceptance cleanup failed: {cleanup_errors}")
+        if cleanup_failed:
+            raise RuntimeError(report["error"])
 
 
 def main(argv=None):

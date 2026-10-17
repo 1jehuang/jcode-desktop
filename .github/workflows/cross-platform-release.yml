@@ -279,17 +279,31 @@ jobs:
       - name: Smoke-test Windows package
         if: matrix.platform == 'windows'
         shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
-          $stage = Get-ChildItem jcode-desktop/dist/windows -Directory -Filter 'Jcode-*-windows-${{ matrix.arch }}' | Select-Object -First 1
-          $log = Join-Path $env:RUNNER_TEMP 'jcode-desktop-windows.log'
-          $process = Start-Process -FilePath "$($stage.FullName)/jcode-desktop.exe" -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru
-          Start-Sleep -Seconds 8
-          if ($process.HasExited) {
-            Get-Content $log, "$log.err" -ErrorAction SilentlyContinue
-            throw "Jcode Desktop exited during launch with code $($process.ExitCode)"
-          }
-          Stop-Process -Id $process.Id
-          $process.WaitForExit()
+          # Exercise the ZIP users download, never the build tree or offline fixtures.
+          $destination = Join-Path $env:RUNNER_TEMP 'Jcode release package with spaces'
+          Expand-Archive (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName -DestinationPath $destination
+          $app = Get-ChildItem $destination -Recurse -Filter jcode-desktop.exe
+          if (@($app).Count -ne 1) { throw 'Expected exactly one packaged Desktop' }
+          python jcode-desktop/scripts/windows-runtime-acceptance.py $app.Directory.FullName "$env:RUNNER_TEMP/windows-runtime-evidence"
+          if ($LASTEXITCODE) { throw 'Windows runtime cold-start and recovery acceptance failed' }
+          # Fixture rendering is separate from the real runtime checks above.
+          python -m pip install --quiet pillow
+          if ($LASTEXITCODE) { throw 'Native UI test dependency installation failed' }
+          python jcode-desktop/scripts/windows_screenshots.py $app.FullName "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration --resolution 1920x1080
+          if ($LASTEXITCODE) { throw 'Windows caption or native integration acceptance failed' }
+      - name: Upload Windows runtime acceptance diagnostics
+        if: always() && matrix.platform == 'windows'
+        continue-on-error: true
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-runtime-smoke-diagnostics-${{ matrix.arch }}
+          path: ${{ runner.temp }}/windows-runtime-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: matrix.platform == 'windows' && !startsWith(github.ref, 'refs/tags/desktop-v')
         with:

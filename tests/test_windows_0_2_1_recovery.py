@@ -116,13 +116,20 @@ class RecoveryContracts(unittest.TestCase):
     def test_original_build_verify_cli_and_eight_second_gui_preserved(self):
         # The only permitted build differences are a fixed version, removal of
         # the redundant platform condition, and explicitly disallowing skip-build.
-        for name in ('Build and package Windows', 'Verify Windows package', 'Smoke-test Windows package'):
+        # Historical recovery intentionally keeps its original GUI-only smoke.
+        # Current releases now have a stronger real-runtime acceptance gate.
+        for name in ('Build and package Windows', 'Verify Windows package'):
             original = workflow_step('cross-platform-release.yml', name)
             expected = original.replace("        if: matrix.platform == 'windows'\n", '')
             expected = expected.replace("${{ startsWith(github.ref, 'refs/tags/desktop-v') && github.ref_name || inputs.version }}", '${{ env.RELEASE_TAG }}')
             expected = expected.replace('          VERSION:', '          SKIP_BUILD: "0"\n          VERSION:')
             self.assertEqual(workflow_step(WORKFLOW, name), expected)
-        self.assertIn('Start-Sleep -Seconds 8', TEXT)
+        smoke = workflow_step(WORKFLOW, 'Smoke-test Windows package')
+        self.assertIn('Start-Sleep -Seconds 8', smoke)
+        self.assertIn('Start-Process -FilePath', smoke)
+        self.assertIn('if ($process.HasExited)', smoke)
+        self.assertIn('$process.WaitForExit()', smoke)
+        self.assertNotIn('windows-runtime-acceptance.py', smoke)
         self.assertIn('run: ./jcode-desktop/scripts/package-windows.ps1', TEXT)
         self.assertIn('test_release_targets.py', TEXT)
 

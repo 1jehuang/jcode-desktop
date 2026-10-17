@@ -95,9 +95,31 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertIn('JCODE_NO_AUTO_UPDATE="1"', source)
         self.assertIn('no_reply=True', source)
 
+    def test_release_gate_exercises_extracted_zip_before_upload(self):
+        workflow = (ROOT / '.github/workflows/cross-platform-release.yml').read_text()
+        gate = workflow.split('      - name: Smoke-test Windows package\n', 1)[1]
+        gate = gate.split('      - name: Upload Windows runtime acceptance diagnostics', 1)[0]
+        self.assertIn('Expand-Archive', gate)
+        self.assertIn('windows-runtime-acceptance.py', gate)
+        self.assertNotIn('Start-Sleep -Seconds 8', gate)
+        self.assertNotIn('continue-on-error:', gate)
+        self.assertIn('if ($LASTEXITCODE)', gate)
+        self.assertIn('--states caption,caption-light,windows-integration', gate)
+        self.assertLess(workflow.index('windows-runtime-acceptance.py'),
+                        workflow.index('Upload verified platform packages to private draft'))
+
+    def test_on_demand_reuses_built_artifacts_and_separates_fixture_ui(self):
+        workflow = (ROOT / '.github/workflows/windows-runtime-acceptance.yml').read_text()
+        self.assertIn('artifact_run:', workflow)
+        self.assertIn('gh run download', workflow)
+        self.assertIn('source-run.json', workflow)
+        self.assertIn('--states caption,caption-light,windows-integration,chat,diff,applet', workflow)
+        self.assertLess(workflow.index('windows-runtime-acceptance.py'),
+                        workflow.index('windows_screenshots.py'))
+
     def exercise_runner(self, fail_history=False):
         launches, requests = [], []
-        state = {'bridge': 20}
+        state = {'bridge': 20, 'cleanup_calls': 0}
         class App:
             pid = 30
             def __init__(self, args, **kwargs):
@@ -118,7 +140,7 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
                 return {'v': 1, 'ev': 'hello_ok', 'version': 1}
             def request(self, request, expected, **fields):
                 requests.append((request, fields))
-                session = {'session_id': 'real-session', 'user_connected': len(launches) == 2}
+                session = {'session_id': 'real-session', 'user_connected': len(launches) >= 2}
                 if request == 'list_sessions':
                     return {'sessions': [session]}
                 if request == 'create_session':
@@ -140,7 +162,9 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
             state['bridge'] = 21
         def census():
             if fail_history and launches:
-                raise RuntimeError('secondary cleanup failure')
+                state['cleanup_calls'] += 1
+                if state['cleanup_calls'] == 1:
+                    raise RuntimeError('secondary cleanup failure')
             return []
         real_open = open
         def open_file(file, *args, **kwargs):
@@ -169,7 +193,7 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
     def test_complete_orchestration_uses_real_session_id_and_ui_attach(self):
         report, launches, requests = self.exercise_runner()
         self.assertTrue(report['success'])
-        self.assertEqual(len(launches), 2)
+        self.assertEqual(len(launches), 3)
         self.assertIn('--session=real-session', launches[1][0])
         self.assertTrue(any(item['name'] == 'Desktop UI attaches to requested session on warm relaunch'
                             for item in report['checks']))
@@ -183,6 +207,23 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertFalse(report['success'])
         self.assertIn('primary history failure', report['error'])
         self.assertTrue(any('secondary cleanup failure' in error for error in report['cleanup_errors']))
+
+    def test_preexisting_package_processes_are_never_terminated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            package = Path(directory) / 'package'
+            output = Path(directory) / 'evidence'
+            existing = [{'ProcessId': 123}]
+            with patch.object(NATIVE, 'processes', return_value=existing), \
+                 patch.object(NATIVE, 'stop') as stop, \
+                 patch.object(NATIVE, 'screenshot'), \
+                 patch.object(NATIVE.subprocess, 'Popen') as launch:
+                with self.assertRaisesRegex(AssertionError, 'processes existed'):
+                    NATIVE.run(package, output, 1)
+                stop.assert_not_called()
+                launch.assert_not_called()
+            report = json.loads((output / 'result.json').read_text())
+            self.assertFalse(report['success'])
+            self.assertEqual(report['final_processes'], existing)
 
 
 if __name__ == '__main__':

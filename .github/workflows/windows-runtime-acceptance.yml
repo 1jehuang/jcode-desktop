@@ -15,6 +15,13 @@ on:
       runtime_ref:
         description: Immutable Jcode runtime commit required for a source build
         default: ''
+      artifact_run:
+        description: Optional run ID of a prior source build, to retest its exact ZIP without rebuilding
+        default: ''
+      ui_integration:
+        description: Also run native caption, window, single-instance and fixture rendering checks
+        type: boolean
+        default: true
       architecture:
         description: Native runner architectures
         type: choice
@@ -23,6 +30,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: windows-runtime-acceptance-${{ github.ref }}-${{ inputs.build_source }}
@@ -39,11 +47,14 @@ jobs:
           ARCHITECTURE: ${{ inputs.architecture }}
           BUILD_SOURCE: ${{ inputs.build_source }}
           RUNTIME_REF: ${{ inputs.runtime_ref }}
+          ARTIFACT_RUN: ${{ inputs.artifact_run }}
         run: |
           python3 - <<'PY'
           import json, os, re
           if os.environ['BUILD_SOURCE'] == 'true' and not re.fullmatch('[0-9a-f]{40}', os.environ['RUNTIME_REF']):
               raise SystemExit('Source validation requires an immutable runtime SHA')
+          if os.environ['ARTIFACT_RUN'] and (os.environ['BUILD_SOURCE'] == 'true' or not os.environ['ARTIFACT_RUN'].isdigit()):
+              raise SystemExit('Artifact retesting requires a numeric run ID and build_source=false')
           runners = [dict(os='windows-2025', arch='x86_64', native='X64', target='x86_64-pc-windows-msvc'),
                      dict(os='windows-11-arm', arch='aarch64', native='Arm64', target='aarch64-pc-windows-msvc')]
           selected = [r for r in runners if os.environ['ARCHITECTURE'] in ('both', r['arch'])]
@@ -131,7 +142,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: ./jcode-desktop/scripts/package-windows.ps1
       - name: Download published Windows ZIP
-        if: '!inputs.build_source'
+        if: "!inputs.build_source && inputs.artifact_run == ''"
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -139,19 +150,45 @@ jobs:
         run: |
           gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY -p '*windows-${{ matrix.arch }}.zip' -p 'SHA256SUMS-windows${{ matrix.arch == 'aarch64' && '-aarch64' || '' }}' -D downloaded
           if ($LASTEXITCODE) { throw 'Release download failed' }
+      - name: Download the exact previously built Windows ZIP
+        if: inputs.artifact_run != ''
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_RUN: ${{ inputs.artifact_run }}
+        run: |
+          gh run download $env:ARTIFACT_RUN --repo $env:GITHUB_REPOSITORY -n 'windows-runtime-package-${{ matrix.arch }}' -D downloaded
+          if ($LASTEXITCODE) { throw 'Source package artifact download failed' }
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/windows-runtime-evidence" | Out-Null
+          gh run view $env:ARTIFACT_RUN --repo $env:GITHUB_REPOSITORY --json headSha,event,workflowName > "$env:RUNNER_TEMP/windows-runtime-evidence/source-run.json"
+          if ($LASTEXITCODE) { throw 'Source package provenance lookup failed' }
       - name: Verify ZIP and extract under a path with spaces
         shell: pwsh
+        env:
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          ARTIFACT_RUN: ${{ inputs.artifact_run }}
         run: |
           $archive = if ('${{ inputs.build_source }}' -eq 'true') {
             (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName
           } else { (Get-ChildItem downloaded/*.zip).FullName }
           python jcode-desktop/scripts/verify-release-package.py $archive --target '${{ matrix.target }}'
           if ($LASTEXITCODE) { throw 'Package structure or architecture verification failed' }
-          if ('${{ inputs.build_source }}' -ne 'true') {
+          if ('${{ inputs.build_source }}' -ne 'true' -and '${{ inputs.artifact_run }}' -eq '') {
             $line = Get-Content (Get-ChildItem downloaded/SHA256SUMS*).FullName | Where-Object { $_ -match [regex]::Escape((Split-Path $archive -Leaf)) }
             $expected = ($line -split '\s+')[0]
             if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Published ZIP checksum mismatch' }
           }
+          $evidence = Join-Path $env:RUNNER_TEMP 'windows-runtime-evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          [ordered]@{
+            archive = (Split-Path $archive -Leaf)
+            sha256 = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+            acceptanceCommit = $env:GITHUB_SHA
+            runtimeCommit = $env:RUNTIME_REF
+            sourceArtifactRun = $env:ARTIFACT_RUN
+            releaseTag = $env:RELEASE_TAG
+          } | ConvertTo-Json | Set-Content (Join-Path $evidence 'package-provenance.json')
           $destination = Join-Path $env:RUNNER_TEMP 'Jcode package with spaces'
           Expand-Archive $archive -DestinationPath $destination
           $app = Get-ChildItem $destination -Recurse -Filter jcode-desktop.exe
@@ -164,6 +201,14 @@ jobs:
         run: |
           python jcode-desktop/scripts/windows-runtime-acceptance.py "$env:PACKAGE_DIR" "$env:RUNNER_TEMP/windows-runtime-evidence"
           if ($LASTEXITCODE) { throw 'Native Windows package runtime acceptance failed' }
+      - name: Verify native Windows UI integration and fixture rendering separately
+        if: inputs.ui_integration
+        shell: pwsh
+        run: |
+          python -m pip install --quiet pillow
+          if ($LASTEXITCODE) { throw 'Screenshot dependency installation failed' }
+          python jcode-desktop/scripts/windows_screenshots.py "$env:PACKAGE_DIR/jcode-desktop.exe" "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration,chat,diff,applet --resolution 1920x1080
+          if ($LASTEXITCODE) { throw 'Native Windows UI integration or fixture rendering failed' }
       - name: Preserve source-built ZIP for inspection, without publishing
         if: always() && inputs.build_source
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
