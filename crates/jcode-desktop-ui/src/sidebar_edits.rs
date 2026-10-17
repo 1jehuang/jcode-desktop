@@ -148,11 +148,8 @@ mod tests {
     fn sidebar_edit_totals_are_session_scoped_and_refresh_without_losing_navigation(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-            workspace.sidebar_history.show_all = true;
-            workspace
-        });
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         let mut first = session_info("first", Some("First session"));
         first.working_dir = Some("/same/repo".into());
         first.edit_stats = Some(stats(128, 37));
@@ -224,11 +221,8 @@ mod tests {
     fn sidebar_edit_metadata_remeasures_root_without_rendering_swarm_counts(
         cx: &mut gpui::TestAppContext,
     ) {
-        let (workspace, vcx) = cx.add_window_view(|_, cx| {
-            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-            workspace.sidebar_history.show_all = true;
-            workspace
-        });
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         let root = session_info("root", Some("Parent"));
         workspace.update(vcx, |w, cx| {
             w.layout_mode = crate::config::LayoutMode::Normal;

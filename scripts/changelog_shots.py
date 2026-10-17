@@ -33,7 +33,7 @@ SHOTS = {
         (3, "model-picker", ["--model-interact"], "1200x460+232+505", 1000),
     ],
     "0.6.1": [
-        # A zero-distance native drag clicks Show past sessions so the dock and
+        # A zero-distance native drag keeps the pointer neutral so the dock and
         # populated collections are visible without changing fixture defaults.
         (1, "project-sidebar", ["--collections", "--selection-drag", "80", "132", "80", "132"],
          "224x1000+0+0", None),

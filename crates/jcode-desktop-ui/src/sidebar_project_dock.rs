@@ -171,7 +171,6 @@ mod tests {
 
     fn fixture(cx: &mut Context<Workspace>) -> Workspace {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-        workspace.sidebar_history.show_all = true;
         for name in ["zulu", "alpha", "beta", "delta", "gamma"] {
             workspace.push_test_panel(&format!("session_fox_dock_{name}"), cx);
             workspace

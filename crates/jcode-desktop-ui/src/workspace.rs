@@ -109,8 +109,6 @@ mod fps_header_tests;
 mod hidden_animation_tests;
 #[path = "workspace_map_motion.rs"]
 mod map_motion;
-#[path = "workspace_scroll_snap.rs"]
-mod scroll_snap;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
@@ -124,6 +122,8 @@ pub(crate) mod panel_cache_tests;
 mod remote_tests;
 #[path = "workspace_remotes.rs"]
 mod remotes;
+#[path = "workspace_scroll_snap.rs"]
+mod scroll_snap;
 #[cfg(test)]
 #[path = "super_action_behavior_tests.rs"]
 mod super_action_behavior_tests;
@@ -832,7 +832,6 @@ pub struct Workspace {
     sidebar_sessions_list: gpui::ListState,
     sidebar_session_layout: Vec<SidebarSessionLayout>,
     sidebar_projects: sidebar_projects::State,
-    sidebar_history: sidebar_selection::History,
     sidebar_selection: sidebar_selection::Selection,
     sidebar_gesture: Option<sidebar_gesture::Pending>,
     /// Session row under the pointer. Hovering swaps its spinner for actions.
@@ -1149,7 +1148,6 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_projects: Default::default(),
-            sidebar_history: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
@@ -1535,7 +1533,6 @@ impl Workspace {
             sidebar_sessions_list: gpui::ListState::new(0, gpui::ListAlignment::Top, px(100.0)),
             sidebar_session_layout: Vec::new(),
             sidebar_projects: Default::default(),
-            sidebar_history: Default::default(),
             sidebar_selection: Default::default(),
             sidebar_gesture: None,
             sidebar_hovered_session: None,
@@ -3916,7 +3913,6 @@ impl Workspace {
             && !self.slots[closed].panel.read(cx).is_machines()
             && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
-            self.sidebar_history.closed(session_id.clone(), Instant::now());
             self.bridge.send(Command::Unwatch { session_id });
         }
         if self.previous == Some(closed_id) {
@@ -5415,6 +5411,14 @@ impl Workspace {
                 (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
+        let open_todos = self
+            .slots
+            .iter()
+            .map(|slot| {
+                let panel = slot.panel.read(cx);
+                (panel.session_id.clone(), panel.latest_todo_progress())
+            })
+            .collect::<HashMap<_, _>>();
         let working = open_marks
             .iter()
             .filter(|(_, mark)| mark.is_some())
@@ -5441,14 +5445,6 @@ impl Workspace {
         // within each section.
         // Live panels are authoritative, including sessions still waiting for
         // creation/catalog acknowledgement. Never wait for a server refresh to
-        let open_todos = self
-            .slots
-            .iter()
-            .map(|slot| {
-                let panel = slot.panel.read(cx);
-                (panel.session_id.clone(), panel.latest_todo_progress())
-            })
-            .collect::<HashMap<_, _>>();
         // make a newly opened neighbor reachable in the sidebar.
         let mut catalog = self.sessions.clone();
         let mut known = catalog
@@ -5525,9 +5521,6 @@ impl Workspace {
             .filter(|session| {
                 !nested.contains(&session.session_id)
                     && !closing_sessions.contains(&session.session_id)
-                    && (open_marks.contains_key(&session.session_id)
-                        || session.user_connected
-                        || self.sidebar_history.visible(&session.session_id, Instant::now()))
             })
             .partition(|session| {
                 open_marks.contains_key(&session.session_id) || session.user_connected
@@ -5763,7 +5756,10 @@ impl Workspace {
                     details: (row.subdirectory.is_some()
                         || sidebar_session_created_ms(&session.session_id).is_some()
                         || session.transcript_bytes.is_some_and(|bytes| bytes > 0)
-                        || session.edit_stats.as_ref().is_some_and(sidebar_edits::has_changes)),
+                        || session
+                            .edit_stats
+                            .as_ref()
+                            .is_some_and(sidebar_edits::has_changes)),
                     menu: self.collections.menu.as_deref() == Some(session.session_id.as_str()),
                 }
             })
@@ -5795,7 +5791,6 @@ impl Workspace {
             .overflow_hidden();
         list = list.flex().flex_col();
         list = list.child(self.render_sidebar_quick_actions(cx));
-        list = list.child(self.render_sidebar_history_toggle(cx));
         if let Some(applets) = self.sidebar_applets.take() {
             list = list.child(applets);
         }
@@ -5867,6 +5862,7 @@ impl Workspace {
                     move |sidebar_index, _window, cx| {
                         let row = &ordered_sessions[sidebar_index];
                         let is_open = row.open;
+                        let live = row.live;
                         let session = &row.session;
                         workspace.update(cx, |this, cx| {
                             let mut list = div()
@@ -6079,7 +6075,9 @@ impl Workspace {
                                                         .into()
                                                     })
                                                     .text_size(px(12.0))
-                                                    .line_height(relative(1.5));
+                                                    .line_height(relative(1.5))
+                                                    // Past sessions stay listed but read dimmer than live ones.
+                                                    .when(!live, |el| el.text_color(Theme::global().TEXT_DIM));
                                                 // A working session's title breathes in step
                                                 // with running tool rows. The pulse is its own
                                                 // view, so a tick redraws only the title instead
@@ -10144,7 +10142,6 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-            workspace.sidebar_history.show_all = true;
             workspace.sessions = vec![
                 session_info("background-run", Some("Running in the daemon")),
                 session_info("history", Some("Previous session")),
@@ -10474,7 +10471,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.apply(Update::Sessions { sessions }, cx);
             cx.notify();
         });
@@ -10497,7 +10493,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
@@ -10579,7 +10574,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.sessions = (0..500)
                 .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
                 .collect();
@@ -10621,7 +10615,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.sessions = (0..100)
                 .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
                 .collect();
@@ -10677,7 +10670,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             let mut saved = session_info("session_fox_saved", Some("saved work"));
             saved.saved = true;
             workspace.apply(
@@ -10705,7 +10697,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.push_test_panel("session_fox_open", cx);
             workspace.apply(
                 Update::Sessions {
@@ -10775,7 +10766,6 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-            workspace.sidebar_history.show_all = true;
             workspace.push_test_panel("local-user", cx);
             workspace
                 .slots
@@ -10861,7 +10851,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: (0..80)
@@ -10927,7 +10916,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
-            w.sidebar_history.show_all = true;
             w.push_test_panel("project", cx);
             w.slots[0].panel.update(cx, |panel, _| {
                 panel.working_dir = Some(project.path().display().to_string());
@@ -11382,7 +11370,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
@@ -11426,7 +11413,6 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
-            workspace.sidebar_history.show_all = true;
             workspace.apply(
                 Update::Sessions {
                     sessions: (0..80)

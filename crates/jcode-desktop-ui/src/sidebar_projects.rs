@@ -548,7 +548,6 @@ mod tests {
     fn sessions_group_under_project_headers_with_open_panels_first(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
-            workspace.sidebar_history.show_all = true;
             panel_in(
                 &mut workspace,
                 "session_fox_alpha_one",
