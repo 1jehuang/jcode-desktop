@@ -33,8 +33,8 @@ permissions:
   actions: read
 
 concurrency:
-  # Keep repeated tests of one input serialized, not different runtime fixes.
-  group: windows-runtime-acceptance-${{ github.ref }}-${{ inputs.build_source }}-${{ inputs.runtime_ref || inputs.artifact_run || inputs.release_tag }}-${{ inputs.architecture }}
+  # Serialize identical source/input tests, not distinct Desktop fixes.
+  group: windows-runtime-acceptance-${{ github.sha }}-${{ inputs.build_source }}-${{ inputs.runtime_ref || inputs.artifact_run || inputs.release_tag }}-${{ inputs.architecture }}
   cancel-in-progress: false
 
 jobs:

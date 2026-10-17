@@ -88,6 +88,7 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertNotIn('  push:', workflow)
         self.assertNotIn('contents: write', workflow)
         self.assertIn('windows-2025', workflow)
+        self.assertIn('group: windows-runtime-acceptance-${{ github.sha }}', workflow)
         self.assertIn('windows-11-arm', workflow)
         self.assertIn('jcode-transport', workflow)
         self.assertIn('include-hidden-files: true', workflow)
