@@ -85,6 +85,8 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertIn('include-hidden-files: true', workflow)
         self.assertIn('verify-release-package.py', workflow)
         self.assertIn('Get-FileHash', workflow)
+        self.assertIn('inputs.runtime_ref || inputs.artifact_run || inputs.release_tag', workflow)
+        self.assertIn('cancel-in-progress: false', workflow)
 
     def test_runner_never_starts_companions_manually_or_uses_offline_fixtures(self):
         source = (ROOT / 'scripts/windows-runtime-acceptance.py').read_text()
