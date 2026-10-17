@@ -4236,7 +4236,7 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -4257,7 +4257,7 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-accounts-ui"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "gpui",
  "jcode-desktop-harness",
@@ -4269,14 +4269,14 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-api"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "gpui",
 ]
 
 [[package]]
 name = "jcode-desktop-harness"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-channel",
  "base64",
@@ -4294,7 +4294,7 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-model"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -4307,11 +4307,11 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-motion"
-version = "0.6.1"
+version = "0.6.4"
 
 [[package]]
 name = "jcode-desktop-ui"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "arboard",
@@ -4365,7 +4365,7 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-ui-core"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "gpui",
  "image",
@@ -4397,7 +4397,7 @@ dependencies = [
 
 [[package]]
 name = "jcode-desktop-voice"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "async-io",

@@ -1,5 +1,18 @@
 ## What's new
 
+### Jcode Desktop 0.6.4
+
+Past sessions are back in the sidebar.
+
+#### Fixes
+
+- The sidebar lists every past session again instead of hiding older ones behind Show past sessions. Past sessions sit below live ones with dimmer titles.
+- Windows finds and starts the bundled harness bridge automatically, recovers dropped named-pipe connections, and restores the existing window when the app is reopened.
+
+Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
+
+## Previous releases
+
 ### Jcode Desktop 0.6.1
 
 A project-first sidebar, connected transcript selections, and a calmer workspace with native workflow commands. This is the first public release in this line, following a runtime packaging fix.
@@ -39,8 +52,6 @@ A project-first sidebar, connected transcript selections, and a calmer workspace
 - macOS update checks wait for Sparkle to extract and validate the downloaded update.
 
 Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
-
-## Previous releases
 
 ### Jcode Desktop 0.5.1
 
