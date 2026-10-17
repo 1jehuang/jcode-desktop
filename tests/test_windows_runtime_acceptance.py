@@ -116,6 +116,7 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertIn('gh run download', workflow)
         self.assertIn('source-run.json', workflow)
         self.assertIn('--states caption,caption-light,windows-integration,chat,diff,applet', workflow)
+        self.assertIn("if: always() && inputs.ui_integration && env.PACKAGE_DIR != ''", workflow)
         self.assertLess(workflow.index('windows-runtime-acceptance.py'),
                         workflow.index('windows_screenshots.py'))
 
