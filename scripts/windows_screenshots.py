@@ -60,6 +60,18 @@ for _window_query in ("IsWindow", "IsWindowVisible", "IsIconic"):
     getattr(user32, _window_query).argtypes = [wintypes.HWND]
     getattr(user32, _window_query).restype = wintypes.BOOL
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.GetForegroundWindow.restype = wintypes.HWND
+user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+user32.SetForegroundWindow.restype = wintypes.BOOL
+user32.SetWindowPos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                               ctypes.c_int, ctypes.c_int, wintypes.UINT]
+user32.SetWindowPos.restype = wintypes.BOOL
+user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetWindowLongW.restype = wintypes.LONG
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 VK_ESCAPE = 0x1B
 KEYEVENTF_KEYUP = 0x2
 
@@ -106,6 +118,64 @@ def windows_of(pid):
 
     user32.EnumWindows(EnumWindowsProc(callback), 0)
     return found
+
+
+class ForegroundApp:
+    """Temporarily raise only the tested app, never dismiss other applications."""
+    def __init__(self, pid, hwnd, evidence):
+        self.pid, self.hwnd, self.evidence = pid, hwnd, evidence
+        self.was_topmost = bool(user32.GetWindowLongW(hwnd, -20) & 8)
+        self.closed = False
+
+    def require(self):
+        owner = wintypes.DWORD()
+        foreground = user32.GetForegroundWindow()
+        user32.GetWindowThreadProcessId(foreground, ctypes.byref(owner))
+        data = {"pid": self.pid, "hwnd": self.hwnd, "foreground": foreground,
+                "foreground_pid": owner.value,
+                "visible": bool(user32.IsWindowVisible(self.hwnd)),
+                "minimized": bool(user32.IsIconic(self.hwnd))}
+        self.evidence.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        if (owner.value != self.pid or foreground != self.hwnd
+                or not data["visible"] or data["minimized"]
+                or self.hwnd not in windows_of(self.pid)):
+            raise RuntimeError(f"Tested app is not the foreground window: {data}")
+
+    def request_close(self):
+        if self.hwnd not in windows_of(self.pid):
+            raise RuntimeError("Refusing WM_CLOSE for an unowned window")
+        if not user32.PostMessageW(self.hwnd, 0x0010, 0, 0):  # WM_CLOSE
+            raise ctypes.WinError(ctypes.get_last_error())
+
+    def close(self):
+        if not self.closed and not self.was_topmost and self.hwnd in windows_of(self.pid):
+            user32.SetWindowPos(self.hwnd, -2, 0, 0, 0, 0, 0x13)  # HWND_NOTOPMOST, no activation
+        self.closed = True
+
+
+def foreground_app(pid, evidence, timeout=15):
+    deadline = time.monotonic() + timeout
+    guard = None
+    try:
+        while time.monotonic() < deadline:
+            windows = windows_of(pid)
+            if windows:
+                if guard is None:
+                    guard = ForegroundApp(pid, windows[0], evidence)
+                user32.ShowWindow(guard.hwnd, 9)  # SW_RESTORE, app only
+                user32.SetWindowPos(guard.hwnd, -1, 0, 0, 0, 0, 0x43)  # HWND_TOPMOST, show
+                user32.SetForegroundWindow(guard.hwnd)
+                try:
+                    guard.require()
+                    return guard
+                except RuntimeError:
+                    pass
+            time.sleep(0.2)
+        raise RuntimeError(f"Cannot foreground tested app PID {pid}; see {evidence}")
+    except BaseException:
+        if guard:
+            guard.close()
+        raise
 
 
 def press_escape(hwnd):
@@ -418,6 +488,7 @@ def capture(name, binary, out_dir, timeout):
         log_path = out_dir / f"{name}.log"
         with log_path.open("w") as log:
             app = subprocess.Popen([str(binary)], env=env, cwd=root, stdout=log, stderr=subprocess.STDOUT)
+            guard = None
             try:
                 state = root / "state"
                 deadline = time.monotonic() + timeout
@@ -432,6 +503,7 @@ def capture(name, binary, out_dir, timeout):
                         hwnd = windows[0]
                         break
                     time.sleep(0.25)
+                guard = foreground_app(app.pid, out_dir / f"{name}-foreground.json")
                 user32.ShowWindow(hwnd, 3)  # SW_MAXIMIZE, matching the Linux screenshots
                 time.sleep(3)  # software-rendered frames and fixture animations settle
                 if dismiss:
@@ -439,8 +511,10 @@ def capture(name, binary, out_dir, timeout):
                     time.sleep(0.8)
                 user32.SetForegroundWindow(hwnd)
                 time.sleep(0.5)
+                guard.require()
                 if name in CAPTION_STATES:
                     ok = caption_checks(name, hwnd, out_dir)
+                    guard.require()
                     (out_dir / f"{name}.state.txt").write_text(state.read_text(errors="ignore"))
                     if not ok:
                         raise RuntimeError(f"{name}: caption checks failed")
@@ -448,11 +522,13 @@ def capture(name, binary, out_dir, timeout):
                     return
                 if name in LATENCY_STATES:
                     input_latency(name, hwnd, out_dir, root)
+                    guard.require()
                     print(f"captured {name}")
                     return
                 if name in INTEGRATION_STATES:
                     if not integration_checks(name, binary, hwnd, app, env, root, out_dir):
                         raise RuntimeError(f"{name}: Windows integration checks failed")
+                    guard.require()
                     print(f"captured {name}")
                     return
                 rect = wintypes.RECT()
@@ -461,8 +537,11 @@ def capture(name, binary, out_dir, timeout):
                 box = (max(rect.left, screen[0]), max(rect.top, screen[1]),
                        min(rect.right, screen[2]), min(rect.bottom, screen[3]))
                 ImageGrab.grab(bbox=box, all_screens=True).save(out_dir / f"{name}.png")
+                guard.require()
                 (out_dir / f"{name}.state.txt").write_text(state.read_text(errors="ignore"))
             finally:
+                if guard:
+                    guard.close()
                 app.kill()
                 app.wait(timeout=30)
     print(f"captured {name}")

@@ -8,6 +8,7 @@ are used. All child processes and state are scoped to this test directory.
 import argparse
 import ctypes
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path, PureWindowsPath
@@ -146,6 +147,15 @@ def screenshot(destination):
                f"$bitmap.Save('{escaped}'); $graphics.Dispose(); $bitmap.Dispose()")
 
 
+def foreground_app(pid, evidence):
+    # Reuse only the Win32 ownership guard, never the fixture launch path.
+    spec = importlib.util.spec_from_file_location(
+        "windows_native_window_guard", Path(__file__).with_name("windows_screenshots.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.foreground_app(pid, evidence, timeout=15)
+
+
 def run(package, output, timeout):
     output.mkdir(parents=True, exist_ok=True)
     home = output / "isolated user home"
@@ -168,6 +178,7 @@ def run(package, output, timeout):
     transcript = []
     report = {"package": str(package), "checks": [], "transcript": transcript}
     app = None
+    app_window = None
     api = None
     logs = []
     cleanup_armed = False
@@ -199,6 +210,23 @@ def run(package, output, timeout):
         report["hello"] = hello
         return connection
 
+    def capture(name):
+        # Full desktop diagnostics count as app evidence only when its actual
+        # foreground HWND belongs to this test's process before and after.
+        app_window.require()
+        screenshot(output / name)
+        app_window.require()
+
+    def close_desktop():
+        nonlocal app_window
+        app_window.request_close()
+        app.wait(timeout=30)
+        if app.returncode != 0:
+            raise AssertionError(f"Desktop normal close failed: {app.returncode}")
+        app_window.close()
+        app_window = None
+        passed("Desktop closed normally through its owned window", desktop_pid=app.pid)
+
     try:
         if processes(package):
             raise AssertionError("Package processes existed before cold start")
@@ -209,7 +237,8 @@ def run(package, output, timeout):
         daemon, bridge = wait_until(lambda: runtime_processes(package), timeout, "single daemon and bridge")
         passed("cold-start launches daemon and harness automatically", desktop_pid=app.pid,
                daemon=daemon, bridge=bridge, hello=report["hello"])
-        screenshot(output / "cold-start.png")
+        app_window = foreground_app(app.pid, output / "foreground-cold.json")
+        capture("cold-start.png")
         listed = api.request("list_sessions", "sessions")["sessions"]
         passed("real harness session listing", sessions=listed)
         session = api.request("create_session", "attached", working_dir=str(work))["session"]
@@ -229,9 +258,9 @@ def run(package, output, timeout):
         api = None
         # Open the persisted session through the real Desktop UI before failure
         # injection. A signed-out onboarding window need not hold a live session.
-        app.terminate()
-        app.wait(timeout=15)
+        close_desktop()
         app = launch("attached", session_id)
+        app_window = foreground_app(app.pid, output / "foreground-attached.json")
         api = wait_until(connect, timeout, "Desktop opens the requested real session")
         def desktop_attached():
             sessions = api.request("list_sessions", "sessions")["sessions"]
@@ -239,7 +268,7 @@ def run(package, output, timeout):
                          and session.get("user_connected")), None)
         attached = wait_until(desktop_attached, timeout, "Desktop UI attached before failure injection")
         passed("Desktop UI attaches before disconnect and recovery checks", session=attached)
-        screenshot(output / "desktop-attached.png")
+        capture("desktop-attached.png")
         api.close()
         api = None
         # Repeated connect-close readiness probes must never bring down the server.
@@ -279,9 +308,9 @@ def run(package, output, timeout):
         api.request("detach_session", "ok", session_id=session_id)
         api.close()
         api = None
-        app.terminate()
-        app.wait(timeout=15)
+        close_desktop()
         app = launch("warm", session_id)
+        app_window = foreground_app(app.pid, output / "foreground-warm.json")
         api = wait_until(connect, timeout, "Desktop warm relaunch")
         warm_daemon, warm_bridge = runtime_processes(package)
         if (warm_daemon["ProcessId"], warm_bridge["ProcessId"]) != (daemon["ProcessId"], new_bridge["ProcessId"]):
@@ -297,7 +326,7 @@ def run(package, output, timeout):
             raise AssertionError(f"Desktop exited during warm session verification: {app.returncode}")
         attached = wait_until(desktop_attached, timeout, "Desktop remains attached without observer")
         passed("Desktop warm relaunch reuses existing runtime and session", session=attached)
-        screenshot(output / "warm-relaunch.png")
+        capture("warm-relaunch.png")
         report["success"] = True
     except Exception as error:
         report["success"] = False
@@ -318,6 +347,8 @@ def run(package, output, timeout):
                 return None
         if api:
             cleanup("close API", api.close)
+        if app_window:
+            cleanup("release app-only foreground guard", app_window.close)
         if app and app.poll() is None:
             cleanup("terminate Desktop", app.terminate)
             cleanup("wait for Desktop", lambda: app.wait(timeout=15))

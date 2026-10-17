@@ -160,6 +160,67 @@ class ProcessCensusTests(unittest.TestCase):
                 NATIVE.app_process_ids(ROOT / 'jcode-desktop.exe', {}, ROOT)
 
 
+class ForegroundAppTests(unittest.TestCase):
+    def native(self, foreground=123, owner=101, topmost=False):
+        native = Mock()
+        native.GetWindowLongW.return_value = 8 if topmost else 0
+        native.GetForegroundWindow.return_value = foreground
+        native.GetWindowThreadProcessId.side_effect = lambda hwnd, pointer: setattr(pointer._obj, 'value', owner)
+        native.IsWindowVisible.return_value = True
+        native.IsIconic.return_value = False
+        return native
+
+    def test_requires_real_foreground_owner_and_records_evidence(self):
+        native = self.native()
+        with tempfile.TemporaryDirectory() as directory, patch.object(NATIVE, 'user32', native), \
+             patch.object(NATIVE, 'windows_of', return_value=[123]):
+            evidence = Path(directory) / 'foreground.json'
+            guard = NATIVE.ForegroundApp(101, 123, evidence)
+            guard.require()
+            self.assertEqual(json.loads(evidence.read_text())['foreground_pid'], 101)
+            guard.request_close()
+            native.PostMessageW.assert_called_once_with(123, 0x0010, 0, 0)
+            guard.close()
+            guard.close()
+            native.SetWindowPos.assert_called_once_with(123, -2, 0, 0, 0, 0, 0x13)
+
+    def test_foreign_foreground_is_not_visual_evidence(self):
+        native = self.native(foreground=999, owner=202)
+        with tempfile.TemporaryDirectory() as directory, patch.object(NATIVE, 'user32', native), \
+             patch.object(NATIVE, 'windows_of', return_value=[123]):
+            guard = NATIVE.ForegroundApp(101, 123, Path(directory) / 'foreground.json')
+            with self.assertRaisesRegex(RuntimeError, 'not the foreground'):
+                guard.require()
+
+    def test_recycled_window_is_never_closed_or_reordered(self):
+        native = self.native()
+        with patch.object(NATIVE, 'user32', native), patch.object(NATIVE, 'windows_of', return_value=[]):
+            guard = NATIVE.ForegroundApp(101, 123, Path('unused.json'))
+            with self.assertRaisesRegex(RuntimeError, 'unowned window'):
+                guard.request_close()
+            guard.close()
+            native.PostMessageW.assert_not_called()
+            native.SetWindowPos.assert_not_called()
+
+    def test_preexisting_topmost_style_is_preserved(self):
+        native = self.native(topmost=True)
+        with patch.object(NATIVE, 'user32', native), patch.object(NATIVE, 'windows_of', return_value=[123]):
+            NATIVE.ForegroundApp(101, 123, Path('unused.json')).close()
+            native.SetWindowPos.assert_not_called()
+
+    def test_failed_foreground_attempt_releases_only_app_topmost_style(self):
+        native = self.native(foreground=999, owner=202)
+        with tempfile.TemporaryDirectory() as directory, patch.object(NATIVE, 'user32', native), \
+             patch.object(NATIVE, 'windows_of', return_value=[123]), \
+             patch.object(NATIVE.time, 'monotonic', side_effect=[0, 0.1, 2]), \
+             patch.object(NATIVE.time, 'sleep'):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot foreground tested app'):
+                NATIVE.foreground_app(101, Path(directory) / 'foreground.json', timeout=1)
+            self.assertTrue(all(call.args[0] == 123 for call in native.SetWindowPos.call_args_list))
+            self.assertEqual(native.SetWindowPos.call_args_list[-1].args[1], -2)
+            native.PostMessageW.assert_not_called()
+
+
 class WindowWaitTests(unittest.TestCase):
     def test_waits_for_asynchronous_native_restore(self):
         with patch.object(NATIVE.time, 'monotonic', side_effect=[0, 0.1, 0.2]), \

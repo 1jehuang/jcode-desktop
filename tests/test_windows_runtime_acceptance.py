@@ -117,17 +117,35 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertLess(workflow.index('windows-runtime-acceptance.py'),
                         workflow.index('windows_screenshots.py'))
 
-    def exercise_runner(self, fail_history=False):
+    def exercise_runner(self, fail_history=False, fail_foreground=False):
         launches, requests = [], []
-        state = {'bridge': 20, 'cleanup_calls': 0}
+        state = {'bridge': 20, 'cleanup_calls': 0, 'foregrounds': 0, 'visibility_checks': 0,
+                 'window_closes': 0, 'normal_closes': 0, 'terminations': 0}
+        apps = []
+        class AppWindow:
+            def require(self):
+                state['visibility_checks'] += 1
+            def close(self):
+                state['window_closes'] += 1
+            def request_close(self):
+                state['normal_closes'] += 1
+                apps[-1].returncode = 0
+        def foreground(pid, evidence):
+            self.assertEqual(pid, 30)
+            state['foregrounds'] += 1
+            if fail_foreground:
+                raise RuntimeError('foreground blocked by another application')
+            return AppWindow()
         class App:
             pid = 30
             def __init__(self, args, **kwargs):
                 launches.append((args, kwargs))
+                apps.append(self)
                 self.returncode = None
             def poll(self):
                 return self.returncode
             def terminate(self):
+                state['terminations'] += 1
                 self.returncode = 0
             def wait(self, **kwargs):
                 return self.returncode
@@ -176,18 +194,28 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
             package.mkdir()
             output = Path(directory) / 'evidence'
             for target, value in [('Api', Client), ('screenshot', lambda path: None),
+                                  ('foreground_app', foreground),
                                   ('processes', lambda package: census()), ('stop', stop),
                                   ('runtime_processes', lambda package: ({'ProcessId': 10}, {'ProcessId': state['bridge']}))]:
                 stack.enter_context(patch.object(NATIVE, target, value))
             stack.enter_context(patch.object(NATIVE.subprocess, 'Popen', App))
             stack.enter_context(patch.object(NATIVE.time, 'sleep', lambda seconds: None))
             stack.enter_context(patch('builtins.open', open_file))
-            if fail_history:
+            if fail_foreground:
+                with self.assertRaisesRegex(RuntimeError, 'foreground blocked'):
+                    NATIVE.run(package, output, 1)
+            elif fail_history:
                 with self.assertRaisesRegex(RuntimeError, 'primary history failure'):
                     NATIVE.run(package, output, 1)
             else:
                 NATIVE.run(package, output, 1)
             report = json.loads((output / 'result.json').read_text())
+            if report.get('success'):
+                self.assertEqual(state['foregrounds'], 3)
+                self.assertEqual(state['window_closes'], 3)
+                self.assertEqual(state['visibility_checks'], 6)
+                self.assertEqual(state['normal_closes'], 2)
+                self.assertEqual(state['terminations'], 1)  # final cleanup only
         return report, launches, requests
 
     def test_complete_orchestration_uses_real_session_id_and_ui_attach(self):
@@ -207,6 +235,14 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertFalse(report['success'])
         self.assertIn('primary history failure', report['error'])
         self.assertTrue(any('secondary cleanup failure' in error for error in report['cleanup_errors']))
+
+    def test_foreign_foreground_cannot_count_as_app_visual_evidence(self):
+        report, launches, requests = self.exercise_runner(fail_foreground=True)
+        self.assertFalse(report['success'])
+        self.assertIn('foreground blocked', report['error'])
+        self.assertEqual(len(launches), 1)
+        self.assertFalse(any(name == 'create_session' for name, _ in requests))
+        self.assertEqual(report['cleanup_errors'], [])
 
     def test_preexisting_package_processes_are_never_terminated(self):
         with tempfile.TemporaryDirectory() as directory:
