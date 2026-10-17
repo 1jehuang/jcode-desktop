@@ -176,12 +176,14 @@ def run(package, output, timeout):
         report["checks"].append({"name": name, **evidence})
         (output / "result.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    def launch(label):
+    def launch(label, session_id=None):
         stdout = open(output / f"desktop-{label}.stdout.log", "wb")
         stderr = open(output / f"desktop-{label}.stderr.log", "wb")
         logs.extend([stdout, stderr])
-        return subprocess.Popen([str(package / "jcode-desktop.exe")], cwd=work, env=env,
-                                stdout=stdout, stderr=stderr)
+        args = [str(package / "jcode-desktop.exe")]
+        if session_id:
+            args.append(f"--session={session_id}")
+        return subprocess.Popen(args, cwd=work, env=env, stdout=stdout, stderr=stderr)
 
     def connect():
         if app.poll() is not None:
@@ -209,7 +211,9 @@ def run(package, output, timeout):
         listed = api.request("list_sessions", "sessions")["sessions"]
         passed("real harness session listing", sessions=listed)
         session = api.request("create_session", "attached", working_dir=str(work))["session"]
-        session_id = session["id"]
+        session_id = session["session_id"]
+        if Path(session.get("working_dir") or "").resolve() != work.resolve():
+            raise AssertionError(f"Session ignored Unicode working directory: {session}")
         passed("create and attach real session in Unicode workspace", session=session)
         api.request("get_history", "history", session_id=session_id)
         api.request("send_message", "ok", session_id=session_id,
@@ -222,21 +226,31 @@ def run(package, output, timeout):
         api.close()
         api = None
         # Repeated connect-close readiness probes must never bring down the server.
-        for _ in range(20):
-            with open(pipe_name(api_path), "r+b", buffering=0):
-                pass
-            time.sleep(0.025)
+        for endpoint in (api_path, runtime / "jcode.sock"):
+            for _ in range(20):
+                def probe():
+                    with open(pipe_name(endpoint), "r+b", buffering=0):
+                        return True
+                wait_until(probe, 10, "available named-pipe readiness probe")
+                time.sleep(0.025)
         api = wait_until(connect, timeout, "harness after abandoned readiness probes")
         api.request("attach_session", "attached", session_id=session_id)
-        passed("survives twenty connect-close probes and reattaches")
+        passed("daemon and bridge survive forty connect-close probes and reattach")
         api.request("detach_session", "ok", session_id=session_id)
         api.close()
         api = None
-        stop(bridge["ProcessId"])
+        current_daemon, current_bridge = runtime_processes(package)
+        if (current_daemon["ProcessId"], current_bridge["ProcessId"]) != (daemon["ProcessId"], bridge["ProcessId"]):
+            raise AssertionError("Readiness probes restarted the runtime instead of surviving")
+        killed_pid = current_bridge["ProcessId"]
+        stop(killed_pid)
+        wait_until(lambda: not any(p["ProcessId"] == killed_pid for p in processes(package)),
+                   15, "injected bridge termination")
+        passed("failure injection terminated the live bridge", killed_pid=killed_pid)
         # Desktop, not the test, must revive the bridge. No CLI is manually started.
         api = wait_until(connect, timeout, "Desktop revives killed bridge")
         new_daemon, new_bridge = runtime_processes(package)
-        if new_daemon["ProcessId"] != daemon["ProcessId"] or new_bridge["ProcessId"] == bridge["ProcessId"]:
+        if new_daemon["ProcessId"] != daemon["ProcessId"] or new_bridge["ProcessId"] == killed_pid:
             raise AssertionError("Bridge recovery replaced the daemon or did not replace the bridge")
         api.request("attach_session", "attached", session_id=session_id)
         recovered = api.request("get_history", "history", session_id=session_id)
@@ -248,13 +262,21 @@ def run(package, output, timeout):
         api = None
         app.terminate()
         app.wait(timeout=15)
-        app = launch("warm")
+        app = launch("warm", session_id)
         api = wait_until(connect, timeout, "Desktop warm relaunch")
         warm_daemon, warm_bridge = runtime_processes(package)
         if (warm_daemon["ProcessId"], warm_bridge["ProcessId"]) != (daemon["ProcessId"], new_bridge["ProcessId"]):
             raise AssertionError("Warm relaunch spawned duplicate or replacement runtime")
+        def desktop_attached():
+            sessions = api.request("list_sessions", "sessions")["sessions"]
+            return next((session for session in sessions if session["session_id"] == session_id
+                         and session.get("user_connected")), None)
+        attached = wait_until(desktop_attached, timeout, "Desktop UI attached to requested session")
+        passed("Desktop UI attaches to requested session on warm relaunch", session=attached)
         api.request("attach_session", "attached", session_id=session_id)
-        api.request("get_history", "history", session_id=session_id)
+        history = api.request("get_history", "history", session_id=session_id)
+        if "Windows native acceptance" not in json.dumps(history):
+            raise AssertionError("History missing after Desktop UI warm relaunch")
         api.request("detach_session", "ok", session_id=session_id)
         passed("Desktop warm relaunch reuses existing runtime and session")
         screenshot(output / "warm-relaunch.png")
@@ -269,19 +291,27 @@ def run(package, output, timeout):
             report["screenshot_error"] = str(capture_error)
         raise
     finally:
+        cleanup_errors = []
+        def cleanup(label, action):
+            try:
+                return action()
+            except Exception as error:
+                cleanup_errors.append(f"{label}: {error}")
+                return None
         if api:
-            api.close()
+            cleanup("close API", api.close)
         if app and app.poll() is None:
-            app.terminate()
-            app.wait(timeout=15)
-        try:
-            report["final_processes"] = processes(package)
-            for process in report["final_processes"]:
-                stop(process["ProcessId"])
-        finally:
-            for log in logs:
-                log.close()
-            (output / "result.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+            cleanup("terminate Desktop", app.terminate)
+            cleanup("wait for Desktop", lambda: app.wait(timeout=15))
+        report["final_processes"] = cleanup("process census", lambda: processes(package)) or []
+        for process in report["final_processes"]:
+            cleanup("stop package process", lambda: stop(process["ProcessId"]))
+        for log in logs:
+            cleanup("close log", log.close)
+        report["cleanup_errors"] = cleanup_errors
+        (output / "result.json").write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        if report.get("success") and cleanup_errors:
+            raise RuntimeError(f"Acceptance cleanup failed: {cleanup_errors}")
 
 
 def main(argv=None):

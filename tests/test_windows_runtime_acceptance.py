@@ -8,6 +8,8 @@ import io
 import json
 from pathlib import Path
 import unittest
+import tempfile
+from contextlib import ExitStack
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,10 +89,100 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
     def test_runner_never_starts_companions_manually_or_uses_offline_fixtures(self):
         source = (ROOT / 'scripts/windows-runtime-acceptance.py').read_text()
         self.assertEqual(source.count('subprocess.Popen('), 1)
-        self.assertIn('subprocess.Popen([str(package / "jcode-desktop.exe")]', source)
+        self.assertIn('args = [str(package / "jcode-desktop.exe")]', source)
+        self.assertIn('subprocess.Popen(args, cwd=work', source)
         self.assertNotIn('JCODE_DESKTOP_SCREENSHOT=', source)
         self.assertIn('JCODE_NO_AUTO_UPDATE="1"', source)
         self.assertIn('no_reply=True', source)
+
+    def exercise_runner(self, fail_history=False):
+        launches, requests = [], []
+        state = {'bridge': 20}
+        class App:
+            pid = 30
+            def __init__(self, args, **kwargs):
+                launches.append((args, kwargs))
+                self.returncode = None
+            def poll(self):
+                return self.returncode
+            def terminate(self):
+                self.returncode = 0
+            def wait(self, **kwargs):
+                return self.returncode
+        class Client:
+            def __init__(self, path, transcript):
+                self.attached = False
+            def close(self):
+                pass
+            def hello(self):
+                return {'v': 1, 'ev': 'hello_ok', 'version': 1}
+            def request(self, request, expected, **fields):
+                requests.append((request, fields))
+                session = {'session_id': 'real-session', 'user_connected': len(launches) == 2}
+                if request == 'list_sessions':
+                    return {'sessions': [session]}
+                if request == 'create_session':
+                    self.attached = True
+                    session['working_dir'] = fields['working_dir']
+                    return {'session': session}
+                if request == 'attach_session':
+                    self.attached = True
+                if request == 'detach_session':
+                    self.attached = False
+                if request == 'get_history':
+                    if not self.attached:
+                        raise RuntimeError('observer API is not attached')
+                    if fail_history:
+                        raise RuntimeError('primary history failure')
+                    return {'messages': ['Windows native acceptance']}
+                return {'ev': expected}
+        def stop(pid):
+            state['bridge'] = 21
+        def census():
+            if fail_history and launches:
+                raise RuntimeError('secondary cleanup failure')
+            return []
+        real_open = open
+        def open_file(file, *args, **kwargs):
+            if str(file).startswith('\\\\.\\pipe\\'):
+                return io.BytesIO()
+            return real_open(file, *args, **kwargs)
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            package = Path(directory) / 'package with spaces'
+            package.mkdir()
+            output = Path(directory) / 'evidence'
+            for target, value in [('Api', Client), ('screenshot', lambda path: None),
+                                  ('processes', lambda package: census()), ('stop', stop),
+                                  ('runtime_processes', lambda package: ({'ProcessId': 10}, {'ProcessId': state['bridge']}))]:
+                stack.enter_context(patch.object(NATIVE, target, value))
+            stack.enter_context(patch.object(NATIVE.subprocess, 'Popen', App))
+            stack.enter_context(patch.object(NATIVE.time, 'sleep', lambda seconds: None))
+            stack.enter_context(patch('builtins.open', open_file))
+            if fail_history:
+                with self.assertRaisesRegex(RuntimeError, 'primary history failure'):
+                    NATIVE.run(package, output, 1)
+            else:
+                NATIVE.run(package, output, 1)
+            report = json.loads((output / 'result.json').read_text())
+        return report, launches, requests
+
+    def test_complete_orchestration_uses_real_session_id_and_ui_attach(self):
+        report, launches, requests = self.exercise_runner()
+        self.assertTrue(report['success'])
+        self.assertEqual(len(launches), 2)
+        self.assertIn('--session=real-session', launches[1][0])
+        self.assertTrue(any(item['name'] == 'Desktop UI attaches to requested session on warm relaunch'
+                            for item in report['checks']))
+        messages = [fields for name, fields in requests if name == 'send_message']
+        self.assertEqual(len(messages), 1)
+        self.assertTrue(messages[0]['no_reply'])
+        self.assertEqual(messages[0]['session_id'], 'real-session')
+
+    def test_cleanup_cannot_mask_primary_failure(self):
+        report, _, _ = self.exercise_runner(fail_history=True)
+        self.assertFalse(report['success'])
+        self.assertIn('primary history failure', report['error'])
+        self.assertTrue(any('secondary cleanup failure' in error for error in report['cleanup_errors']))
 
 
 if __name__ == '__main__':

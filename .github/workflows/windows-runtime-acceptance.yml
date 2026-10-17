@@ -104,11 +104,23 @@ jobs:
             jcode
           cache-on-failure: true
           key: ${{ matrix.target }}
+      - name: Install pinned justrust for native Windows checks
+        if: inputs.build_source
+        shell: bash
+        run: bash jcode/scripts/install_justrust_ci.sh
       - name: Test native named-pipe transport
         if: inputs.build_source
         shell: pwsh
+        env:
+          # Windows named pipes require execution on this native runner, not Linux hosted.
+          JUSTRUST_TOOLCHAIN: system
+          JUSTRUST_DISABLE: '1' # alpha.17 Windows measurement allocation bug
+          JUSTRUST_NO_TELEMETRY: '1'
+          JUSTRUST_SLOTS: '0'
         run: |
-          cargo test --manifest-path jcode/Cargo.toml -p jcode-transport --target '${{ matrix.target }}'
+          justrust check --local --locked --manifest-path jcode/Cargo.toml -p jcode-transport --target '${{ matrix.target }}'
+          if ($LASTEXITCODE) { throw 'Native transport check failed' }
+          justrust test --local --locked --manifest-path jcode/Cargo.toml -p jcode-transport --target '${{ matrix.target }}'
           if ($LASTEXITCODE) { throw 'Native transport regression tests failed' }
       - name: Build the actual Windows package
         if: inputs.build_source
