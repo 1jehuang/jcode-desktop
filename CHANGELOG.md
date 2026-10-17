@@ -1,6 +1,6 @@
 ## What's new
 
-### Jcode Desktop 0.6.4
+### Jcode Desktop 0.6.5
 
 Past sessions are back in the sidebar.
 
@@ -8,6 +8,7 @@ Past sessions are back in the sidebar.
 
 - The sidebar lists every past session again instead of hiding older ones behind Show past sessions. Past sessions sit below live ones with dimmer titles.
 - Windows finds and starts the bundled harness bridge automatically, recovers dropped named-pipe connections, and restores the existing window when the app is reopened.
+- Windows cold starts launch exactly one harness bridge. A reconnect during startup no longer spawns a duplicate.
 
 Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
 

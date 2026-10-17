@@ -522,6 +522,7 @@ fn revive_local_runtime() -> bool {
         binary: Some(crate::platform::companion_executable("jcode")),
         ..Default::default()
     };
+    let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
     match jcode_sdk::ensure_runtime(&options, &|_| {}) {
         Ok(()) => true,
         Err(error) => {
@@ -530,6 +531,13 @@ fn revive_local_runtime() -> bool {
         }
     }
 }
+
+/// Serializes every local runtime start in this process. Startup and a panel's
+/// reconnect can otherwise both see no API socket and each spawn a bridge.
+/// Unix bridges drop the duplicate through their flock, but Windows bridges
+/// have no such lock, so two bridges would stay alive. Whoever waits here sees
+/// the socket the first caller brought up and returns without spawning.
+static RUNTIME_START: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 fn revive_due(last: Option<std::time::Instant>, now: std::time::Instant) -> bool {
     last.is_none_or(|last| now.saturating_duration_since(last) >= RUNTIME_REVIVE_INTERVAL)
@@ -581,9 +589,13 @@ fn start_local_runtime(updates: UpdateSender) {
             binary: Some(crate::platform::companion_executable("jcode")),
             ..Default::default()
         };
-        match jcode_sdk::ensure_runtime(&options, &|status| {
-            let _ = updates.send(Update::Status(status.to_string()));
-        }) {
+        let started = {
+            let _starting = RUNTIME_START.lock().unwrap_or_else(|e| e.into_inner());
+            jcode_sdk::ensure_runtime(&options, &|status| {
+                let _ = updates.send(Update::Status(status.to_string()));
+            })
+        };
+        match started {
             Ok(()) => break,
             Err(error) => {
                 let _ = updates.send(Update::Disconnected {
