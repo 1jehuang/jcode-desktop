@@ -10,6 +10,7 @@ and captures the app window with Pillow.
 import argparse
 import ctypes
 from ctypes import wintypes
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -53,6 +54,11 @@ STATES["windows-integration"] = ({"JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT": "all", 
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
+user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.ShowWindow.restype = wintypes.BOOL
+for _window_query in ("IsWindow", "IsWindowVisible", "IsIconic"):
+    getattr(user32, _window_query).argtypes = [wintypes.HWND]
+    getattr(user32, _window_query).restype = wintypes.BOOL
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 VK_ESCAPE = 0x1B
 KEYEVENTF_KEYUP = 0x2
@@ -295,6 +301,39 @@ def input_latency(name, hwnd, out_dir, root):
     return report
 
 
+def wait_for_condition(check, timeout=5):
+    """Bound asynchronous window-state checks without hiding a failed handoff."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.05)
+    return False
+
+
+def app_process_ids(binary, env, root):
+    """Census the exact packaged executable, including processes without windows."""
+    image_name = Path(binary).name.replace("'", "''")
+    result = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command",
+         "$ErrorActionPreference='Stop'; "
+         "[Console]::OutputEncoding=[System.Text.UTF8Encoding]::new($false); "
+         f"Get-CimInstance Win32_Process -Filter \"Name='{image_name}'\" | "
+         "Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress"],
+        env=env, cwd=root, timeout=15, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, encoding="utf-8",
+    )
+    if result.returncode:
+        raise RuntimeError(f"Package process census failed: {result.stderr.strip()}")
+    items = json.loads(result.stdout) if result.stdout.strip() else []
+    if isinstance(items, dict):
+        items = [items]
+    expected = Path(binary).resolve()
+    return sorted(item["ProcessId"] for item in items
+                  if item.get("ExecutablePath")
+                  and Path(item["ExecutablePath"]).resolve() == expected)
+
+
 def integration_checks(name, binary, hwnd, app, env, root, out_dir):
     """Windows behavior from issue #5 that a screenshot cannot show."""
     import struct
@@ -318,19 +357,31 @@ def integration_checks(name, binary, hwnd, app, env, root, out_dir):
     check("RUST_LOG=debug reaches the log", " DEBUG " in text or " INFO " in text,
           "no log records" if " DEBUG " not in text else "")
 
-    # 3. A second launch hands off to the running host instead of opening
-    #    another independent app, and exits promptly.
+    # 3. A second launch must actually deliver Show to the existing host.
+    # Merely exiting with zero while the first window remains open also passes
+    # for a broken secondary that silently discards the handoff.
+    user32.ShowWindow(hwnd, 6)  # SW_MINIMIZE
+    check("original window minimizes before handoff",
+          wait_for_condition(lambda: bool(user32.IsIconic(hwnd))))
     second = subprocess.run([str(binary)], env=env, cwd=root, timeout=30,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    time.sleep(1.5)
     check("second launch exits", second.returncode == 0, f"code={second.returncode}")
+    restored = wait_for_condition(lambda: app.poll() is None
+                                  and bool(user32.IsWindow(hwnd))
+                                  and bool(user32.IsWindowVisible(hwnd))
+                                  and not user32.IsIconic(hwnd)
+                                  and hwnd in windows_of(app.pid))
+    check("second launch restores the same window", restored, f"hwnd={hwnd}")
     check("first host still running", app.poll() is None)
-    check("still exactly one app window", len(windows_of(app.pid)) == 1,
-          f"windows={len(windows_of(app.pid))}")
+    windows = windows_of(app.pid)
+    check("still exactly the original app window", windows == [hwnd], f"windows={windows}")
+    pids = app_process_ids(binary, env, root)
+    check("exactly one package app process", pids == [app.pid], f"pids={pids}")
 
     # 4. --version still prints when stdout is captured (CI, updater smoke test).
     version = subprocess.run([str(binary), "--version"], env=env, cwd=root, timeout=30,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    check("--version exits successfully", version.returncode == 0, f"code={version.returncode}")
     check("--version prints through a pipe", version.stdout.startswith("Jcode Desktop"),
           repr(version.stdout.strip()[:60]))
 
