@@ -292,8 +292,8 @@ jobs:
           # Fixture rendering is separate from the real runtime checks above.
           python -m pip install --quiet pillow
           if ($LASTEXITCODE) { throw 'Native UI test dependency installation failed' }
-          python jcode-desktop/scripts/windows-ci-desktop.py --evidence "$env:RUNNER_TEMP/windows-runtime-evidence/ui-desktop.json" -- python jcode-desktop/scripts/windows_screenshots.py $app.FullName "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration --resolution 1920x1080
-          if ($LASTEXITCODE) { throw 'Windows caption or native integration acceptance failed' }
+          python jcode-desktop/scripts/windows-ci-desktop.py --evidence "$env:RUNNER_TEMP/windows-runtime-evidence/ui-desktop.json" -- python jcode-desktop/scripts/windows_screenshots.py $app.FullName "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration,chat,diff,applet --resolution 1920x1080
+          if ($LASTEXITCODE) { throw 'Windows native integration or six-state rendering acceptance failed' }
       - name: Upload Windows runtime acceptance diagnostics
         if: always() && matrix.platform == 'windows'
         continue-on-error: true

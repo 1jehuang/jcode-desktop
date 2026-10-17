@@ -106,7 +106,7 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertNotIn('Start-Sleep -Seconds 8', gate)
         self.assertNotIn('continue-on-error:', gate)
         self.assertIn('if ($LASTEXITCODE)', gate)
-        self.assertIn('--states caption,caption-light,windows-integration', gate)
+        self.assertIn('--states caption,caption-light,windows-integration,chat,diff,applet', gate)
         self.assertLess(workflow.index('windows-runtime-acceptance.py'),
                         workflow.index('Upload verified platform packages to private draft'))
 
