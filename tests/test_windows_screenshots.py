@@ -64,7 +64,8 @@ class WindowsIntegrationChecksTests(unittest.TestCase):
                     state['launched'] = True
                     if restores:
                         state['minimized'] = False
-                    return SimpleNamespace(returncode=second_code)
+                    log.write_text(log.read_text() + 'secondary handoff diagnostics\n')
+                    return SimpleNamespace(returncode=second_code, stdout=b'secondary process output\n')
                 self.assertEqual(args, [str(binary), '--version'])
                 return SimpleNamespace(returncode=version_code, stdout=version_text)
 
@@ -80,6 +81,10 @@ class WindowsIntegrationChecksTests(unittest.TestCase):
                  redirect_stdout(io.StringIO()):
                 ok = NATIVE.integration_checks('windows-integration', binary, hwnd, app, env, root, root)
             report = (root / 'windows-integration-checks.txt').read_text()
+            self.assertEqual((root / 'windows-integration-second-launch.log').read_bytes(),
+                             b'secondary process output\n')
+            self.assertIn('secondary handoff diagnostics',
+                          (root / 'windows-integration-desktop.log').read_text())
         return ok, report
 
     def test_handoff_must_restore_original_minimized_window(self):

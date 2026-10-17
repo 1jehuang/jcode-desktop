@@ -435,6 +435,11 @@ def integration_checks(name, binary, hwnd, app, env, root, out_dir):
           wait_for_condition(lambda: bool(user32.IsIconic(hwnd))))
     second = subprocess.run([str(binary)], env=env, cwd=root, timeout=30,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    # Secondary hosts can fail after delivering Show. Preserve their output and
+    # refresh the shared diagnostics after handoff, not just before the launch.
+    (out_dir / f"{name}-second-launch.log").write_bytes(second.stdout)
+    if log.exists():
+        (out_dir / f"{name}-desktop.log").write_text(log.read_text(errors="replace"))
     check("second launch exits", second.returncode == 0, f"code={second.returncode}")
     restored = wait_for_condition(lambda: app.poll() is None
                                   and bool(user32.IsWindow(hwnd))
