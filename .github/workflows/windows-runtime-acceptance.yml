@@ -134,6 +134,18 @@ jobs:
           if ($LASTEXITCODE) { throw 'Native transport check failed' }
           justrust test --local --locked --manifest-path jcode/Cargo.toml -p jcode-transport --target '${{ matrix.target }}'
           if ($LASTEXITCODE) { throw 'Native transport regression tests failed' }
+      - name: Test native Desktop single-instance handoff
+        if: inputs.build_source
+        shell: pwsh
+        env:
+          # These tests exercise real Win32 named pipes, not the Linux backend.
+          JUSTRUST_TOOLCHAIN: system
+          JUSTRUST_DISABLE: '1' # alpha.17 Windows measurement allocation bug
+          JUSTRUST_NO_TELEMETRY: '1'
+          JUSTRUST_SLOTS: '0'
+        run: |
+          justrust test --local --locked --release --manifest-path jcode-desktop/Cargo.toml -p jcode-desktop --bin jcode-desktop --target '${{ matrix.target }}' host::instance::platform::tests
+          if ($LASTEXITCODE) { throw 'Native Desktop single-instance regression tests failed' }
       - name: Build the actual Windows package
         if: inputs.build_source
         shell: pwsh

@@ -463,7 +463,9 @@ mod platform {
             ERROR_ACCESS_DENIED, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GetLastError, HANDLE,
             INVALID_HANDLE_VALUE,
         },
-        Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_DUPLEX},
+        Storage::FileSystem::{
+            FILE_FLAG_FIRST_PIPE_INSTANCE, FlushFileBuffers, PIPE_ACCESS_DUPLEX,
+        },
         System::Pipes::{
             ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE,
             PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT,
@@ -643,8 +645,15 @@ mod platform {
                 if let Some(command) = read_command(&mut stream)
                     && commands.send(command).is_ok()
                 {
-                    let _ = stream.write_all(OK);
-                    let _ = stream.flush();
+                    if stream.write_all(OK).is_ok() {
+                        // File::flush does not drain a Windows named pipe.
+                        // DisconnectNamedPipe discards unread bytes, so wait
+                        // until the launcher reads OK before disconnecting.
+                        // Otherwise Show succeeds but the launcher sees EOF,
+                        // retries the command, then fails to become a primary.
+                        // SAFETY: the live File owns this pipe server handle.
+                        unsafe { FlushFileBuffers(raw) };
+                    }
                 }
                 use std::os::windows::io::AsRawHandle;
                 // SAFETY: valid handle; disconnect lets the client see EOF.
@@ -737,6 +746,115 @@ mod platform {
                 io::ErrorKind::TimedOut,
                 "desktop host did not answer",
             )),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::sync::atomic::AtomicU64;
+
+        fn primary() -> (String, Instance) {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let name = format!(
+                r"\\.\pipe\jcode-desktop-test-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            );
+            let instance = acquire_at(name.clone(), Command::Show).unwrap();
+            assert!(matches!(instance, Instance::Primary { .. }));
+            (name, instance)
+        }
+
+        #[test]
+        fn acknowledgement_survives_a_delayed_client_read() {
+            let (name, primary) = primary();
+            let Instance::Primary { commands, .. } = &primary else {
+                unreachable!()
+            };
+            let mut client = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&name)
+                .unwrap();
+            client.write_all(&[SHOW]).unwrap();
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(2)).unwrap(),
+                Command::Show
+            );
+            // Force the server to finish its write before reading the reply.
+            // DisconnectNamedPipe discards unread bytes, even after File::flush.
+            thread::sleep(Duration::from_millis(100));
+            let mut response = [0; 3];
+            client.read_exact(&mut response).unwrap();
+            assert_eq!(response, OK);
+            drop(client);
+            notify(&name, Command::Reload).unwrap();
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(2)).unwrap(),
+                Command::Reload
+            );
+        }
+
+        #[test]
+        fn disconnected_launcher_does_not_block_the_next_handoff() {
+            let (name, primary) = primary();
+            let Instance::Primary { commands, .. } = &primary else {
+                unreachable!()
+            };
+            let mut client = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&name)
+                .unwrap();
+            client.write_all(&[SHOW]).unwrap();
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(2)).unwrap(),
+                Command::Show
+            );
+            drop(client);
+            notify(&name, Command::Reload).unwrap();
+            assert_eq!(
+                commands.recv_timeout(Duration::from_secs(2)).unwrap(),
+                Command::Reload
+            );
+        }
+
+        #[test]
+        fn second_launch_delivers_each_command_once_and_remains_secondary() {
+            let (name, primary) = primary();
+            let Instance::Primary { commands, .. } = &primary else {
+                unreachable!()
+            };
+            let launch = WindowLaunch::from_parts(
+                ["--single-panel", "--session=windows-test"],
+                [(
+                    "JCODE_DESKTOP_WORKING_DIR".into(),
+                    r"C:\project with spaces".into(),
+                )],
+            );
+            for command in [
+                Command::Show,
+                Command::Reload,
+                Command::ToggleVoice,
+                Command::VoicePress,
+                Command::VoiceRelease,
+                Command::OpenWindow(launch),
+            ]
+            .into_iter()
+            .cycle()
+            .take(30)
+            {
+                assert!(matches!(
+                    acquire_at(name.clone(), command.clone()).unwrap(),
+                    Instance::Secondary
+                ));
+                assert_eq!(
+                    commands.recv_timeout(Duration::from_secs(2)).unwrap(),
+                    command
+                );
+                assert!(commands.try_recv().is_err(), "handoff must not be replayed");
+            }
         }
     }
 }

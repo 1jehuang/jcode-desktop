@@ -97,6 +97,17 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
         self.assertIn('JCODE_NO_AUTO_UPDATE="1"', source)
         self.assertIn('no_reply=True', source)
 
+    def test_source_build_runs_real_instance_regressions_before_packaging(self):
+        workflow = (ROOT / '.github/workflows/windows-runtime-acceptance.yml').read_text()
+        gate = workflow.split('      - name: Test native Desktop single-instance handoff\n', 1)[1]
+        gate = gate.split('      - name: Build the actual Windows package', 1)[0]
+        self.assertIn('if: inputs.build_source', gate)
+        self.assertIn('--bin jcode-desktop', gate)
+        self.assertIn("--target '${{ matrix.target }}'", gate)
+        self.assertIn('host::instance::platform::tests', gate)
+        self.assertIn('if ($LASTEXITCODE)', gate)
+        self.assertNotIn('continue-on-error', gate)
+
     def test_release_gate_exercises_extracted_zip_before_upload(self):
         workflow = (ROOT / '.github/workflows/cross-platform-release.yml').read_text()
         gate = workflow.split('      - name: Smoke-test Windows package\n', 1)[1]
