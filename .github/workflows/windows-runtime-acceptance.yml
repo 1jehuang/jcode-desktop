@@ -1,0 +1,171 @@
+name: Windows packaged runtime acceptance
+
+# Explicit dispatch only. Never publishes or changes signing configuration.
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Published Desktop tag to test when build_source is false
+        default: desktop-v0.6.1
+        required: true
+      build_source:
+        description: Build Desktop and both companions from source instead of downloading
+        type: boolean
+        default: false
+      runtime_ref:
+        description: Immutable Jcode runtime commit required for a source build
+        default: ''
+      architecture:
+        description: Native runner architectures
+        type: choice
+        options: [both, x86_64, aarch64]
+        default: both
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-runtime-acceptance-${{ github.ref }}-${{ inputs.build_source }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.value }}
+    steps:
+      - id: matrix
+        env:
+          ARCHITECTURE: ${{ inputs.architecture }}
+          BUILD_SOURCE: ${{ inputs.build_source }}
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re
+          if os.environ['BUILD_SOURCE'] == 'true' and not re.fullmatch('[0-9a-f]{40}', os.environ['RUNTIME_REF']):
+              raise SystemExit('Source validation requires an immutable runtime SHA')
+          runners = [dict(os='windows-2025', arch='x86_64', native='X64', target='x86_64-pc-windows-msvc'),
+                     dict(os='windows-11-arm', arch='aarch64', native='Arm64', target='aarch64-pc-windows-msvc')]
+          selected = [r for r in runners if os.environ['ARCHITECTURE'] in ('both', r['arch'])]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('value=' + json.dumps(dict(include=selected)) + '\n')
+          PY
+  accept:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: jcode-desktop
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require native Windows architecture
+        shell: pwsh
+        run: |
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ne '${{ matrix.native }}') {
+            throw 'Acceptance must run on the native package architecture'
+          }
+      - name: Check out exact runtime source
+        if: inputs.build_source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: 1jehuang/jcode
+          ref: ${{ inputs.runtime_ref }}
+          path: jcode
+          submodules: recursive
+          persist-credentials: false
+      - name: Verify runtime source compatibility
+        if: inputs.build_source
+        env:
+          RUNTIME_REF: ${{ inputs.runtime_ref }}
+        run: python jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit "$env:RUNTIME_REF"
+      - name: Configure MSVC
+        if: inputs.build_source
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
+        with:
+          arch: ${{ matrix.arch == 'aarch64' && 'amd64_arm64' || 'amd64' }}
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+        if: inputs.build_source
+        with:
+          targets: ${{ matrix.target }}
+      - name: Disable POSIX rustc wrapper
+        if: inputs.build_source
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_ENV -Value 'CARGO_BUILD_RUSTC_WRAPPER='
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+        if: inputs.build_source
+        with:
+          workspaces: |
+            jcode-desktop
+            jcode
+          cache-on-failure: true
+          key: ${{ matrix.target }}
+      - name: Test native named-pipe transport
+        if: inputs.build_source
+        shell: pwsh
+        run: |
+          cargo test --manifest-path jcode/Cargo.toml -p jcode-transport --target '${{ matrix.target }}'
+          if ($LASTEXITCODE) { throw 'Native transport regression tests failed' }
+      - name: Build the actual Windows package
+        if: inputs.build_source
+        shell: pwsh
+        env:
+          VERSION: 0.0.0-windows-acceptance
+          JCODE_REPO: ${{ github.workspace }}/jcode
+          TARGET: ${{ matrix.target }}
+        run: ./jcode-desktop/scripts/package-windows.ps1
+      - name: Download published Windows ZIP
+        if: '!inputs.build_source'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY -p '*windows-${{ matrix.arch }}.zip' -p 'SHA256SUMS-windows${{ matrix.arch == 'aarch64' && '-aarch64' || '' }}' -D downloaded
+          if ($LASTEXITCODE) { throw 'Release download failed' }
+      - name: Verify ZIP and extract under a path with spaces
+        shell: pwsh
+        run: |
+          $archive = if ('${{ inputs.build_source }}' -eq 'true') {
+            (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName
+          } else { (Get-ChildItem downloaded/*.zip).FullName }
+          python jcode-desktop/scripts/verify-release-package.py $archive --target '${{ matrix.target }}'
+          if ($LASTEXITCODE) { throw 'Package structure or architecture verification failed' }
+          if ('${{ inputs.build_source }}' -ne 'true') {
+            $line = Get-Content (Get-ChildItem downloaded/SHA256SUMS*).FullName | Where-Object { $_ -match [regex]::Escape((Split-Path $archive -Leaf)) }
+            $expected = ($line -split '\s+')[0]
+            if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne $expected) { throw 'Published ZIP checksum mismatch' }
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'Jcode package with spaces'
+          Expand-Archive $archive -DestinationPath $destination
+          $app = Get-ChildItem $destination -Recurse -Filter jcode-desktop.exe
+          if (@($app).Count -ne 1) { throw 'Expected exactly one packaged Desktop' }
+          "PACKAGE_DIR=$($app.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Test cold start, real sessions, disconnects, recovery and warm relaunch
+        shell: pwsh
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          python jcode-desktop/scripts/windows-runtime-acceptance.py "$env:PACKAGE_DIR" "$env:RUNNER_TEMP/windows-runtime-evidence"
+          if ($LASTEXITCODE) { throw 'Native Windows package runtime acceptance failed' }
+      - name: Preserve source-built ZIP for inspection, without publishing
+        if: always() && inputs.build_source
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-runtime-package-${{ matrix.arch }}
+          path: jcode-desktop/dist/windows/*.zip
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Preserve real runtime diagnostics and screenshots
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-runtime-evidence-${{ matrix.arch }}
+          path: ${{ runner.temp }}/windows-runtime-evidence
+          include-hidden-files: true
+          if-no-files-found: warn
+          retention-days: 14
