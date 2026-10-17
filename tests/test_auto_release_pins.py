@@ -56,6 +56,7 @@ class RuntimePinTests(unittest.TestCase):
     def test_runtime_preflight_is_a_fingerprinted_release_input(self):
         self.assertTrue(AUTO.release_input('scripts/verify-runtime-source.py'))
         self.assertTrue(AUTO.release_input('scripts/windows-runtime-acceptance.py'))
+        self.assertTrue(AUTO.release_input('scripts/windows_screenshots.py'))
 
 
 if __name__ == "__main__":
