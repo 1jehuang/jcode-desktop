@@ -53,12 +53,20 @@ class WindowsRuntimeAcceptanceTests(unittest.TestCase):
             api.request('ping', 'pong')
 
     def test_hello_negotiates_version_and_real_client(self):
-        api = self.client(iter([{'v': 1, 'reply_to': 1, 'ev': 'hello_ok'}]))
+        api = self.client(iter([{'v': 1, 'reply_to': 1, 'ev': 'hello_ok',
+                                'capabilities': ['session_connections']}]))
         api.hello()
         hello = json.loads(api.file.getvalue())
         self.assertEqual(hello['req'], 'hello')
         self.assertEqual((hello['min_version'], hello['max_version']), (1, 1))
         self.assertFalse(hello['supports_user_response'])
+
+    def test_observer_rejects_incomplete_presence_capability(self):
+        for capabilities in ([], ['sessions']):
+            api = self.client(iter([{'v': 1, 'reply_to': 1, 'ev': 'hello_ok',
+                                    'capabilities': capabilities}]))
+            with self.assertRaisesRegex(RuntimeError, 'session_connections'):
+                api.hello()
 
     def test_wait_retries_transient_disconnect(self):
         results = iter([OSError('pipe closed'), 'connected'])

@@ -100,8 +100,14 @@ class Api:
             return reply
 
     def hello(self):
-        return self.request("hello", "hello_ok", min_version=1, max_version=1,
-                            client="windows-package-acceptance/1", supports_user_response=False)
+        reply = self.request("hello", "hello_ok", min_version=1, max_version=1,
+                             client="windows-package-acceptance/1", supports_user_response=False)
+        # A busy daemon can make the bridge's initial capability probe fail.
+        # This connection cannot report user_connected even when Desktop is
+        # attached. Reconnect rather than interpreting an absent field as false.
+        if "session_connections" not in reply.get("capabilities", []):
+            raise RuntimeError("Observer lacks session_connections; retrying capability probe")
+        return reply
 
 
 def powershell(script):
