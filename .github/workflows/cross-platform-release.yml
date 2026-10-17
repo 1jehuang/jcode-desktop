@@ -287,12 +287,12 @@ jobs:
           Expand-Archive (Get-ChildItem jcode-desktop/dist/windows/*.zip).FullName -DestinationPath $destination
           $app = Get-ChildItem $destination -Recurse -Filter jcode-desktop.exe
           if (@($app).Count -ne 1) { throw 'Expected exactly one packaged Desktop' }
-          python jcode-desktop/scripts/windows-runtime-acceptance.py $app.Directory.FullName "$env:RUNNER_TEMP/windows-runtime-evidence"
+          python jcode-desktop/scripts/windows-ci-desktop.py --evidence "$env:RUNNER_TEMP/windows-runtime-evidence/runtime-desktop.json" -- python jcode-desktop/scripts/windows-runtime-acceptance.py $app.Directory.FullName "$env:RUNNER_TEMP/windows-runtime-evidence"
           if ($LASTEXITCODE) { throw 'Windows runtime cold-start and recovery acceptance failed' }
           # Fixture rendering is separate from the real runtime checks above.
           python -m pip install --quiet pillow
           if ($LASTEXITCODE) { throw 'Native UI test dependency installation failed' }
-          python jcode-desktop/scripts/windows_screenshots.py $app.FullName "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration --resolution 1920x1080
+          python jcode-desktop/scripts/windows-ci-desktop.py --evidence "$env:RUNNER_TEMP/windows-runtime-evidence/ui-desktop.json" -- python jcode-desktop/scripts/windows_screenshots.py $app.FullName "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration --resolution 1920x1080
           if ($LASTEXITCODE) { throw 'Windows caption or native integration acceptance failed' }
       - name: Upload Windows runtime acceptance diagnostics
         if: always() && matrix.platform == 'windows'

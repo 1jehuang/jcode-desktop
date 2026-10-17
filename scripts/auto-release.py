@@ -33,7 +33,7 @@ INPUT_FILES = (
     "scripts/fetch-sparkle.sh", "scripts/render-macos-plist.py",
     "scripts/verify-macos-package.sh", "scripts/verify-release-package.py",
     "scripts/prepare-public-release.py", "scripts/publish-public-release.py",
-    "scripts/windows-runtime-acceptance.py", "scripts/windows_screenshots.py",
+    "scripts/windows-runtime-acceptance.py", "scripts/windows_screenshots.py", "scripts/windows-ci-desktop.py",
     "scripts/auto-release.py", "scripts/fast-linker", "scripts/rustc-wrapper",
     "scripts/rustc-parallel-frontend", "scripts/verify-runtime-source.py",
 )

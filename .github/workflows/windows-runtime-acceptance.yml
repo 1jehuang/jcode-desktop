@@ -199,7 +199,7 @@ jobs:
         env:
           PYTHONIOENCODING: utf-8
         run: |
-          python jcode-desktop/scripts/windows-runtime-acceptance.py "$env:PACKAGE_DIR" "$env:RUNNER_TEMP/windows-runtime-evidence"
+          python jcode-desktop/scripts/windows-ci-desktop.py --evidence "$env:RUNNER_TEMP/windows-runtime-evidence/runtime-desktop.json" -- python jcode-desktop/scripts/windows-runtime-acceptance.py "$env:PACKAGE_DIR" "$env:RUNNER_TEMP/windows-runtime-evidence"
           if ($LASTEXITCODE) { throw 'Native Windows package runtime acceptance failed' }
       - name: Verify native Windows UI integration and fixture rendering separately
         if: inputs.ui_integration
@@ -207,7 +207,7 @@ jobs:
         run: |
           python -m pip install --quiet pillow
           if ($LASTEXITCODE) { throw 'Screenshot dependency installation failed' }
-          python jcode-desktop/scripts/windows_screenshots.py "$env:PACKAGE_DIR/jcode-desktop.exe" "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration,chat,diff,applet --resolution 1920x1080
+          python jcode-desktop/scripts/windows-ci-desktop.py --evidence "$env:RUNNER_TEMP/windows-runtime-evidence/ui-desktop.json" -- python jcode-desktop/scripts/windows_screenshots.py "$env:PACKAGE_DIR/jcode-desktop.exe" "$env:RUNNER_TEMP/windows-runtime-evidence/ui-integration" --states caption,caption-light,windows-integration,chat,diff,applet --resolution 1920x1080
           if ($LASTEXITCODE) { throw 'Native Windows UI integration or fixture rendering failed' }
       - name: Preserve source-built ZIP for inspection, without publishing
         if: always() && inputs.build_source
