@@ -144,7 +144,9 @@ jobs:
           JUSTRUST_NO_TELEMETRY: '1'
           JUSTRUST_SLOTS: '0'
         run: |
-          justrust test --local --locked --release --manifest-path jcode-desktop/Cargo.toml -p jcode-desktop --bin jcode-desktop --target '${{ matrix.target }}' host::instance::platform::tests
+          # The pinned sibling runtime can change the Desktop path-dependency graph.
+          # Match package-windows.ps1: resolve only required lockfile updates here.
+          justrust test --local --release --manifest-path jcode-desktop/Cargo.toml -p jcode-desktop --bin jcode-desktop --target '${{ matrix.target }}' host::instance::platform::tests
           if ($LASTEXITCODE) { throw 'Native Desktop single-instance regression tests failed' }
       - name: Build the actual Windows package
         if: inputs.build_source
