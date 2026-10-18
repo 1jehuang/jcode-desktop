@@ -6,7 +6,7 @@ use gpui::{App, Entity, Window};
 use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, BufReader, BufWriter, Write},
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
@@ -102,10 +102,22 @@ fn read(path: &Path) -> Option<Checkpoint> {
     serde_json::from_slice(&fs::read(path).ok()?).ok()
 }
 
+// Ownership checks run every second. Do not allocate all the side-panel
+// documents again just to compare the generation token.
+#[derive(Deserialize)]
+struct CheckpointOwner {
+    owner: String,
+    pid: u32,
+}
+
+fn read_owner(path: &Path) -> Option<CheckpointOwner> {
+    serde_json::from_reader(BufReader::new(File::open(path).ok()?)).ok()
+}
+
 fn write(path: &Path, checkpoint: &Checkpoint) -> anyhow::Result<()> {
     let temporary = path.with_extension(format!("{}.tmp", std::process::id()));
     let result = (|| {
-        let mut file = private_file(&temporary)?;
+        let mut file = BufWriter::new(private_file(&temporary)?);
         serde_json::to_writer(&mut file, checkpoint)?;
         file.flush()?;
         fs::rename(&temporary, path)?;
@@ -156,7 +168,7 @@ struct Writer {
 impl Writer {
     fn begin(path: PathBuf, snapshot: WorkspaceSnapshot) -> anyhow::Result<Self> {
         let _lock = lock(&path)?;
-        if let Some(previous) = read(&path) {
+        if let Some(previous) = read_owner(&path) {
             anyhow::ensure!(
                 previous.pid == std::process::id() || !process_alive(previous.pid),
                 "another desktop process owns the crash checkpoint"
@@ -183,7 +195,7 @@ impl Writer {
 
     fn save(&self, snapshot: WorkspaceSnapshot, updated_at_ms: u64) -> anyhow::Result<bool> {
         let _lock = lock(&self.path)?;
-        if read(&self.path).is_none_or(|record| record.owner != self.owner) {
+        if read_owner(&self.path).is_none_or(|record| record.owner != self.owner) {
             return Ok(false);
         }
         write(&self.path, &self.checkpoint(snapshot, updated_at_ms))?;
@@ -192,7 +204,7 @@ impl Writer {
 
     fn clean_quit(&self) -> anyhow::Result<()> {
         let _lock = lock(&self.path)?;
-        if read(&self.path).is_some_and(|record| record.owner == self.owner) {
+        if read_owner(&self.path).is_some_and(|record| record.owner == self.owner) {
             fs::remove_file(&self.path)?;
         }
         Ok(())
@@ -258,6 +270,34 @@ mod tests {
 
     fn snapshot() -> WorkspaceSnapshot {
         WorkspaceSnapshot::decode(br#"{"format_version":1,"slots":[],"active":0,"active_row":0,"row_focus":[null,null,null,null],"previous":null,"camera_x":[0,0,0,0],"camera_target":[0,0,0,0],"overview":false,"hints_overlay":false,"folder_picker_dir":null,"folder_picker_error":null,"folder_search":null,"focus":"Workspace"}"#).unwrap()
+    }
+
+    #[test]
+    fn ownership_checks_skip_document_payloads() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("recovery.json");
+        // Ownership does not need the workspace schema. In particular it must
+        // not build a second copy of every saved document to read two fields.
+        let mut file = BufWriter::new(File::create(&path).unwrap());
+        write!(
+            file,
+            "{{\"owner\":\"generation\",\"pid\":42,\"snapshot\":{{\"large_document\":\""
+        )
+        .unwrap();
+        for _ in 0..1024 {
+            file.write_all(&[b'x'; 8192]).unwrap();
+        }
+        file.write_all(b"\"}}").unwrap();
+        file.flush().unwrap();
+        let owner = read_owner(&path).unwrap();
+        assert_eq!(owner.owner, "generation");
+        assert_eq!(owner.pid, 42);
+        assert!(
+            read(&path).is_none(),
+            "fixture deliberately is not a workspace"
+        );
+        fs::write(&path, b"{\"owner\":\"partial\",\"pid\":42,").unwrap();
+        assert!(read_owner(&path).is_none(), "reject truncated checkpoints");
     }
 
     #[test]
