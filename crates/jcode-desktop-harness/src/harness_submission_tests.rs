@@ -74,7 +74,7 @@ mod socket_tests {
 
     struct Worker {
         commands: Sender<SessionCommand>,
-        updates: async_channel::Receiver<Update>,
+        updates: UpdateReceiver,
         requests: Receiver<ApiRequest>,
         writer: Arc<Mutex<UnixStream>>,
         thread: Option<JoinHandle<()>>,
@@ -146,14 +146,9 @@ mod socket_tests {
             )
             .unwrap();
             let (commands, command_rx) = channel();
-            let (update_tx, updates) = async_channel::unbounded();
+            let (update_tx, updates) = update_channel();
             let thread = std::thread::spawn(move || {
-                session_worker(
-                    "s1".into(),
-                    command_rx,
-                    UpdateSender(update_tx),
-                    Some(client),
-                )
+                session_worker("s1".into(), command_rx, update_tx, Some(client))
             });
             let worker = Self {
                 commands,

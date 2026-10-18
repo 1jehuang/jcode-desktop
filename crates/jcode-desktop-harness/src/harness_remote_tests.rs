@@ -152,10 +152,7 @@ impl Server {
     }
 }
 
-fn wait_update(
-    updates: &async_channel::Receiver<Update>,
-    predicate: impl Fn(&Update) -> bool,
-) -> Update {
+fn wait_update(updates: &UpdateReceiver, predicate: impl Fn(&Update) -> bool) -> Update {
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         assert!(Instant::now() < deadline, "timed out waiting for UI update");
@@ -181,10 +178,9 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
     let ui_id = remote::namespace("user@desktop", "same-id");
     let (client, server) = Server::new();
     let (commands, rx) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     let worker_id = ui_id.clone();
-    let worker =
-        std::thread::spawn(move || session_worker(worker_id, rx, UpdateSender(tx), Some(client)));
+    let worker = std::thread::spawn(move || session_worker(worker_id, rx, tx, Some(client)));
     wait_update(
         &updates,
         |u| matches!(u, Update::History { session_id, .. } if session_id == &ui_id),
@@ -332,11 +328,11 @@ fn remote_worker_routes_every_native_operation_and_namespaces_outputs() {
 fn restored_remote_address_reconnects_to_same_host_without_blocking_local_worker() {
     let ui_id = remote::namespace("desktop", "same-id");
     let (commands, rx) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     let (connections_tx, connections) = channel();
     let worker_id = ui_id.clone();
     let worker = std::thread::spawn(move || {
-        session_worker_with_connector(worker_id, rx, UpdateSender(tx), None, |address| {
+        session_worker_with_connector(worker_id, rx, tx, None, |address| {
             assert_eq!(address.host.as_deref(), Some("desktop"));
             assert_eq!(address.session_id, "same-id");
             let (client, server) = Server::new();
@@ -361,14 +357,9 @@ fn restored_remote_address_reconnects_to_same_host_without_blocking_local_worker
     // The same raw ID on the local host remains independent and responsive.
     let (local_client, local_server) = Server::new();
     let (local_commands, local_rx) = channel();
-    let (local_tx, local_updates) = async_channel::unbounded();
+    let (local_tx, local_updates) = update_channel();
     let local = std::thread::spawn(move || {
-        session_worker(
-            "same-id".into(),
-            local_rx,
-            UpdateSender(local_tx),
-            Some(local_client),
-        )
+        session_worker("same-id".into(), local_rx, local_tx, Some(local_client))
     });
     wait_update(
         &local_updates,
@@ -419,13 +410,13 @@ fn remote_metadata_never_reads_matching_local_files() {
 fn remote_create_preserves_request_id_and_sends_working_dir_only_as_json() {
     let (client, server) = Server::new();
     let (internal, created) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     let cwd = "/remote/space dir/$(touch never);'quoted'";
     create_remote_session(
         " user@desktop ".into(),
         Some(cwd.into()),
         Some("draft-id".into()),
-        UpdateSender(tx),
+        tx,
         internal,
         |host| {
             assert_eq!(host, "user@desktop");
@@ -466,12 +457,12 @@ fn remote_create_preserves_request_id_and_sends_working_dir_only_as_json() {
 fn remote_create_failure_is_visible_and_never_retries_a_startup_draft() {
     let calls = Cell::new(0);
     let (internal, created) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     create_remote_session(
         "desktop".into(),
         None,
         Some("draft-id".into()),
-        UpdateSender(tx),
+        tx,
         internal,
         |_| {
             calls.set(calls.get() + 1);
@@ -492,12 +483,12 @@ fn remote_create_failure_is_visible_and_never_retries_a_startup_draft() {
 #[test]
 fn invalid_remote_create_host_never_starts_a_transport() {
     let (internal, created) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     create_remote_session(
         "-oProxyCommand=evil".into(),
         None,
         None,
-        UpdateSender(tx),
+        tx,
         internal,
         |_| panic!("invalid host reached transport"),
     );
@@ -529,7 +520,7 @@ fn last_bridge_handle_stops_its_coordinator_for_ssh_cleanup() {
 #[ignore = "live: provisions the account's Jcode Cloud machine"]
 fn managed_cloud_live_session_answers_a_prompt() {
     let (internal, created) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     let transports = transport::RemoteTransports::default();
     let printer = std::thread::spawn(move || {
         while let Ok(update) = updates.recv_blocking() {
@@ -546,7 +537,7 @@ fn managed_cloud_live_session_answers_a_prompt() {
         crate::managed_cloud::HOST.into(),
         None,
         Some("live".into()),
-        UpdateSender(tx),
+        tx,
         internal,
         |host| transports.connect_with_progress(host, &mut |m| eprintln!("[cloud] {m}")),
     );

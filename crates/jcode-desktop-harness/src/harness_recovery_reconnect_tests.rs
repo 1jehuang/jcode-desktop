@@ -2,11 +2,11 @@
 fn interrupted_remote_session_recovers_again_after_transport_replacement() {
     let ui_id = remote::namespace("desktop", "same-id");
     let (commands, rx) = channel();
-    let (tx, updates) = async_channel::unbounded();
+    let (tx, updates) = update_channel();
     let (connections_tx, connections) = channel();
     let worker_id = ui_id.clone();
     let worker = std::thread::spawn(move || {
-        session_worker_with_connector(worker_id, rx, UpdateSender(tx), None, |address| {
+        session_worker_with_connector(worker_id, rx, tx, None, |address| {
             assert_eq!(address.host.as_deref(), Some("desktop"));
             let (client, server) = Server::new();
             connections_tx.send(server).unwrap();

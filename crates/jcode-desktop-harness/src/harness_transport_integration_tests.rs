@@ -127,20 +127,15 @@ impl Fixture {
 
 fn bridge_loop(
     pool: transport::RemoteTransports,
-) -> (
-    Sender<Command>,
-    async_channel::Receiver<Update>,
-    std::thread::JoinHandle<()>,
-) {
+) -> (Sender<Command>, UpdateReceiver, std::thread::JoinHandle<()>) {
     let (commands, rx) = channel();
-    let (updates, updates_rx) = async_channel::unbounded();
+    let (updates, updates_rx) = update_channel();
     let internal = commands.clone();
-    let handle =
-        std::thread::spawn(move || run_with_transports(UpdateSender(updates), rx, internal, pool));
+    let handle = std::thread::spawn(move || run_with_transports(updates, rx, internal, pool));
     (commands, updates_rx, handle)
 }
 
-fn until(updates: &async_channel::Receiver<Update>, predicate: impl Fn(&Update) -> bool) -> Update {
+fn until(updates: &UpdateReceiver, predicate: impl Fn(&Update) -> bool) -> Update {
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         assert!(Instant::now() < deadline, "bridge update deadline");
