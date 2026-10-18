@@ -2996,6 +2996,26 @@ mod tests {
         worker.join().unwrap();
         assert_eq!(receiver.len(), 2);
         assert_eq!(sender.queue.lock().unwrap().runtime.len(), 2);
+        let retained_model_bytes: usize = sender
+            .queue
+            .lock()
+            .unwrap()
+            .pending
+            .values()
+            .map(|update| match update {
+                Update::Event {
+                    event:
+                        ApiEvent::RuntimeInfo {
+                            model: Some(model), ..
+                        },
+                    ..
+                } => model.len(),
+                _ => 0,
+            })
+            .sum();
+        // The old unbounded channel retained all 65,553,780 model bytes from
+        // this workload. This is payload accounting, not a process-RSS claim.
+        assert_eq!(retained_model_bytes, 32_778);
         for session in ["a", "b"] {
             let update = receiver.try_recv().unwrap();
             assert_eq!(runtime_info_session(&update), Some(session));

@@ -41,6 +41,12 @@ The last receiver drops queued payloads even if a network worker still holds a
 sender. Ordinary event traffic remains lossless and unbounded; this is not a
 complete process-memory cap.
 
+The stalled-consumer regression now also asserts retained payload bytes. Its
+4,000 snapshots contain 65,553,780 bytes of model strings in total, which the
+old FIFO retained until consumption. The production mailbox retains exactly
+two final strings totaling 32,778 bytes. This is a measured/asserted queue
+payload bound, not a claim that process RSS fell by that amount.
+
 ### Edit-preview payload duplication
 
 Each file card previously owned its own full tool-input/output strings. Header
@@ -99,6 +105,44 @@ Observed checks in this investigation:
 - A 4,800-row GPUI regression processes 200 streaming deltas, checks exactly
   one live row, unchanged-frame cache reuse, and replacement with one row.
   This checks retained model structure, not macOS heap or footprint.
+
+### Follow-up through real public interfaces
+
+A separate native run uses the actual Desktop binary, daemon, and API bridge
+on private sockets and a private Xvfb display, with no screenshot-mode fixtures,
+mock server, credentials, or model inference. Sessions are created and populated
+through `create_session` and context-only `send_message` requests, then opened
+through the native `/resume` picker. The workload reads runtime information
+1,000 times, writes 100 real context-only messages, and closes/reopens the
+session to verify all 101 messages load in Desktop. A native draft is typed
+afterward to check responsiveness. Context-only writes do not live-replay another
+client's input, so the close/reopen is necessary and explicitly verified.
+
+Observed result: the real native workflow loaded all 101 messages and accepted
+the complete 37-character unsent draft after the workload. The recorded native
+RSS started at 327,188 KiB and ended at 331,340 KiB, including the additional
+history load. Eleven settled samples over 10.0 seconds ranged from 330,948 to
+331,340 KiB. This limited Linux run does not establish a long-duration plateau
+for large streaming sessions. Two external server reloads interrupted the
+driver; final native input verification resumed on the same isolated processes
+and the processes were then cleaned up.
+
+Local evidence is in
+`target/memory-real-api-resumed-20261018/evidence.json`,
+`native-final-state.json`, and `native-final.png`. The earlier native navigation
+script also exposed outdated startup assumptions (expecting automatically
+created server sessions rather than draft panels); its run is not counted as
+passing. The successful follow-up explicitly creates real sessions through
+the API and opens them using the native picker.
+
+This native run does **not** reproduce streaming catalog replacement under a
+stalled UI. The attempt to change an actual model was rejected for missing
+`OPENROUTER_API_KEY` in the isolated environment. No credentials were borrowed
+and no authentication controls were bypassed. The smaller supported workload
+checks real transport, persistence, native session loading, and input only.
+The original Mac and its large transcripts are not available in this session.
+Thus end-to-end validation of the reported 90 GB streaming failure remains
+externally blocked, not passed by substituting the component regression.
 
 Linux checks and tests cannot prove that macOS compressed footprint is stable.
 A final incident reproduction still requires the affected Mac (or a comparable
