@@ -11,9 +11,9 @@ const HIGH_CPU_PERCENT: f64 = 50.0;
 /// Routine memory samples, so long-running leaks leave a growth history.
 const MEMORY_LOG_EVERY: u32 = 120; // 120 * 5s = 10 minutes
 const MIB: u64 = 1024 * 1024;
-/// Warn when resident memory first crosses this level, then per doubling.
+/// Warn when RSS (or larger macOS footprint) crosses this level, then per doubling.
 const HIGH_RSS_BYTES: u64 = 1024 * MIB;
-/// Warn when resident memory grows this much within one routine interval.
+/// Warn when the tracked memory metric grows this much within one routine interval.
 const FAST_GROWTH_BYTES: u64 = 256 * MIB;
 /// Window, GPU, and UI initialization legitimately allocate hundreds of MiB.
 /// Track the baseline silently for the first 30 seconds.
@@ -231,16 +231,46 @@ fn read_process_ticks() -> Option<u64> {
     Some(fields.get(11)?.parse::<u64>().ok()? + fields.get(12)?.parse::<u64>().ok()?)
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn spawn_cpu_monitor() {
+    // Keep memory sampling independent of the UI event loop, including when
+    // the main thread is stalled under memory pressure. No subprocesses or
+    // retained sample history, and failure to start diagnostics is nonfatal.
+    if let Err(error) = std::thread::Builder::new()
+        .name("jcode-memory-monitor".into())
+        .spawn(|| {
+            let mut memory = MemoryMonitor::default();
+            if let Some(sample) = MemorySample::read() {
+                eprintln!("{} memory startup: {}", timestamp(), sample);
+                memory.last_logged_rss = sample.pressure_bytes();
+            } else {
+                for line in memory.observe_read(None) {
+                    eprintln!("{} {line}", timestamp());
+                }
+            }
+            loop {
+                std::thread::sleep(SAMPLE_INTERVAL);
+                memory.tick();
+            }
+        })
+    {
+        eprintln!("{} memory monitor unavailable: {error}", timestamp());
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn spawn_cpu_monitor() {}
 
-/// Process memory breakdown from `/proc/self/status` and `smaps_rollup`.
-/// Anonymous memory is the heap and GPUI allocations, file memory is mapped
-/// code (including retained hot-reload libraries), and shmem covers tmpfs and
-/// GPU buffers shared with the compositor.
+/// Linux breakdown from `/proc/self/status`, or macOS RSS/physical footprint
+/// from libproc. Linux anonymous memory includes heap/GPUI allocations, file
+/// memory includes mapped code, and shmem includes compositor-shared buffers.
+/// macOS footprint accounts for pressure not represented by resident pages.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct MemorySample {
     rss: u64,
+    /// macOS physical footprint is distinct from resident memory. Never
+    /// substitute zero-valued Linux breakdowns for unavailable macOS fields.
+    physical_footprint: Option<u64>,
     anon: u64,
     file: u64,
     shmem: u64,
@@ -256,9 +286,56 @@ impl MemorySample {
         ))
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    fn read() -> Option<Self> {
+        let mut usage = std::mem::MaybeUninit::<libc::rusage_info_v2>::zeroed();
+        // SAFETY: V2 selects exactly rusage_info_v2. libproc's historical
+        // pointer-to-void-pointer signature takes the struct buffer itself,
+        // not a pointer to a separately allocated pointer. Read it only on
+        // success. Querying our own PID needs no elevated privileges.
+        let result = unsafe {
+            libc::proc_pid_rusage(
+                libc::getpid(),
+                libc::RUSAGE_INFO_V2,
+                usage.as_mut_ptr().cast::<libc::rusage_info_t>(),
+            )
+        };
+        if result != 0 {
+            return Self::from_macos_usage(Err(result));
+        }
+        // SAFETY: the successful V2 call initialized the provided buffer.
+        let usage = unsafe { usage.assume_init() };
+        Self::from_macos_usage(Ok((usage.ri_resident_size, usage.ri_phys_footprint)))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn read() -> Option<Self> {
         None
+    }
+
+    #[cfg(any(target_os = "macos", test))]
+    fn from_macos_usage(result: Result<(u64, u64), i32>) -> Option<Self> {
+        let (rss, physical_footprint) = result.ok()?;
+        Some(Self {
+            rss,
+            physical_footprint: Some(physical_footprint),
+            ..Self::default()
+        })
+    }
+
+    fn pressure_bytes(self) -> u64 {
+        self.rss.max(self.physical_footprint.unwrap_or(0))
+    }
+
+    fn pressure_label(self) -> &'static str {
+        if self
+            .physical_footprint
+            .is_some_and(|bytes| bytes >= self.rss)
+        {
+            "physical footprint"
+        } else {
+            "resident memory"
+        }
     }
 
     fn parse_status(status: &str) -> Self {
@@ -288,6 +365,17 @@ impl MemorySample {
 
 impl std::fmt::Display for MemorySample {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(footprint) = self.physical_footprint {
+            return write!(
+                f,
+                "rss={}MiB footprint={}MiB rss_bytes={} footprint_bytes={} pid={}",
+                self.rss / MIB,
+                footprint / MIB,
+                self.rss,
+                footprint,
+                std::process::id()
+            );
+        }
         write!(
             f,
             "rss={}MiB anon={}MiB file={}MiB shmem={}MiB swap={}MiB threads={} pid={}",
@@ -305,19 +393,33 @@ impl std::fmt::Display for MemorySample {
 #[derive(Default)]
 struct MemoryMonitor {
     ticks: u32,
+    // On macOS these track max(RSS, physical footprint), on Linux RSS.
     last_logged_rss: u64,
     next_warning_rss: u64,
+    unavailable: bool,
 }
 
 impl MemoryMonitor {
     fn tick(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
-        let Some(sample) = MemorySample::read() else {
-            return;
-        };
-        for line in self.observe(sample) {
+        for line in self.observe_read(MemorySample::read()) {
             eprintln!("{} {line}", timestamp());
         }
+    }
+
+    fn observe_read(&mut self, sample: Option<MemorySample>) -> Vec<String> {
+        let Some(sample) = sample else {
+            if std::mem::replace(&mut self.unavailable, true) {
+                return Vec::new();
+            }
+            return vec!["memory sampling unavailable (will retry)".into()];
+        };
+        let recovered = std::mem::replace(&mut self.unavailable, false);
+        let mut lines = self.observe(sample);
+        if recovered {
+            lines.insert(0, format!("memory sampling recovered: {sample}"));
+        }
+        lines
     }
 
     /// Returns log lines for this sample. Kept pure for unit tests.
@@ -326,27 +428,29 @@ impl MemoryMonitor {
         if self.next_warning_rss == 0 {
             self.next_warning_rss = HIGH_RSS_BYTES;
         }
-        if sample.rss >= self.next_warning_rss {
+        let pressure = sample.pressure_bytes();
+        if pressure >= self.next_warning_rss && self.next_warning_rss < u64::MAX {
             lines.push(format!(
-                "memory warning: resident memory above {}MiB: {sample}",
+                "memory warning: {} above {}MiB: {sample}",
+                sample.pressure_label(),
                 self.next_warning_rss / MIB
             ));
-            while self.next_warning_rss <= sample.rss {
+            while self.next_warning_rss <= pressure && self.next_warning_rss < u64::MAX {
                 self.next_warning_rss = self.next_warning_rss.saturating_mul(2);
             }
         }
-        let growth = sample.rss.saturating_sub(self.last_logged_rss);
+        let growth = pressure.saturating_sub(self.last_logged_rss);
         if self.ticks <= STARTUP_TICKS {
-            self.last_logged_rss = self.last_logged_rss.max(sample.rss);
+            self.last_logged_rss = self.last_logged_rss.max(pressure);
         } else if growth >= FAST_GROWTH_BYTES {
             lines.push(format!(
                 "memory warning: grew {}MiB since last sample: {sample}",
                 growth / MIB
             ));
-            self.last_logged_rss = sample.rss;
+            self.last_logged_rss = pressure;
         } else if self.ticks % MEMORY_LOG_EVERY == 0 {
             lines.push(format!("memory: {sample}"));
-            self.last_logged_rss = sample.rss;
+            self.last_logged_rss = pressure;
         }
         lines
     }
@@ -403,6 +507,89 @@ mod tests {
             monitor.observe(sample(2150)),
             vec![format!("memory: {}", sample(2150))]
         );
+    }
+
+    #[test]
+    fn macos_usage_preserves_bytes_and_distinguishes_unavailable_fields() {
+        let sample = MemorySample::from_macos_usage(Ok((250 * MIB + 7, 1500 * MIB + 9)))
+            .expect("successful macOS sample");
+        assert_eq!(sample.rss, 250 * MIB + 7);
+        assert_eq!(sample.physical_footprint, Some(1500 * MIB + 9));
+        assert_eq!(sample.pressure_bytes(), 1500 * MIB + 9);
+        let text = sample.to_string();
+        assert!(text.contains("rss=250MiB footprint=1500MiB"));
+        assert!(text.contains(&format!("rss_bytes={}", 250 * MIB + 7)));
+        assert!(text.contains(&format!("footprint_bytes={}", 1500 * MIB + 9)));
+        for unavailable in ["anon=", "file=", "shmem=", "swap=", "threads="] {
+            assert!(!text.contains(unavailable), "misleading field: {text}");
+        }
+        assert!(MemorySample::from_macos_usage(Err(-1)).is_none());
+    }
+
+    #[test]
+    fn memory_monitor_tracks_footprint_even_when_rss_is_small() {
+        let mut monitor = MemoryMonitor {
+            ticks: STARTUP_TICKS + 1,
+            last_logged_rss: 300 * MIB,
+            ..MemoryMonitor::default()
+        };
+        let sample = MemorySample::from_macos_usage(Ok((200 * MIB, 1500 * MIB))).unwrap();
+        let lines = monitor.observe(sample);
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("physical footprint above 1024MiB"))
+        );
+        assert!(lines.iter().any(|line| line.contains("grew 1200MiB")));
+        assert!(
+            monitor.observe(sample).is_empty(),
+            "unchanged sample is quiet"
+        );
+        // Also retain the RSS warning if resident pages exceed footprint.
+        let larger_rss = MemorySample::from_macos_usage(Ok((2200 * MIB, 1500 * MIB))).unwrap();
+        assert!(
+            monitor
+                .observe(larger_rss)
+                .iter()
+                .any(|line| { line.contains("resident memory above 2048MiB") })
+        );
+    }
+
+    #[test]
+    fn memory_sampling_failure_logs_only_transitions_and_recovers() {
+        let mut monitor = MemoryMonitor::default();
+        assert_eq!(monitor.observe_read(None).len(), 1);
+        for _ in 0..1000 {
+            assert!(monitor.observe_read(None).is_empty());
+        }
+        let lines = monitor.observe_read(Some(sample(100)));
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].contains("memory sampling recovered:"));
+        assert!(monitor.observe_read(Some(sample(100))).is_empty());
+        assert_eq!(monitor.observe_read(None).len(), 1);
+    }
+
+    #[test]
+    fn memory_threshold_saturates_without_looping_or_repeating() {
+        let mut monitor = MemoryMonitor {
+            ticks: STARTUP_TICKS + 1,
+            ..MemoryMonitor::default()
+        };
+        let sample = MemorySample {
+            rss: u64::MAX,
+            ..MemorySample::default()
+        };
+        assert_eq!(monitor.observe(sample).len(), 2);
+        assert_eq!(monitor.next_warning_rss, u64::MAX);
+        assert!(monitor.observe(sample).is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_current_process_memory_is_readable() {
+        let sample = MemorySample::read().expect("current process rusage");
+        assert!(sample.rss > 0);
+        assert!(sample.physical_footprint.is_some_and(|bytes| bytes > 0));
     }
 
     #[test]
