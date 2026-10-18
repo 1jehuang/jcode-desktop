@@ -270,6 +270,85 @@ fn panel_rebuilds_reuse_transcript_derived_data_until_items_change(cx: &mut gpui
     );
 }
 
+#[gpui::test]
+fn large_transcript_stream_keeps_one_live_row_and_reuses_settled_cache(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = cx.add_window_view(|_, cx| {
+        let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+        workspace.push_test_panel("large-cache-stream", cx);
+        workspace
+    });
+    let panel = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    panel.update(vcx, |panel, cx| {
+        panel.items.clear();
+        panel.items.extend(
+            (0..4_800).map(|n| crate::panel::Item::Assistant(format!("Settled message {n}"))),
+        );
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, _| p.test_transcript_row_count()),
+        4_800
+    );
+    for index in 0..200 {
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &jcode_sdk::ApiEvent::TextDelta {
+                    message_id: None,
+                    session_id: "large-cache-stream".into(),
+                    text: format!("chunk {index} "),
+                },
+                cx,
+            );
+        });
+        vcx.run_until_parked();
+        assert_eq!(panel.read_with(vcx, |p, _| p.items.len()), 4_800);
+        assert_eq!(
+            panel.read_with(vcx, |p, _| p.test_transcript_row_count()),
+            4_801
+        );
+        if index % 25 == 0 {
+            let before = panel.read_with(vcx, |p, _| p.test_transcript_rows_ptr());
+            panel.update(vcx, |_, cx| cx.notify());
+            vcx.run_until_parked();
+            assert_eq!(
+                panel.read_with(vcx, |p, _| p.test_transcript_rows_ptr()),
+                before
+            );
+        }
+    }
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &jcode_sdk::ApiEvent::TurnDone {
+                session_id: "large-cache-stream".into(),
+                pending_soft_interrupts: None,
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, _| p.test_transcript_row_count()),
+        4_801
+    );
+    // The current derived row set must follow replacement. Release of every
+    // old allocation is a separate memory-instrumented check.
+    panel.update(vcx, |panel, cx| {
+        panel.items.clear();
+        panel
+            .items
+            .push(crate::panel::Item::Assistant("replacement".into()));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert_eq!(
+        panel.read_with(vcx, |p, _| p.test_transcript_row_count()),
+        1
+    );
+}
+
 /// Renders of `name` recorded by `render_stats` on this test's thread.
 fn view_renders(name: &str) -> u64 {
     crate::render_stats::snapshot()

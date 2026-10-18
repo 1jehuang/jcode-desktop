@@ -364,10 +364,11 @@ mod tests {
                 Utility::Review => w.open_change_review(
                     &change_review::OpenChangeReview {
                         source: source.entity_id(),
-                        output: String::new(),
+                        output: "".into(),
                         name: "write".into(),
                         input: serde_json::json!({"file_path":"example.rs","content":"hello\n"})
-                            .to_string(),
+                            .to_string()
+                            .into(),
                         selected: 0,
                         done: true,
                         failed: false,

@@ -241,10 +241,11 @@ mod tests {
         });
         let request = OpenChangeReview {
             source: source.entity_id(),
-            output: String::new(),
+            output: "".into(),
             name: "write".into(),
             input: serde_json::json!({"file_path":"/remote/project/empty.rs","content":""})
-                .to_string(),
+                .to_string()
+                .into(),
             selected: 0,
             done: true,
             failed: false,
@@ -299,7 +300,7 @@ mod tests {
         let source = workspace.read_with(vcx, |workspace, _| workspace.slots[0].panel.entity_id());
         let mut request = OpenChangeReview {
             source,
-            output: String::new(),
+            output: "".into(),
             name: "write".into(),
             input: "{}".into(),
             selected: 0,
@@ -310,8 +311,9 @@ mod tests {
             workspace.update(cx, |workspace, cx| {
                 workspace.open_change_review(&request, window, cx);
                 assert_eq!(workspace.slots.len(), 1);
-                request.input =
-                    serde_json::json!({"file_path":"file.rs","content":"line"}).to_string();
+                request.input = serde_json::json!({"file_path":"file.rs","content":"line"})
+                    .to_string()
+                    .into();
                 request.selected = 99;
                 workspace.open_change_review(&request, window, cx);
                 assert_eq!(workspace.slots.len(), 1);

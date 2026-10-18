@@ -487,7 +487,7 @@ mod tests {
             error: None,
             review: crate::workspace::change_review::OpenChangeReview {
                 source: cx.entity_id(),
-                output: String::new(),
+                output: "".into(),
                 name: "edit".into(),
                 input: "{}".into(),
                 selected: 0,

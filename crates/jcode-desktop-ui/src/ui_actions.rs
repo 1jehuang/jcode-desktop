@@ -9,6 +9,8 @@
 //! Action names are unchanged: unit actions keep their `workspace` and
 //! `panel_shortcuts` namespaces, and the data actions are un-namespaced.
 
+use std::sync::Arc;
+
 /// Route Desktop-local slash commands to the workspace containing the source.
 /// Raw input is retained so validation never silently drops command arguments.
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -45,12 +47,22 @@ pub(crate) struct PublishDesktop {
 #[action(no_json)]
 pub(crate) struct OpenChangeReview {
     pub source: gpui::EntityId,
-    pub name: String,
-    pub input: String,
-    pub output: String,
+    // Each file header and its click handler share one tool-call payload.
+    pub name: Arc<str>,
+    pub input: Arc<str>,
+    pub output: Arc<str>,
     pub selected: usize,
     pub done: bool,
     pub failed: bool,
+}
+
+impl OpenChangeReview {
+    pub(crate) fn for_file(&self, selected: usize) -> Self {
+        Self {
+            selected,
+            ..self.clone()
+        }
+    }
 }
 
 #[derive(Clone, PartialEq, gpui::Action)]

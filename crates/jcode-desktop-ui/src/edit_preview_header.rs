@@ -161,7 +161,7 @@ impl TimedPreview {
                         self.done,
                         self.header.review.failed,
                         self.header
-                            .leaf("name", self.header.review.name.clone(), window, cx),
+                            .leaf("name", self.header.review.name.to_string(), window, cx),
                     ))
                     .child(
                         div()
@@ -196,6 +196,63 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn multi_file_headers_and_click_actions_share_tool_payload(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| {
+            crate::panel::Panel::new(
+                "shared-preview-payload".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        let input = serde_json::json!({
+            "intent": "Update both files",
+            "patch_text": "*** Begin Patch\n*** Add File: first.rs\n+first\n*** Add File: second.rs\n+second\n*** End Patch",
+        }).to_string();
+        let output = "Recorded tool output\n".repeat(32768);
+        // Exercise the actual per-file construction on every status transition,
+        // including failure, which must retain the original review payload.
+        for (done, error) in [(false, None), (true, None), (true, Some("Edit failed"))] {
+            panel.update(cx, |panel, cx| {
+                assert!(
+                    panel
+                        .render_edit_metadata(
+                            "shared",
+                            "apply_patch",
+                            &input,
+                            &output,
+                            done,
+                            error,
+                            cx,
+                        )
+                        .is_some()
+                );
+                let views = panel.edit_previews.views.borrow();
+                assert_eq!(views.len(), 2);
+                let first = &views["shared-0"].read(cx).header.review;
+                let second = &views["shared-1"].read(cx).header.review;
+                assert!(Arc::ptr_eq(&first.name, &second.name));
+                assert!(Arc::ptr_eq(&first.input, &second.input));
+                assert!(Arc::ptr_eq(&first.output, &second.output));
+                assert_eq!(first.input.as_ref(), input);
+                assert_eq!(first.output.as_ref(), output);
+                assert_eq!((first.selected, second.selected), (0, 1));
+                assert_eq!((first.done, first.failed), (done, error.is_some()));
+                assert_eq!((second.done, second.failed), (done, error.is_some()));
+                assert_eq!(first.source, cx.entity_id());
+                // render_header and action dispatch both clone the request.
+                // Those clones must retain the same backing allocations too.
+                let click_action = second.clone();
+                let dispatched = click_action.clone();
+                assert!(Arc::ptr_eq(&first.input, &dispatched.input));
+                assert!(Arc::ptr_eq(&first.output, &dispatched.output));
+                assert_eq!(dispatched.selected, 1);
+            });
+        }
+    }
+
+    #[gpui::test]
     fn compact_header_keeps_intent_above_one_metadata_row(cx: &mut gpui::TestAppContext) {
         let (view, vcx) = cx.add_window_view(|_, cx| {
             let files = super::super::super::inline_files("edit", &serde_json::json!({
@@ -206,7 +263,7 @@ mod tests {
                 intent: Some("A long intent should stay on one compact line instead of enlarging the header".into()),
                 review: OpenChangeReview {
                     source: cx.entity_id(), name: "edit".into(), input: "{}".into(),
-                    output: String::new(),
+                    output: "".into(),
                     selected: 0, done: true, failed: false,
                 },
                 focus: cx.focus_handle(),

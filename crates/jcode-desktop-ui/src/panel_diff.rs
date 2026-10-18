@@ -378,6 +378,15 @@ impl Panel {
         }
         let failed = error.is_some();
         let intent = edit_preview_intent(input);
+        let review = crate::ui_actions::OpenChangeReview {
+            source: cx.entity_id(),
+            name: name.into(),
+            input: input.into(),
+            output: output.into(),
+            selected: 0,
+            done,
+            failed,
+        };
         let mut card = div()
             .debug_selector(|| "code-edit-preview".into())
             .my_2()
@@ -388,15 +397,7 @@ impl Panel {
             let header = edit_preview::PreviewHeader {
                 intent: Some(intent.clone()),
                 error: error.map(str::to_owned),
-                review: crate::ui_actions::OpenChangeReview {
-                    source: cx.entity_id(),
-                    name: name.to_owned(),
-                    input: input.to_owned(),
-                    output: output.to_owned(),
-                    selected: index,
-                    done,
-                    failed,
-                },
+                review: review.for_file(index),
                 focus: self.focus_handle.clone(),
                 selection: Some((
                     self.transcript_selection.clone(),
@@ -451,7 +452,11 @@ impl Panel {
         request: &crate::ui_actions::OpenChangeReview,
         cx: &mut Context<Self>,
     ) {
-        let output = if request.failed { "" } else { &request.output };
+        let output = if request.failed {
+            ""
+        } else {
+            request.output.as_ref()
+        };
         let files = if output.is_empty() {
             Arc::new(tool_diffs(&request.name, &request.input))
         } else {
