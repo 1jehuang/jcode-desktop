@@ -186,6 +186,13 @@ The separate **Settings** tab toggles the workspace minimap and pressed-shortcut
 display for the current window. Scroll the sidebar tab strip to reach more tabs.
 Theme cycling also remains available with Super+Shift+T (Cmd+Shift+T on macOS).
 
+Zoom the whole interface like a browser page: **Ctrl+=** (or Ctrl++) zooms in,
+**Ctrl+-** zooms out and **Ctrl+0** resets, with Cmd on macOS. Every window
+zooms together, in steps of 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200,
+250 and 300%. Text, icons and spacing all scale and stay sharp, unlike
+`text_scale`, which only enlarges text. The level is saved as `ui_scale` and
+restored on the next launch.
+
 Jcode Desktop reads the `[desktop]` section of Jcode's shared
 `~/.jcode/config.toml` at startup (`$JCODE_HOME/config.toml` when `JCODE_HOME`
 is set). `JCODE_DESKTOP_CONFIG` can point to a standalone file containing the
@@ -205,6 +212,7 @@ ui_font = "Inter"               # Interface, user messages, and input
 ai_font = "Urbanist"            # Assistant prose only (defaults to ui_font)
 mono_font = "JetBrainsMono Nerd Font"
 text_scale = 1.0                 # 0.75 through 2.0
+ui_scale = 1.0                   # 0.5 through 3.0, set by Ctrl+= / Ctrl+- / Ctrl+0
 reduce_motion = false
 
 [desktop.appearance.colors]

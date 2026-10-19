@@ -47,6 +47,7 @@ pub struct AppearanceConfig {
     pub mono_font: Option<String>,
     /// Global text scale. Values outside 0.75..=2.0 fall back to 1.0.
     pub text_scale: f32,
+    pub ui_scale: f32,
     /// Disable non-essential workspace motion.
     pub reduce_motion: bool,
     /// Semantic color overrides. Keys are documented in README.md.
@@ -111,6 +112,7 @@ impl Default for AppearanceConfig {
             ai_font: None,
             mono_font: None,
             text_scale: 1.0,
+            ui_scale: crate::zoom::DEFAULT,
             reduce_motion: false,
             colors: BTreeMap::new(),
         }
@@ -153,6 +155,7 @@ impl DesktopConfig {
         {
             self.appearance.text_scale = 1.0;
         }
+        self.appearance.ui_scale = crate::zoom::normalize(self.appearance.ui_scale);
         self.workspace.session_refresh_seconds =
             self.workspace.session_refresh_seconds.clamp(5, 300);
         self.workspace.default_remote_host = self
@@ -399,6 +402,27 @@ pub fn persist_layout_mode(layout_mode: LayoutMode) -> std::io::Result<()> {
 #[cfg(any(test, feature = "test-support"))]
 pub fn persist_layout_mode(_layout_mode: LayoutMode) -> std::io::Result<()> {
     Ok(())
+}
+
+#[cfg(not(any(test, feature = "test-support")))]
+pub fn persist_ui_scale(scale: f32) -> std::io::Result<()> {
+    let path = path();
+    let standalone = std::env::var_os("JCODE_DESKTOP_CONFIG").is_some();
+    persist_ui_scale_at(&path, standalone, scale)
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub fn persist_ui_scale(_scale: f32) -> std::io::Result<()> {
+    Ok(())
+}
+
+fn persist_ui_scale_at(
+    path: &std::path::Path,
+    standalone: bool,
+    scale: f32,
+) -> std::io::Result<()> {
+    let scale = crate::zoom::normalize(scale);
+    persist_appearance_value_at(path, standalone, "ui_scale", &format!("{scale:?}"))
 }
 
 fn persist_theme_at(path: &std::path::Path, standalone: bool, theme: &str) -> std::io::Result<()> {
@@ -1135,6 +1159,41 @@ mod tests {
         let text = fs::read_to_string(path).unwrap();
         assert_eq!(text.matches("theme =").count(), 1);
         assert_eq!(parse(&text, false).unwrap().appearance.theme, "warm-studio");
+    }
+
+    #[test]
+    fn ui_scale_defaults_to_one_and_normalizes_out_of_range_values() {
+        assert_eq!(DesktopConfig::default().appearance.ui_scale, 1.0);
+        for (value, expected) in [("1.5", 1.5), ("0.4", 1.0), ("3.5", 1.0), ("nan", 1.0)] {
+            let text = format!("[desktop.appearance]\nui_scale = {value}\n");
+            let config = parse(&text, false).unwrap().normalize();
+            assert_eq!(config.appearance.ui_scale, expected, "{value}");
+        }
+    }
+
+    #[test]
+    fn persisting_ui_scale_keeps_other_settings_and_replaces_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(
+            &path,
+            "# keep me\nmodel = \"openai:gpt-5\"\n[desktop.appearance]\ntheme = \"paper\"\n",
+        )
+        .unwrap();
+
+        persist_ui_scale_at(&path, false, 1.1).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("# keep me"));
+        assert!(text.contains("ui_scale = 1.1\n"), "{text}");
+        let config = parse(&text, false).unwrap();
+        assert_eq!(config.appearance.ui_scale, 1.1);
+        assert_eq!(config.appearance.theme, "paper");
+
+        persist_ui_scale_at(&path, false, 2.0).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert_eq!(text.matches("ui_scale =").count(), 1);
+        assert!(text.contains("ui_scale = 2.0"), "{text}");
+        assert_eq!(parse(&text, false).unwrap().appearance.ui_scale, 2.0);
     }
 
     #[test]
