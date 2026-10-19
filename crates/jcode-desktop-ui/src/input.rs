@@ -1,6 +1,7 @@
 //! Prompt input with full IME support, adapted from gpui's input example.
 //! Long prompts soft-wrap in a bounded, scrollable editor. Enter submits via a callback.
 
+use jcode_desktop_ui_core::ime_geometry::ImeGeometry;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -161,6 +162,7 @@ pub struct PromptInput {
     marked_range: Option<Range<usize>>,
     last_layout: Option<PromptLayout>,
     last_bounds: Option<Bounds<Pixels>>,
+    ime_geometry: Option<ImeGeometry>,
     voice_preview: Option<String>,
     voice_preview_scroll: gpui::ScrollHandle,
     composer_bounds: paste_preview::MeasuredBounds,
@@ -527,6 +529,7 @@ impl PromptInput {
             marked_range: None,
             last_layout: None,
             last_bounds: None,
+            ime_geometry: None,
             voice_preview: None,
             voice_preview_scroll: gpui::ScrollHandle::new(),
             composer_bounds: Default::default(),
@@ -1771,17 +1774,12 @@ impl EntityInputHandler for PromptInput {
         window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let last_layout = self.last_layout.as_ref()?;
-        let range = self.range_from_utf16(&range_utf16);
-        let start = last_layout.position_for_index(range.start, window.line_height())?;
-        let end = last_layout.position_for_index(range.end, window.line_height())?;
-        Some(Bounds::from_corners(
-            bounds.origin + start,
-            point(
-                bounds.left() + end.x,
-                bounds.top() + end.y + window.line_height(),
-            ),
-        ))
+        self.ime_geometry.as_ref()?.bounds_for_range(
+            self.content.clone(),
+            self.range_from_utf16(&range_utf16),
+            bounds.origin,
+            window,
+        )
     }
 
     fn character_index_for_point(
@@ -1804,6 +1802,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
+    ime_geometry: ImeGeometry,
     line: Option<PromptLayout>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
@@ -1972,6 +1971,12 @@ impl Element for TextElement {
         };
 
         let font_size = style.font_size.to_pixels(window.rem_size());
+        let ime_geometry = ImeGeometry::new(
+            font_size,
+            window.line_height(),
+            runs[0].clone(),
+            Some(bounds.size.width),
+        );
         let line = PromptLayout::new(
             window
                 .text_system()
@@ -2079,6 +2084,7 @@ impl Element for TextElement {
             )
         };
         PrepaintState {
+            ime_geometry,
             line: Some(line),
             cursor,
             selection,
@@ -2151,6 +2157,7 @@ impl Element for TextElement {
                 }
                 input.revealed_caret = Some(caret_key);
             }
+            input.ime_geometry = Some(prepaint.ime_geometry.clone());
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
             let needs_ticker = {
@@ -2685,6 +2692,78 @@ mod tests {
                 shift_event.modifiers.shift = true;
                 input.on_mouse_down(&shift_event, window, cx);
                 assert_eq!(input.selected_range, 0..2);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ime_geometry_matches_painted_carets_after_wrapping(cx: &mut TestAppContext) {
+        let handle = input_window(cx);
+        let text = format!("测😀 abc\n{}\n", "mixed 中文 text ".repeat(80));
+        handle
+            .update(cx, |input, _, cx| input.set_content(text.into(), cx))
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                let layout = input.last_layout.as_ref().unwrap();
+                assert!(layout.visual_line_count() > 3, "fixture must soft-wrap");
+                let line_height = bounds.size.height / layout.visual_line_count() as f32;
+                let expected: Vec<_> = input
+                    .content
+                    .char_indices()
+                    .map(|(byte, _)| byte)
+                    .chain(std::iter::once(input.content.len()))
+                    .map(|byte| {
+                        (
+                            input.offset_to_utf16(byte),
+                            bounds.origin + layout.position_for_index(byte, line_height).unwrap(),
+                        )
+                    })
+                    .collect();
+                for (utf16, origin) in expected {
+                    let rect = input
+                        .bounds_for_range(utf16..utf16, bounds, window, cx)
+                        .unwrap();
+                    assert_eq!(rect.origin, origin, "caret at UTF-16 offset {utf16}");
+                    assert_eq!(rect.size, size(px(0.), line_height));
+                }
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
+    fn ime_geometry_tracks_edits_before_paint(cx: &mut TestAppContext) {
+        let handle = input_window(cx);
+        handle
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "测😀", window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                let mut anchor = None;
+                // Deliberately do not paint between setMarkedText and the rect
+                // query: this is the synchronous macOS IME callback order.
+                for marked in ["q", "qi", "qi'shi", "q", "zhe'yang"] {
+                    let len = marked.encode_utf16().count();
+                    input.replace_and_mark_text_in_range(None, marked, Some(len..len), window, cx);
+                    let rect = input
+                        .bounds_for_range(3..3 + len, bounds, window, cx)
+                        .expect("new preedit must have geometry before paint");
+                    assert!(rect.size.width >= px(0.));
+                    assert!(rect.size.height > px(0.));
+                    if let Some(origin) = anchor {
+                        assert_eq!(rect.origin, origin);
+                    }
+                    anchor = Some(rect.origin);
+                }
+                input.replace_text_in_range(None, "其实", window, cx);
+                input.replace_and_mark_text_in_range(None, "c", Some(1..1), window, cx);
+                assert!(input.bounds_for_range(5..6, bounds, window, cx).is_some());
             })
             .unwrap();
     }
