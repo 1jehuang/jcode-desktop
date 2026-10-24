@@ -53,6 +53,15 @@ impl AutoPoke {
         self.awaiting_state = false;
     }
 
+    pub(in crate::panel) fn is_awaiting_state(&self) -> bool {
+        self.awaiting_state
+    }
+
+    #[cfg(test)]
+    pub(in crate::panel) fn set_enabled_for_test(&mut self, enabled: bool) {
+        self.policy = Some(FollowUpPolicy::new(enabled));
+    }
+
     pub(super) fn observe(&mut self, event: &ApiEvent) {
         match event {
             ApiEvent::TurnDone { .. } => self.ready = self.start_index.is_some(),
@@ -194,6 +203,8 @@ impl Panel {
         if let Some(follow_up) = decision.follow_up {
             // Keep the cycle state. This is not a new user request.
             self.send_prompt(follow_up.message, Vec::new(), cx);
+        } else {
+            self.refresh_suggested_replies(cx);
         }
         cx.notify();
     }

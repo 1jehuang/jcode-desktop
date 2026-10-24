@@ -8,7 +8,7 @@ on:
     inputs:
       jcode_ref:
         description: "1jehuang/jcode ref providing the SDK path dependencies"
-        default: 217c196bbd7038b57a682221b5f1611f2ccc5bc3
+        default: 27d253a01e658224789e728412a199a39df731cf
       filter:
         description: "cargo test filter for the Desktop UI crate (empty = all)"
         default: ""
@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: ${{ inputs.jcode_ref || '217c196bbd7038b57a682221b5f1611f2ccc5bc3' }}
+          ref: ${{ inputs.jcode_ref || '27d253a01e658224789e728412a199a39df731cf' }}
           path: jcode
           submodules: recursive
       - name: Verify runtime source compatibility

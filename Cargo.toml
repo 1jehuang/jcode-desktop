@@ -23,7 +23,7 @@ license = "MIT"
 # arena shared with the hot-reloaded UI library, list height hints kept on resize,
 # and native pinch pan. Every GPUI crate comes from this one revision.
 gpui = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7", features = ["profiler", "test-api"] }
-gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7" }
+gpui_platform = { git = "https://github.com/1jehuang/gpui", rev = "be875c56343dcbd45127a9805781a9e128057dd7", features = ["runtime_shaders"] }
 jcode-desktop-accounts-ui = { path = "crates/jcode-desktop-accounts-ui" }
 jcode-desktop-api = { path = "crates/jcode-desktop-api" }
 jcode-desktop-harness = { path = "crates/jcode-desktop-harness" }

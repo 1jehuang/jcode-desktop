@@ -26,6 +26,21 @@ struct QueuedPrompt {
     images: Vec<(String, String)>,
 }
 
+impl PromptQueue {
+    pub(in crate::panel) fn has_queued_prompts(&self) -> bool {
+        !self.prompts.is_empty()
+    }
+
+    pub(in crate::panel) fn is_auto_poke_awaiting_state(&self) -> bool {
+        self.auto_poke.is_awaiting_state()
+    }
+
+    #[cfg(test)]
+    pub(in crate::panel) fn set_auto_poke_enabled_for_test(&mut self, enabled: bool) {
+        self.auto_poke.set_enabled_for_test(enabled);
+    }
+}
+
 impl Panel {
     pub(super) fn pause_queue_for_stop(&mut self) {
         self.prompt_queue.paused = true;
@@ -63,6 +78,7 @@ impl Panel {
         images: Vec<(String, String)>,
         cx: &mut Context<Self>,
     ) {
+        self.clear_suggested_replies();
         self.prompt_queue.paused = false;
         self.prompt_queue.auto_poke.start(self.items.len());
         self.send_prompt(content, images, cx);
@@ -131,13 +147,21 @@ impl Panel {
                     let _ = panel.update(cx, |this, cx| {
                         this.send_queued_prompts(cx);
                         this.send_auto_poke(cx);
+                        if !this.prompt_queue.auto_poke.is_awaiting_state() {
+                            this.refresh_suggested_replies(cx);
+                        }
                     });
                 });
             }
             ApiEvent::SessionStatus { status, .. } if status == "idle" => {
                 let panel = cx.weak_entity();
                 cx.defer(move |cx| {
-                    let _ = panel.update(cx, |this, cx| this.send_queued_prompts(cx));
+                    let _ = panel.update(cx, |this, cx| {
+                        this.send_queued_prompts(cx);
+                        if !this.prompt_queue.auto_poke.is_awaiting_state() {
+                            this.refresh_suggested_replies(cx);
+                        }
+                    });
                 });
             }
             _ => {}

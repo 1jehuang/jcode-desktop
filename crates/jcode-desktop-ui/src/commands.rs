@@ -54,6 +54,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/observe", "Show the latest tool context in the side panel"),
     RegisteredCommand::public("/todos", "Show the session todo list as a card in the chat"),
     RegisteredCommand::hidden("/todo", "Alias for /todos"),
+    RegisteredCommand::public(
+        "/suggestions",
+        "Show, refresh, or toggle contextual Suggested Replies",
+    ),
     RegisteredCommand::public("/splitview", "Mirror the current chat in the side panel"),
     RegisteredCommand::public("/split-view", "Alias for /splitview"),
     RegisteredCommand::public("/btw", "Ask a side question in the side panel"),
@@ -62,7 +66,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/colors", "List or change Desktop color themes"),
     RegisteredCommand::hidden("/color", "Alias for /colors"),
     RegisteredCommand::public("/hotkeys", "List registered Desktop hotkeys and contexts"),
-    RegisteredCommand::public("/terminal-setup", "Explain Desktop's built-in terminal setup"),
+    RegisteredCommand::public(
+        "/terminal-setup",
+        "Explain Desktop's built-in terminal setup",
+    ),
     RegisteredCommand::public("/commit", "Make logical commits from current changes"),
     RegisteredCommand::public(
         "/commit-push",
@@ -219,8 +226,14 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/cache", "Show cache stats or set cache TTL"),
     RegisteredCommand::public("/debug-visual", "Toggle visual debug overlay"),
     RegisteredCommand::public("/screenshot-mode", "Hide identifying interface metadata"),
-    RegisteredCommand::public("/screenshot", "Export a private JSON screenshot debug snapshot"),
-    RegisteredCommand::public("/record", "Record a bounded debug snapshot timeline (JSONL)"),
+    RegisteredCommand::public(
+        "/screenshot",
+        "Export a private JSON screenshot debug snapshot",
+    ),
+    RegisteredCommand::public(
+        "/record",
+        "Record a bounded debug snapshot timeline (JSONL)",
+    ),
     RegisteredCommand::remote("/client-reload", "Rebuild and hot-reload the Desktop UI"),
     RegisteredCommand::remote("/server-reload", "Request a graceful server binary reload"),
     RegisteredCommand::remote(
@@ -316,7 +329,10 @@ mod tests {
     fn reset_command_accepts_desktop_and_tui_spellings() {
         assert_eq!(reset_command("/reset"), Some(ResetCommand::Current));
         assert_eq!(reset_command(" /reset claude "), Some(ResetCommand::Claude));
-        assert_eq!(reset_command("/reset Anthropic"), Some(ResetCommand::Claude));
+        assert_eq!(
+            reset_command("/reset Anthropic"),
+            Some(ResetCommand::Claude)
+        );
         assert_eq!(
             reset_command("/reset usage limits claude"),
             Some(ResetCommand::Claude)

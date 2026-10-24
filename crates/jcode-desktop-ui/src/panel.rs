@@ -123,6 +123,8 @@ mod stream_reveal;
 #[cfg(test)]
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
+#[path = "panel_suggested_replies.rs"]
+mod suggested_replies;
 pub use startup::StartupLayout;
 #[path = "panel_applet.rs"]
 pub(crate) mod applet_panel;
@@ -130,8 +132,6 @@ pub(crate) mod applet_panel;
 pub(crate) mod demo_replay;
 #[path = "panel_gmail_draft_card.rs"]
 mod gmail_draft_card;
-#[path = "panel_user_response.rs"]
-mod user_response;
 #[path = "panel_gmail_read_card.rs"]
 mod gmail_read_card;
 #[path = "panel_mcp_list_card.rs"]
@@ -144,6 +144,8 @@ mod response_stats;
 mod side_document;
 #[path = "panel_tab_outline.rs"]
 mod tab_outline;
+#[path = "panel_user_response.rs"]
+mod user_response;
 pub(crate) use tab_outline::TabRing;
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
@@ -554,6 +556,7 @@ pub struct Panel {
     /// Retain closing cards until their fade finishes, and allow smooth reversal.
     tool_detail_motion: HashMap<String, crate::transition::AnimatedValue>,
     prompt_queue: queue::PromptQueue,
+    suggested_replies: suggested_replies::SuggestedRepliesState,
     pending_users: VecDeque<usize>,
     accepted_users: HashMap<usize, Instant>,
     /// Newly received tool calls, keyed by call id, while their entrance runs.
@@ -1013,6 +1016,7 @@ impl Panel {
             expanded_tools: HashSet::new(),
             tool_detail_motion: HashMap::new(),
             prompt_queue: queue::PromptQueue::default(),
+            suggested_replies: suggested_replies::SuggestedRepliesState::default(),
             pending_users: VecDeque::new(),
             accepted_users: HashMap::new(),
             arriving_tools: HashMap::new(),
@@ -1772,6 +1776,7 @@ impl Panel {
         panel.update(cx, |this, cx| {
             let cancel_weak = weak.clone();
             let change_weak = weak.clone();
+            let tab_weak = weak.clone();
             this.input = cx.new(|cx| {
                 PromptInput::new_with_queue(
                     cx,
@@ -1887,6 +1892,8 @@ impl Panel {
                                 return;
                             }
                             panel.update(app, |this, cx| {
+                                this.suggested_replies.focused_index = None;
+                                this.suggested_replies.staged_text = None;
                                 if this.preview_state.is_some() {
                                     this.handle_preview_command(&content, cx);
                                     return;
@@ -1903,6 +1910,7 @@ impl Panel {
                 .with_on_change(move |content, app| {
                     if let Some(panel) = change_weak.upgrade() {
                         panel.update(app, |this, cx| {
+                            this.on_input_changed_for_suggestions(content, cx);
                             if (content == "/model" || content.starts_with("/model "))
                                 && !this.is_pending_session()
                             {
@@ -1914,6 +1922,15 @@ impl Panel {
                         });
                     }
                 })
+                .with_on_tab(move |current_input, _window, app| {
+                    let mut outcome = crate::input::TabOutcome::Ignored;
+                    if let Some(panel) = tab_weak.upgrade() {
+                        panel.update(app, |this, cx| {
+                            outcome = this.decide_suggested_reply_tab(current_input, cx);
+                        });
+                    }
+                    outcome
+                })
                 .with_on_overlay_cancel(move |app| {
                     let mut handled = false;
                     if let Some(panel) = cancel_weak.upgrade() {
@@ -1924,22 +1941,25 @@ impl Panel {
                             } else if this.model_picker_open {
                                 this.close_model_picker(cx);
                                 handled = true;
-                            } else if !this.is_pending_session()
-                                && (this.status != "idle"
-                                    || !this.connection_phase.is_empty()
-                                    || !this.streaming_text.is_empty()
-                                    || !this.streaming_reasoning.is_empty()
-                                    || !this.pending_users.is_empty())
-                            {
-                                if this.preview_state.is_none() {
-                                    this.bridge.send(Command::Cancel {
-                                        session_id: this.session_id.clone(),
-                                    });
+                            } else {
+                                this.clear_suggested_reply_focus_on_escape(cx);
+                                if !this.is_pending_session()
+                                    && (this.status != "idle"
+                                        || !this.connection_phase.is_empty()
+                                        || !this.streaming_text.is_empty()
+                                        || !this.streaming_reasoning.is_empty()
+                                        || !this.pending_users.is_empty())
+                                {
+                                    if this.preview_state.is_none() {
+                                        this.bridge.send(Command::Cancel {
+                                            session_id: this.session_id.clone(),
+                                        });
+                                    }
+                                    this.prompt_queue.paused = true;
+                                    this.sound_events.cancel();
+                                    this.record_stop(stop_reason::StopNotice::cancel_requested());
+                                    handled = true;
                                 }
-                                this.prompt_queue.paused = true;
-                                this.sound_events.cancel();
-                                this.record_stop(stop_reason::StopNotice::cancel_requested());
-                                handled = true;
                             }
                             cx.notify();
                         });
@@ -2073,6 +2093,11 @@ impl Panel {
             cx.notify();
             return true;
         }
+        if trimmed == "/suggestions" || trimmed.starts_with("/suggestions ") {
+            let args = trimmed.strip_prefix("/suggestions").unwrap_or("").trim();
+            self.handle_suggestions_command(args, cx);
+            return true;
+        }
         if let Some(model) = trimmed
             .strip_prefix("/model ")
             .map(str::trim)
@@ -2139,14 +2164,18 @@ impl Panel {
                     self.startup_layout = None;
                     self.image_pane_selected = None;
                     self.items.clear();
+                    self.clear_suggested_replies();
                     self.response_stats = response_stats::Tracker::default();
                     self.streaming_text.clear();
                     self.streaming_reasoning.clear();
                 }
-                "/clear" => self.run_session_operation(
-                    SessionOperation::Clear,
-                    "Conversation history cleared.",
-                ),
+                "/clear" => {
+                    self.clear_suggested_replies();
+                    self.run_session_operation(
+                        SessionOperation::Clear,
+                        "Conversation history cleared.",
+                    );
+                }
                 "/compact" => self.run_session_operation(
                     SessionOperation::Compact,
                     "Context compacted.",
@@ -2748,8 +2777,7 @@ impl Panel {
         let finished_unseen = match (was_active, active) {
             (false, true) => false,
             (true, false) => {
-                !self.surface_focused
-                    && self.minimap_state() != MinimapSessionState::Error
+                !self.surface_focused && self.minimap_state() != MinimapSessionState::Error
             }
             _ => return,
         };
@@ -3103,9 +3131,7 @@ impl Panel {
             || cx.reduce_motion()
             || crate::config::get().appearance.reduce_motion;
         let now = Instant::now();
-        let text = self
-            .text_reveal
-            .tick(&self.streaming_text, now, instant);
+        let text = self.text_reveal.tick(&self.streaming_text, now, instant);
         let reasoning = self
             .reasoning_reveal
             .tick(&self.streaming_reasoning, now, instant);
@@ -4858,7 +4884,7 @@ impl Render for Panel {
             // Capture before List mutably borrows its state during row rendering.
             let response_viewport_height = (self.transcript_list.viewport_bounds().size.height
                 - px(dock_pad + prompt::PROMPT_TOP_PADDING))
-                .max(px(1.));
+            .max(px(1.));
             transcript_shell
                 .child(
                     list(
@@ -5887,7 +5913,11 @@ fn render_todo_marker(todo: &TodoCardItem, id: String) -> impl IntoElement {
             marker.child(div().size_full().rounded_full().bg(color))
         })
         .when(todo.status == "in_progress", |marker| {
-            let dot = if confidence.is_some() { color } else { Theme::global().ACCENT };
+            let dot = if confidence.is_some() {
+                color
+            } else {
+                Theme::global().ACCENT
+            };
             marker
                 .p(px(3.0))
                 .child(div().size_full().rounded_full().bg(dot))
@@ -6271,14 +6301,12 @@ fn render_todo_card_with_style(
                                 )
                                 .child(
                                     div()
-                                        .text_color(todo_tone_color(
-                                            intent_understanding_tone(state),
-                                        ))
+                                        .text_color(todo_tone_color(intent_understanding_tone(
+                                            state,
+                                        )))
                                         .child(state.as_str()),
                                 )
-                                .child(
-                                    div().text_color(Theme::global().TEXT_DIM).child(":"),
-                                ),
+                                .child(div().text_color(Theme::global().TEXT_DIM).child(":")),
                         )
                     })
                     .child(

@@ -254,6 +254,7 @@ impl Panel {
                     })),
             );
         let strips = self.render_composer_applets(window, cx);
+        let suggested_replies = self.render_suggested_replies(window, cx);
         div()
             .debug_selector(|| "composer".into())
             .w_full()
@@ -261,6 +262,7 @@ impl Panel {
             .flex()
             .flex_col()
             .children(strips)
+            .children(suggested_replies)
             .children(self.render_provider_picker(window, cx))
             .child(
                 // The voice button floats inside the input's right edge. The

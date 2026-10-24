@@ -26,6 +26,10 @@ API_REQUIREMENTS = {
         r"pub\s+mod\s+global\s*;",
         r"pub\s+use\s+streaming_capture\s*::",
     ),
+    "crates/jcode-base/src/suggested_replies.rs": (
+        r"pub\s+struct\s+SuggestedRepliesContext\b",
+        r"pub\s+struct\s+SuggestedRepliesResponse\b",
+    ),
 }
 
 
