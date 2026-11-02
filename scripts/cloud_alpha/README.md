@@ -239,6 +239,33 @@ all changes before executing. Do not create a second stack to repair a failed
 host. Inspect CloudFormation and cloud-init first. Resource names/IDs from old
 cloud notes may refer to a different AWS account.
 
+### Running-kernel safety (CVE-2026-98432)
+
+New templates default ImageId to reviewed official Amazon Linux 2023 x86_64
+ami-0c230065b91270bc6 in us-east-1. Other regions require an independently
+reviewed regional image. The early bootstrap rejects unknown distributions,
+architectures and branches, and requires a running kernel at least
+6.18.56-125.164 or 6.1.189-236.400 within its own AL2023 branch. Installed but
+unbooted packages do not pass. Failure powers the alpha off before access setup
+or readiness. No credentials or existing user disks are copied into images.
+
+The persistent guard disables MPTCP when supported and atomically replaces only
+its dedicated nft table. sshd and the user manager require the guard on later
+boots. It does not flush unrelated firewall rules or enable the distribution
+nftables service. These rules are defense in depth, not a replacement for a fixed
+running kernel. Unit tests execute the kernel checks and check boot ordering and
+shell syntax, but do not substitute for actual image/systemd acceptance.
+
+For the existing alpha stack, retain the previous ImageId parameter value when
+updating bootstrap or template defaults. Changing its actual value would replace
+the persistent instance. Preserve the live stack policy denying Host replacement
+and deletion, inspect the change set, and never override that protection merely
+to update an image. An EBS-backed UserData update can restart the host. Perform
+such updates only after proving idle or while already stopped under no-ingress
+isolation, and restore the original stopped state afterward. Updating user data
+does not replay once-only cloud-init on an existing disk. Existing-host kernel
+maintenance and reboot verification are separate requirements.
+
 The runtime is pinned to published Jcode v0.84.0, SHA-256 verified during
 bootstrap. If that runtime lacks a required SDK capability, update the pinned
 release through the same reviewed template, not an unverified download.

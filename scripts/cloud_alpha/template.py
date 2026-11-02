@@ -7,6 +7,8 @@ from pathlib import Path
 import re
 
 HERE = Path(__file__).resolve().parent
+# Verified official AL2023 x86_64 image in us-east-1, running kernel 6.18.56-125.164.
+SAFE_IMAGE_ID = "ami-0c230065b91270bc6"
 
 
 def ref(name):
@@ -46,6 +48,8 @@ def generate(public_key):
     base64.b64decode(parts[1], validate=True)
     key = " ".join(parts[:2])
     bootstrap = (HERE / "bootstrap.sh").read_text().replace("__SSH_PUBLIC_KEY__", key)
+    guard = (HERE / "kernel_guard.sh").read_text()
+    bootstrap = bootstrap.replace("__KERNEL_GUARD__", guard)
     if (HERE / "idle.py").exists():
         idle = base64.b64encode((HERE / "idle.py").read_bytes()).decode()
         bootstrap = bootstrap.replace("touch /opt/jcode-alpha/ready", f"""printf '%s' '{idle}' | base64 -d > /opt/jcode-alpha/idle.py
@@ -125,7 +129,8 @@ touch /opt/jcode-alpha/ready""")
         "Description": "Single-user Jcode Cloud alpha. Persistent 30GB, no ingress, 2h boot lease, 50h/month guard.",
         "Parameters": {
             "VpcId": {"Type": "AWS::EC2::VPC::Id"}, "SubnetId": {"Type": "AWS::EC2::Subnet::Id"},
-            "ImageId": {"Type": "AWS::EC2::Image::Id"}},
+            "ImageId": {"Type": "AWS::EC2::Image::Id", "Default": SAFE_IMAGE_ID,
+                "Description": "Reviewed patched AL2023 x86_64 image in us-east-1. Other images must pass the running-kernel gate."}},
         "Resources": resources,
         "Outputs": {"InstanceId": {"Value": ref("Host")}, "LedgerTable": {"Value": ref("Ledger")},
             "GuardFunction": {"Value": ref("Guard")}, "GuardRule": {"Value": ref("GuardSchedule")}, "SecurityGroupId": {"Value": ref("SecurityGroup")}}}

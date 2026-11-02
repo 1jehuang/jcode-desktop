@@ -24,6 +24,7 @@ WantedBy=timers.target
 EOF
 systemctl daemon-reload
 systemctl enable --now jcode-alpha-lease.timer
+__KERNEL_GUARD__
 dnf install -y git tmux python3 tar gzip openssl nodejs npm gcc gcc-c++ make
 install -d -m 700 -o ec2-user -g ec2-user /home/ec2-user/.ssh /home/ec2-user/.jcode
 install -d -m 755 -o ec2-user -g ec2-user /home/ec2-user/.local/bin /home/ec2-user/workspaces
