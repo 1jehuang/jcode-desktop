@@ -103,6 +103,28 @@ fn streaming_sessions() -> HashSet<String> {
 #[cfg(test)]
 use crate::commands::is_resume_command;
 
+/// Extract a session ID from a pasted query such as `session_x_123_abc` or
+/// `jcode --resume session_x_123_abc`.
+fn pasted_session_id(query: &str) -> Option<String> {
+    let mut words = query.split_whitespace().peekable();
+    if words.peek() == Some(&"jcode") {
+        words.next();
+    }
+    if matches!(words.peek(), Some(&"--resume") | Some(&"-r")) {
+        words.next();
+    }
+    let id = words
+        .next()?
+        .trim_matches(|c| c == '`' || c == '"' || c == '\'' || c == '.');
+    (words.next().is_none()
+        && id.starts_with("session_")
+        && id.len() > "session_".len()
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+    .then(|| id.to_owned())
+}
+
 fn filtered_sessions(
     mut sessions: Vec<jcode_sdk::SessionInfo>,
     query: &str,
@@ -444,6 +466,22 @@ impl Workspace {
     fn resume_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let matches = self.resume_matches(cx);
         let selected = self.resume.as_ref().and_then(|s| s.selected.as_deref());
+        // A pasted session ID (or `jcode --resume <id>`) opens directly, even
+        // when that session is outside the loaded catalog.
+        if let Some(id) = self
+            .resume
+            .as_ref()
+            .and_then(|s| pasted_session_id(&s.query))
+        {
+            if let Some(session) = matches.iter().find(|s| s.session_id == id).cloned() {
+                self.resume = None;
+                self.resume_session(session, window, cx);
+            } else {
+                self.resume = None;
+                self.open_requested_session(id, window, cx);
+            }
+            return;
+        }
         let Some(session) = matches
             .iter()
             .find(|s| Some(s.session_id.as_str()) == selected)
@@ -1225,6 +1263,22 @@ mod tests {
             "foo\\bar",
         ] {
             assert!(load_preview_history(id).is_err(), "{id}");
+        }
+    }
+
+    #[test]
+    fn resume_pasted_session_id_is_recognized() {
+        let id = "session_orangutan_1791475004393_3e578ce05d8b6081";
+        for q in [
+            id.to_string(),
+            format!(" `{id}` "),
+            format!("jcode --resume {id}."),
+            format!("--resume {id}"),
+        ] {
+            assert_eq!(pasted_session_id(&q).as_deref(), Some(id), "{q}");
+        }
+        for q in ["orangutan", "session_", "session_a b", "planner session_a"] {
+            assert_eq!(pasted_session_id(q), None, "{q}");
         }
     }
 
