@@ -7,6 +7,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/apple-network-retry.sh"
 APP="${1:-$ROOT/dist/macos/Jcode.app}"
 DMG="${2:-$ROOT/dist/macos/Jcode-macOS-universal.dmg}"
 EXPECTED_ENTITLEMENTS="$ROOT/packaging/macos/Jcode.entitlements"
@@ -167,8 +168,8 @@ if [[ "${FIRST_LAUNCH_CHECK:-0}" == 1 ]]; then
 fi
 
 if [[ "${EXPECT_NOTARIZED:-0}" == 1 ]]; then
-  xcrun stapler validate "$APP"
-  xcrun stapler validate "$DMG"
+  apple_network_retry xcrun stapler validate "$APP"
+  apple_network_retry xcrun stapler validate "$DMG"
   spctl --assess --type execute --verbose=2 "$APP"
   spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 fi

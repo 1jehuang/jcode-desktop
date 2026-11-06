@@ -7,6 +7,7 @@ if [[ "$(uname -s)" != Darwin ]]; then
 fi
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/apple-network-retry.sh"
 JCODE_REPO="${JCODE_REPO:-$ROOT/../jcode}"
 VERSION="${VERSION:-$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)}"
 BUILD_NUMBER="${BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-1}}"
@@ -23,13 +24,17 @@ BINS=(jcode-desktop jcode jcode-harness-api-bridge)
 
 notarize() {
   local artifact="$1"
-  local result submission_id
+  local result submission_id status
   result="$(mktemp "${TMPDIR:-/tmp}/jcode-notary.XXXXXX")"
-  if xcrun notarytool submit "$artifact" --keychain-profile "$APPLE_NOTARY_PROFILE" \
-      --wait --output-format json | tee "$result"; then
+  if apple_network_retry xcrun notarytool submit "$artifact" --keychain-profile "$APPLE_NOTARY_PROFILE" \
+      --wait --output-format json >"$result"; then
+    cat "$result"
     rm -f "$result"
     return 0
+  else
+    status=$?
   fi
+  cat "$result"
 
   submission_id="$(python3 - "$result" <<'PY'
 import json
@@ -42,11 +47,11 @@ except (OSError, json.JSONDecodeError):
 PY
 )"
   if [[ -n "$submission_id" ]]; then
-    echo "Apple rejected $(basename "$artifact"); fetching notarization log..." >&2
+    echo "Notarization failed for $(basename "$artifact"); fetching notarization log..." >&2
     xcrun notarytool log "$submission_id" --keychain-profile "$APPLE_NOTARY_PROFILE" || true
   fi
   rm -f "$result"
-  return 1
+  return "$status"
 }
 
 # Release tags and beta labels are valid artifact versions, but Apple's bundle
@@ -156,8 +161,8 @@ if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   rm -f "$ZIP"
   ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
   notarize "$ZIP"
-  xcrun stapler staple "$APP"
-  xcrun stapler validate "$APP"
+  apple_network_retry xcrun stapler staple "$APP"
+  apple_network_retry xcrun stapler validate "$APP"
 fi
 
 # A top-level Applications link gives Finder users the expected drag-to-install
@@ -176,8 +181,8 @@ if [[ "$IDENTITY" != "-" ]]; then
 fi
 if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   notarize "$DMG"
-  xcrun stapler staple "$DMG"
-  xcrun stapler validate "$DMG"
+  apple_network_retry xcrun stapler staple "$DMG"
+  apple_network_retry xcrun stapler validate "$DMG"
 fi
 
 EXPECT_NOTARIZED="$([[ -n "${APPLE_NOTARY_PROFILE:-}" ]] && echo 1 || echo 0)" \
