@@ -6,6 +6,7 @@ use gpui::{
     Focusable, GlobalElementId, LayoutId, MouseButton, PaintQuad, Pixels, SharedString, Style,
     TextRun, UTF16Selection, Window, WrappedLine, div, fill, point, prelude::*, px, relative, size,
 };
+use jcode_desktop_ui_core::ime_geometry::ImeGeometry;
 use std::ops::Range;
 
 #[derive(Default)]
@@ -79,6 +80,7 @@ pub struct LoginInput {
     placeholder: SharedString,
     last_layout: Option<WrappedLine>,
     last_bounds: Option<Bounds<Pixels>>,
+    ime_geometry: Option<ImeGeometry>,
 }
 impl LoginInput {
     pub fn new(cx: &mut Context<Self>, placeholder: impl Into<String>) -> Self {
@@ -88,6 +90,7 @@ impl LoginInput {
             placeholder: placeholder.into().into(),
             last_layout: None,
             last_bounds: None,
+            ime_geometry: None,
         }
     }
     pub fn content_empty(&self) -> bool {
@@ -273,23 +276,13 @@ impl EntityInputHandler for LoginInput {
         window: &mut Window,
         _: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let line = self.last_layout.as_ref()?;
         let range = self.secret.range(range);
-        let start = line.position_for_index(
-            self.secret.utf16(range.start) * "•".len(),
-            window.line_height(),
-        )?;
-        let end = line.position_for_index(
-            self.secret.utf16(range.end) * "•".len(),
-            window.line_height(),
-        )?;
-        Some(Bounds::from_corners(
-            bounds.origin + start,
-            point(
-                bounds.left() + end.x,
-                bounds.top() + end.y + window.line_height(),
-            ),
-        ))
+        self.ime_geometry.as_ref()?.bounds_for_range(
+            self.secret.masked().into(),
+            self.secret.utf16(range.start) * "•".len()..self.secret.utf16(range.end) * "•".len(),
+            bounds.origin,
+            window,
+        )
     }
     fn character_index_for_point(
         &mut self,
@@ -312,6 +305,7 @@ struct TextElement {
 }
 
 struct PrepaintState {
+    ime_geometry: ImeGeometry,
     line: Option<WrappedLine>,
     cursor: Option<PaintQuad>,
     selection: Vec<PaintQuad>,
@@ -417,6 +411,7 @@ impl Element for TextElement {
         let runs = vec![run];
 
         let font_size = style.font_size.to_pixels(window.rem_size());
+        let ime_geometry = ImeGeometry::new(font_size, window.line_height(), runs[0].clone(), None);
         let line = window
             .text_system()
             .shape_text(display_text, font_size, &runs, None, None)
@@ -448,6 +443,7 @@ impl Element for TextElement {
             )
         };
         PrepaintState {
+            ime_geometry,
             line: Some(line),
             cursor,
             selection,
@@ -492,6 +488,7 @@ impl Element for TextElement {
         }
 
         self.input.update(cx, |input, _cx| {
+            input.ime_geometry = Some(prepaint.ime_geometry.clone());
             input.last_layout = Some(line);
             input.last_bounds = Some(prepaint.text_bounds);
         });
@@ -532,6 +529,39 @@ impl Render for LoginInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[gpui::test]
+    fn ime_geometry_uses_current_mask_before_paint(cx: &mut gpui::TestAppContext) {
+        let handle = cx.update(|cx| {
+            cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| LoginInput::new(cx, "key"))
+            })
+            .unwrap()
+        });
+        handle
+            .update(cx, |input, window, cx| {
+                input.replace_text_in_range(None, "x", window, cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+        handle
+            .update(cx, |input, window, cx| {
+                let bounds = input.last_bounds.unwrap();
+                for marked in ["a", "abcdef", "😀", "b"] {
+                    let len = marked.encode_utf16().count();
+                    input.replace_and_mark_text_in_range(None, marked, Some(len..len), window, cx);
+                    let rect = input
+                        .bounds_for_range(1..1 + len, bounds, window, cx)
+                        .expect("masked preedit geometry must not wait for paint");
+                    assert!(rect.size.width >= px(0.));
+                    assert!(rect.size.height > px(0.));
+                    // The paint cache is still the old mask; querying does not
+                    // put the real secret into GPUI's shaping cache.
+                    assert_eq!(input.last_layout.as_ref().unwrap().text.as_ref(), "•");
+                }
+            })
+            .unwrap();
+    }
+
     #[gpui::test]
     fn native_input_masks_layout_and_readback_and_clears(cx: &mut gpui::TestAppContext) {
         let window = cx.update(|cx| {
