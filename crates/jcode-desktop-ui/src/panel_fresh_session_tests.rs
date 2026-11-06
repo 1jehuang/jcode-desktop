@@ -21,7 +21,7 @@ fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
         window.focus(&focus, cx);
     });
     let handle = vcx.update(|window, _| window.window_handle());
-    for (width, height) in [(800., 600.), (1440., 1000.), (640., 480.)] {
+    for (width, height) in [(800., 600.), (1440., 1000.), (2560., 1000.), (640., 480.)] {
         vcx.simulate_window_resize(handle, gpui::size(px(width), px(height)));
         vcx.run_until_parked();
         let fresh = vcx
@@ -30,7 +30,11 @@ fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
         let input = vcx.debug_bounds("prompt-input").expect("input paints");
         // Same compact docked shape as a started conversation.
         assert!(input.size.height < px(crate::input::SPACIOUS_MIN_HEIGHT));
-        assert!(input.size.width <= px(760.));
+        assert!(input.size.width <= px(1120.));
+        assert!(
+            input.size.width >= (fresh.size.width - px(40.)).min(px(1100.)),
+            "the composer should use the available width up to its readable limit"
+        );
         assert!(input.left() >= fresh.left() && input.right() <= fresh.right());
         assert!((f32::from(input.center().x - fresh.center().x)).abs() < 1.);
         assert!((f32::from(input.center().y - fresh.center().y)).abs() < 70.);
@@ -89,7 +93,7 @@ fn fresh_session_slash_palette_stays_above_the_larger_composer(cx: &mut gpui::Te
 
 #[gpui::test]
 fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAppContext) {
-    for (width, height) in [(800., 600.), (1440., 1000.), (640., 480.)] {
+    for (width, height) in [(800., 600.), (1440., 1000.), (2560., 1000.), (640., 480.)] {
         let (panel, vcx) = cx.add_window_view(|_, cx| {
             Panel::new(
                 "startup-growth".into(),
@@ -129,6 +133,17 @@ fn fresh_session_response_spends_space_before_moving_input(cx: &mut gpui::TestAp
         assert_eq!(small, expected);
         let first_row = vcx.debug_bounds("transcript-row-0").unwrap();
         let viewport = panel.read_with(vcx, |panel, _| panel.transcript_list.viewport_bounds());
+        assert!(viewport.size.width <= px(1120.));
+        assert!(
+            f32::from(viewport.center().x - small.center().x).abs() < 1.,
+            "conversation and composer should share a centered column"
+        );
+        if width > 2000. {
+            assert!(
+                viewport.left() > px(500.),
+                "wide panels need generous side gutters"
+            );
+        }
         assert_eq!(
             first_row.top(),
             viewport.top(),

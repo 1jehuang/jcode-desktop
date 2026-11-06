@@ -4830,7 +4830,7 @@ impl Render for Panel {
                 .child(
                     div()
                         .w_full()
-                        .max_w(px(760.0))
+                        .max_w(px(1120.0))
                         .flex()
                         .flex_col()
                         .gap_4()
@@ -4988,7 +4988,9 @@ impl Render for Panel {
                             })
                         },
                     )
-                    .size_full(),
+                    .size_full()
+                    .max_w(px(1120.))
+                    .mx_auto(),
                 )
                 .into_any_element()
         };
@@ -5019,7 +5021,7 @@ impl Render for Panel {
                             .child(
                                 div()
                                     .w_full()
-                                    .max_w(px(760.))
+                                    .max_w(px(1120.))
                                     .relative()
                                     .flex()
                                     .flex_col()

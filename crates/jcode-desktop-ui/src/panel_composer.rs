@@ -339,6 +339,9 @@ impl Panel {
                     .child(
                         div()
                             .relative()
+                            .w_full()
+                            .max_w(px(1120.))
+                            .mx_auto()
                             .flex()
                             .flex_col()
                             .gap_2()
