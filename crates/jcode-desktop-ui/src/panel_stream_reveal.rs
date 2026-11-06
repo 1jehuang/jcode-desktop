@@ -170,7 +170,10 @@ fn release_point(text: &str, from: usize, paused: bool, held: bool) -> Option<us
         })
         .map(|(at, _)| at + 1);
     let word = pending.rfind([' ', '\t']).map(|at| at + 1);
-    sentence.or(word).map(|cut| from + cut).filter(|&cut| cut > from)
+    sentence
+        .or(word)
+        .map(|cut| from + cut)
+        .filter(|&cut| cut > from)
 }
 
 #[cfg(test)]
@@ -268,7 +271,11 @@ mod tests {
         let text = "x".repeat(50);
         assert!(!reduced.tick(&text, now, true));
         assert_eq!((reduced.shown_len(), reduced.fading(&text)), (50, 0));
-        assert_eq!(reduced.visible(&text), text, "unengaged passes text through");
+        assert_eq!(
+            reduced.visible(&text),
+            text,
+            "unengaged passes text through"
+        );
     }
 
     #[test]

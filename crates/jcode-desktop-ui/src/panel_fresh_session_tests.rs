@@ -54,7 +54,10 @@ fn fresh_session_composer_is_centered_compact_and_stable_while_typing(
     vcx.run_until_parked();
     assert!(vcx.debug_bounds("fresh-session").is_none());
     let submitted = vcx.debug_bounds("prompt-input").expect("input paints");
-    assert_eq!(submitted, input, "submission must not move or resize the editor");
+    assert_eq!(
+        submitted, input,
+        "submission must not move or resize the editor"
+    );
     let row = vcx.debug_bounds("transcript-row-0").expect("prompt paints");
     let transcript = vcx.debug_bounds("transcript").unwrap();
     assert!((f32::from(row.top() - transcript.top())).abs() < 1.);

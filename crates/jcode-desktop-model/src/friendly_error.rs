@@ -24,10 +24,26 @@ pub fn summary_hides_details(raw: &str) -> bool {
 fn known_summary(message: &str) -> Option<&'static str> {
     let lower = message.to_ascii_lowercase();
     let has = |terms: &[&str]| terms.iter().any(|term| lower.contains(term));
-    let runtime = has(&["harness", "jcode-api", "jcode.sock", ".sock", "runtime", "bridge"]);
-    if has(&["refuses connections", "connection refused", "refused the connection"]) && runtime {
+    let runtime = has(&[
+        "harness",
+        "jcode-api",
+        "jcode.sock",
+        ".sock",
+        "runtime",
+        "bridge",
+    ]);
+    if has(&[
+        "refuses connections",
+        "connection refused",
+        "refused the connection",
+    ]) && runtime
+    {
         Some("Can't reach the Jcode runtime.")
-    } else if has(&["no harness api socket", "harness is not running", "harness not running"]) {
+    } else if has(&[
+        "no harness api socket",
+        "harness is not running",
+        "harness not running",
+    ]) {
         Some("The Jcode runtime isn't running.")
     } else if runtime && has(&["permission denied"]) {
         Some("Can't access the Jcode runtime. It may belong to another user.")
@@ -66,7 +82,9 @@ fn first_sentence(message: &str) -> &str {
     let bytes = message.as_bytes();
     for (index, char) in message.char_indices() {
         if matches!(char, '.' | '!' | '?')
-            && bytes.get(index + 1).is_none_or(|next| next.is_ascii_whitespace())
+            && bytes
+                .get(index + 1)
+                .is_none_or(|next| next.is_ascii_whitespace())
             && index + 1 >= 12
         {
             return &message[..=index];
@@ -102,12 +120,19 @@ mod tests {
     #[test]
     fn missing_socket_and_closed_connections_are_named_plainly() {
         assert_eq!(
-            summarize("connect_failed: no harness API socket at /x.sock: the jcode harness is not running."),
+            summarize(
+                "connect_failed: no harness API socket at /x.sock: the jcode harness is not running."
+            ),
             "The Jcode runtime isn't running."
         );
-        assert_eq!(summarize("Socket closed"), "Lost connection to the Jcode runtime.");
         assert_eq!(
-            summarize("connect_failed: harness refused the connection at /run/user/1000/jcode-api.sock. It may be restarting or stopped."),
+            summarize("Socket closed"),
+            "Lost connection to the Jcode runtime."
+        );
+        assert_eq!(
+            summarize(
+                "connect_failed: harness refused the connection at /run/user/1000/jcode-api.sock. It may be restarting or stopped."
+            ),
             "Can't reach the Jcode runtime."
         );
         assert_eq!(
@@ -118,7 +143,10 @@ mod tests {
 
     #[test]
     fn unknown_errors_keep_their_first_sentence() {
-        assert_eq!(summarize("I/O failure: read only"), "I/O failure: read only");
+        assert_eq!(
+            summarize("I/O failure: read only"),
+            "I/O failure: read only"
+        );
         assert!(!summary_hides_details("I/O failure: read only"));
         assert_eq!(
             summarize("Disk is full. Free some space and try again."),

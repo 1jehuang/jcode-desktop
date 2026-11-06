@@ -305,7 +305,10 @@ fn stale_socket_notice_is_short_and_copies_the_raw_error(cx: &mut gpui::TestAppC
     let copy = vcx.debug_bounds("stop-notice-copy").expect("copy pill");
     vcx.simulate_click(copy.center(), gpui::Modifiers::default());
     vcx.update(|_, cx| {
-        assert_eq!(cx.read_from_clipboard().unwrap().text().as_deref(), Some(RAW))
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some(RAW)
+        )
     });
 }
 

@@ -113,11 +113,7 @@ pub(super) fn native_error_message(message: &str) -> String {
 }
 
 /// A compact pill which copies the complete original text.
-pub(super) fn copy_pill(
-    id: &'static str,
-    index: usize,
-    text: String,
-) -> gpui::Stateful<gpui::Div> {
+pub(super) fn copy_pill(id: &'static str, index: usize, text: String) -> gpui::Stateful<gpui::Div> {
     action_pill(id, index, "Copy").on_click(move |_, _, cx| {
         cx.write_to_clipboard(gpui::ClipboardItem::new_string(text.clone()));
         cx.stop_propagation();
@@ -265,23 +261,23 @@ impl Panel {
                     .child(copy_pill("recovery-copy", index, details))
                     .when(kind != RecoveryKind::Other, |el| {
                         el.child(
-                            action_pill("recovery-choose-model", index, "Choose model")
-                                .on_click(cx.listener(|this, _, _, cx| {
+                            action_pill("recovery-choose-model", index, "Choose model").on_click(
+                                cx.listener(|this, _, _, cx| {
                                     this.open_recovery_models(cx);
                                     cx.stop_propagation();
-                                })),
+                                }),
+                            ),
                         )
                     })
                     .when(
                         matches!(kind, RecoveryKind::Auth | RecoveryKind::Quota),
                         |el| {
-                            el.child(
-                                action_pill("recovery-login", index, "Log in")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.open_login_picker(cx);
-                                        cx.stop_propagation();
-                                    })),
-                            )
+                            el.child(action_pill("recovery-login", index, "Log in").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.open_login_picker(cx);
+                                    cx.stop_propagation();
+                                }),
+                            ))
                         },
                     ),
             )

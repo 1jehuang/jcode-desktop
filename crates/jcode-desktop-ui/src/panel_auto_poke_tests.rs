@@ -127,6 +127,13 @@ fn completed_work_runs_quality_gates_then_final_response_once(cx: &mut gpui::Tes
 fn gate_digest_effects_are_acknowledged_to_the_runtime(cx: &mut gpui::TestAppContext) {
     let (panel, commands) = panel(cx);
     panel.update(cx, |p, cx| {
+        // The SDK treats observations as diagnostic unless explicitly enabled.
+        p.prompt_queue
+            .auto_poke
+            .policy
+            .as_mut()
+            .unwrap()
+            .set_gate_digest_enabled(true);
         p.submit_or_queue("work".into(), vec![], false, cx);
         turn_done(p, cx);
     });

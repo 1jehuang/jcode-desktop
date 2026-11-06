@@ -195,10 +195,19 @@ mod tests {
             .unwrap()
             .unwrap();
             assert_eq!(announced, [latest.clone()]);
-            let crate::Outcome::Installed { version, relaunch, kind, fresh } = outcome else {
+            let crate::Outcome::Installed {
+                version,
+                relaunch,
+                kind,
+                fresh,
+            } = outcome
+            else {
                 panic!("expected an install");
             };
-            assert_eq!((version, kind, fresh), (latest.clone(), crate::InstallKind::Portable, true));
+            assert_eq!(
+                (version, kind, fresh),
+                (latest.clone(), crate::InstallKind::Portable, true)
+            );
             assert_eq!(relaunch, executable);
             let dir = executable.parent().unwrap();
             for name in archive::files(&target) {
@@ -223,9 +232,15 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-            assert!(matches!(again, crate::Outcome::Installed { fresh: false, .. }));
+            assert!(matches!(
+                again,
+                crate::Outcome::Installed { fresh: false, .. }
+            ));
 
-            Portable { dir: dir.to_path_buf() }.cleanup();
+            Portable {
+                dir: dir.to_path_buf(),
+            }
+            .cleanup();
             assert_eq!(fs::read_dir(dir).unwrap().count(), 7); // 5 files, version, lock
         }
     }
@@ -271,7 +286,10 @@ mod tests {
         .unwrap_err();
         assert_eq!(failure.stage, "verify");
         for name in archive::files(&target) {
-            assert_eq!(fs::read(executable.parent().unwrap().join(name)).unwrap(), b"old");
+            assert_eq!(
+                fs::read(executable.parent().unwrap().join(name)).unwrap(),
+                b"old"
+            );
         }
     }
 
@@ -285,7 +303,9 @@ mod tests {
         for name in &archive::UNIX_FILES[..2] {
             fs::write(staged.path().join(name), b"new").unwrap();
         }
-        let portable = Portable { dir: dir.to_path_buf() };
+        let portable = Portable {
+            dir: dir.to_path_buf(),
+        };
         let error = portable
             .activate(&target, staged.path(), &Version::parse("0.6.0").unwrap())
             .unwrap_err();

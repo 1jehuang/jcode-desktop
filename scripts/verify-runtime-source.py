@@ -13,7 +13,11 @@ import tomllib
 
 
 API_REQUIREMENTS = {
-    "crates/jcode-harness-api/src/events.rs": (r"pub\s+user_connected\s*:\s*bool",),
+    "crates/jcode-harness-api/src/events.rs": (
+        r"pub\s+user_connected\s*:\s*bool",
+        r"account_label\s*:\s*Option<String>",
+        r"effective_budget\s*:\s*Option<usize>",
+    ),
     "crates/jcode-sdk/src/client.rs": (
         r"pub\s+supports_user_response\s*:\s*bool",
         r"pub\s+fn\s+runtime_command\s*\(",

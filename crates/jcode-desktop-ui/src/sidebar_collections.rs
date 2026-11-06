@@ -375,12 +375,7 @@ impl Workspace {
             .and_then(|id| self.collections.store.get(id))
             .cloned()
             .unwrap_or_default();
-        let name = self.form_input(
-            "e.g. Q4 research",
-            &existing.name,
-            window,
-            cx,
-        );
+        let name = self.form_input("e.g. Q4 research", &existing.name, window, cx);
         let directory = self.form_input(
             "Optional, e.g. ~/work",
             existing.default_dir.as_deref().unwrap_or_default(),

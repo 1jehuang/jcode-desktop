@@ -130,8 +130,6 @@ pub(crate) mod applet_panel;
 pub(crate) mod demo_replay;
 #[path = "panel_gmail_draft_card.rs"]
 mod gmail_draft_card;
-#[path = "panel_user_response.rs"]
-mod user_response;
 #[path = "panel_gmail_read_card.rs"]
 mod gmail_read_card;
 #[path = "panel_mcp_list_card.rs"]
@@ -144,6 +142,8 @@ mod response_stats;
 mod side_document;
 #[path = "panel_tab_outline.rs"]
 mod tab_outline;
+#[path = "panel_user_response.rs"]
+mod user_response;
 pub(crate) use tab_outline::TabRing;
 #[path = "panel_tool_streaming.rs"]
 mod tool_streaming;
@@ -2749,8 +2749,7 @@ impl Panel {
         let finished_unseen = match (was_active, active) {
             (false, true) => false,
             (true, false) => {
-                !self.surface_focused
-                    && self.minimap_state() != MinimapSessionState::Error
+                !self.surface_focused && self.minimap_state() != MinimapSessionState::Error
             }
             _ => return,
         };
@@ -3104,9 +3103,7 @@ impl Panel {
             || cx.reduce_motion()
             || crate::config::get().appearance.reduce_motion;
         let now = Instant::now();
-        let text = self
-            .text_reveal
-            .tick(&self.streaming_text, now, instant);
+        let text = self.text_reveal.tick(&self.streaming_text, now, instant);
         let reasoning = self
             .reasoning_reveal
             .tick(&self.streaming_reasoning, now, instant);
@@ -4859,7 +4856,7 @@ impl Render for Panel {
             // Capture before List mutably borrows its state during row rendering.
             let response_viewport_height = (self.transcript_list.viewport_bounds().size.height
                 - px(dock_pad + prompt::PROMPT_TOP_PADDING))
-                .max(px(1.));
+            .max(px(1.));
             transcript_shell
                 .child(
                     list(
@@ -5890,7 +5887,11 @@ fn render_todo_marker(todo: &TodoCardItem, id: String) -> impl IntoElement {
             marker.child(div().size_full().rounded_full().bg(color))
         })
         .when(todo.status == "in_progress", |marker| {
-            let dot = if confidence.is_some() { color } else { Theme::global().ACCENT };
+            let dot = if confidence.is_some() {
+                color
+            } else {
+                Theme::global().ACCENT
+            };
             marker
                 .p(px(3.0))
                 .child(div().size_full().rounded_full().bg(dot))
@@ -6274,14 +6275,12 @@ fn render_todo_card_with_style(
                                 )
                                 .child(
                                     div()
-                                        .text_color(todo_tone_color(
-                                            intent_understanding_tone(state),
-                                        ))
+                                        .text_color(todo_tone_color(intent_understanding_tone(
+                                            state,
+                                        )))
                                         .child(state.as_str()),
                                 )
-                                .child(
-                                    div().text_color(Theme::global().TEXT_DIM).child(":"),
-                                ),
+                                .child(div().text_color(Theme::global().TEXT_DIM).child(":")),
                         )
                     })
                     .child(

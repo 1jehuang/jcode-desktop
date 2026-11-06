@@ -319,7 +319,11 @@ pub(crate) mod tests {
     fn checksums_are_exact_unique_and_support_historical_paths() {
         let hash = "ab".repeat(32);
         assert_eq!(
-            checksum(&format!("{hash}  /build/archive.tar.gz\n"), "archive.tar.gz").unwrap(),
+            checksum(
+                &format!("{hash}  /build/archive.tar.gz\n"),
+                "archive.tar.gz"
+            )
+            .unwrap(),
             hash
         );
         assert!(checksum(&format!("{hash}  other.tar.gz"), "archive.tar.gz").is_err());
@@ -342,12 +346,21 @@ pub(crate) mod tests {
     #[test]
     fn tar_accepts_only_manifest_and_strips_dangerous_permissions() {
         let dir = tempfile::tempdir().unwrap();
-        let paths: Vec<_> = UNIX_FILES.iter().map(|name| format!("release/{name}")).collect();
+        let paths: Vec<_> = UNIX_FILES
+            .iter()
+            .map(|name| format!("release/{name}"))
+            .collect();
         let entries: Vec<_> = paths
             .iter()
             .map(|path| (path.as_str(), tar::EntryType::Regular))
             .collect();
-        extract_tar(reader(tarball(&entries)), dir.path(), "release", &UNIX_FILES).unwrap();
+        extract_tar(
+            reader(tarball(&entries)),
+            dir.path(),
+            "release",
+            &UNIX_FILES,
+        )
+        .unwrap();
         for name in UNIX_FILES {
             assert_eq!(fs::read(dir.path().join(name)).unwrap(), b"test");
             #[cfg(unix)]
@@ -375,8 +388,13 @@ pub(crate) mod tests {
         ] {
             let dir = tempfile::tempdir().unwrap();
             assert!(
-                extract_tar(reader(tarball(&[(path, kind)])), dir.path(), "release", &UNIX_FILES)
-                    .is_err(),
+                extract_tar(
+                    reader(tarball(&[(path, kind)])),
+                    dir.path(),
+                    "release",
+                    &UNIX_FILES
+                )
+                .is_err(),
                 "accepted {path} {kind:?}"
             );
         }
@@ -394,7 +412,10 @@ pub(crate) mod tests {
 
     #[test]
     fn corrupt_gzip_is_rejected() {
-        let paths: Vec<_> = UNIX_FILES.iter().map(|name| format!("release/{name}")).collect();
+        let paths: Vec<_> = UNIX_FILES
+            .iter()
+            .map(|name| format!("release/{name}"))
+            .collect();
         let entries: Vec<_> = paths
             .iter()
             .map(|path| (path.as_str(), tar::EntryType::Regular))
@@ -413,8 +434,10 @@ pub(crate) mod tests {
                 .iter()
                 .map(|name| format!("release{separator}{name}"))
                 .collect();
-            let mut entries: Vec<(&str, &[u8])> =
-                names.iter().map(|name| (name.as_str(), &b"test"[..])).collect();
+            let mut entries: Vec<(&str, &[u8])> = names
+                .iter()
+                .map(|name| (name.as_str(), &b"test"[..]))
+                .collect();
             entries.insert(0, ("release/", b""));
             let dir = tempfile::tempdir().unwrap();
             extract_zip(zipfile(&entries), dir.path(), "release", &WINDOWS_FILES).unwrap();
@@ -426,9 +449,18 @@ pub(crate) mod tests {
 
     #[test]
     fn zip_rejects_unexpected_traversal_missing_and_duplicates() {
-        let full: Vec<_> = WINDOWS_FILES.iter().map(|name| format!("release/{name}")).collect();
-        let valid: Vec<(&str, &[u8])> = full.iter().map(|name| (name.as_str(), &b"x"[..])).collect();
-        for extra in ["release/evil.dll", "../release/jcode.exe", "release/sub/jcode.exe", "other/"] {
+        let full: Vec<_> = WINDOWS_FILES
+            .iter()
+            .map(|name| format!("release/{name}"))
+            .collect();
+        let valid: Vec<(&str, &[u8])> =
+            full.iter().map(|name| (name.as_str(), &b"x"[..])).collect();
+        for extra in [
+            "release/evil.dll",
+            "../release/jcode.exe",
+            "release/sub/jcode.exe",
+            "other/",
+        ] {
             let mut entries = valid.clone();
             entries.push((extra, b"x"));
             let dir = tempfile::tempdir().unwrap();
@@ -447,12 +479,17 @@ pub(crate) mod tests {
 
     #[test]
     fn network_errors_timeouts_and_size_limits_are_bounded() {
-        fn serve(response: &'static [u8], delay: Duration) -> (String, std::thread::JoinHandle<()>) {
+        fn serve(
+            response: &'static [u8],
+            delay: Duration,
+        ) -> (String, std::thread::JoinHandle<()>) {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             let url = format!("http://{}/release", listener.local_addr().unwrap());
             let worker = std::thread::spawn(move || {
                 let (mut stream, _) = listener.accept().unwrap();
-                stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
                 let mut request = [0; 4096];
                 let _ = stream.read(&mut request);
                 std::thread::sleep(delay);
@@ -466,17 +503,40 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         for (response, delay, limit) in [
-            (&b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n"[..], Duration::ZERO, 100),
-            (&b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest"[..], Duration::from_millis(250), 100),
-            (&b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest"[..], Duration::ZERO, 3),
-            (&b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\ntest"[..], Duration::ZERO, 3),
-            (&b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nshort"[..], Duration::ZERO, 100),
+            (
+                &b"HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n"[..],
+                Duration::ZERO,
+                100,
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest"[..],
+                Duration::from_millis(250),
+                100,
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest"[..],
+                Duration::ZERO,
+                3,
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\ntest"[..],
+                Duration::ZERO,
+                3,
+            ),
+            (
+                &b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nshort"[..],
+                Duration::ZERO,
+                100,
+            ),
         ] {
             let (url, worker) = serve(response, delay);
             assert!(download(&client, &url, &mut Vec::new(), limit).is_err());
             worker.join().unwrap();
         }
-        let (url, worker) = serve(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest", Duration::ZERO);
+        let (url, worker) = serve(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\ntest",
+            Duration::ZERO,
+        );
         let mut bytes = Vec::new();
         download(&client, &url, &mut bytes, 4).unwrap();
         worker.join().unwrap();

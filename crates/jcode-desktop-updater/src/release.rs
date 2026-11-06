@@ -210,11 +210,36 @@ mod tests {
     fn published_asset_names_match_every_supported_package() {
         let version = Version::parse("0.5.1").unwrap();
         for (os, arch, asset, sums) in [
-            ("linux", "x86_64", "Jcode-0.5.1-linux-x86_64.tar.gz", "SHA256SUMS-linux"),
-            ("linux", "aarch64", "Jcode-0.5.1-linux-aarch64.tar.gz", "SHA256SUMS-linux-aarch64"),
-            ("freebsd", "x86_64", "Jcode-0.5.1-freebsd-x86_64.tar.gz", "SHA256SUMS-freebsd-x86_64"),
-            ("windows", "x86_64", "Jcode-0.5.1-windows-x86_64.zip", "SHA256SUMS-windows"),
-            ("windows", "aarch64", "Jcode-0.5.1-windows-aarch64.zip", "SHA256SUMS-windows-aarch64"),
+            (
+                "linux",
+                "x86_64",
+                "Jcode-0.5.1-linux-x86_64.tar.gz",
+                "SHA256SUMS-linux",
+            ),
+            (
+                "linux",
+                "aarch64",
+                "Jcode-0.5.1-linux-aarch64.tar.gz",
+                "SHA256SUMS-linux-aarch64",
+            ),
+            (
+                "freebsd",
+                "x86_64",
+                "Jcode-0.5.1-freebsd-x86_64.tar.gz",
+                "SHA256SUMS-freebsd-x86_64",
+            ),
+            (
+                "windows",
+                "x86_64",
+                "Jcode-0.5.1-windows-x86_64.zip",
+                "SHA256SUMS-windows",
+            ),
+            (
+                "windows",
+                "aarch64",
+                "Jcode-0.5.1-windows-aarch64.zip",
+                "SHA256SUMS-windows-aarch64",
+            ),
         ] {
             let target = Target::for_platform(os, arch).unwrap();
             let (root, name) = target.archive_names(&version);
@@ -226,7 +251,12 @@ mod tests {
 
     #[test]
     fn unsupported_platforms_are_rejected() {
-        for (os, arch) in [("linux", "x86"), ("linux", "arm64"), ("macos", "aarch64"), ("linux", "../x86_64")] {
+        for (os, arch) in [
+            ("linux", "x86"),
+            ("linux", "arm64"),
+            ("macos", "aarch64"),
+            ("linux", "../x86_64"),
+        ] {
             let error = Target::for_platform(os, arch).unwrap_err();
             assert!(error.to_string().contains("unsupported architecture"));
         }

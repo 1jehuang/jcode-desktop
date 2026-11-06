@@ -50,9 +50,7 @@ fn secure_directory(path: &Path) -> Result<()> {
     let (uid, gid) = unsafe { (libc::geteuid(), libc::getegid()) };
     let mode = metadata.mode();
     ensure!(
-        metadata.uid() == uid
-            && mode & 0o002 == 0
-            && (mode & 0o020 == 0 || metadata.gid() == gid),
+        metadata.uid() == uid && mode & 0o002 == 0 && (mode & 0o020 == 0 || metadata.gid() == gid),
         "Managed directory must be owned by this user and not writable by others: {}",
         path.display()
     );
@@ -89,7 +87,8 @@ impl Managed {
     /// The managed install this executable runs from, if any.
     pub fn detect(home: &Path, executable: &Path) -> Result<Option<Self>> {
         let root = root_of(home);
-        let (Ok(root_real), Ok(executable)) = (fs::canonicalize(&root), fs::canonicalize(executable))
+        let (Ok(root_real), Ok(executable)) =
+            (fs::canonicalize(&root), fs::canonicalize(executable))
         else {
             return Ok(None);
         };
@@ -216,7 +215,10 @@ impl Managed {
     }
 
     fn switch_launcher(&self, destination: &Path) -> Result<()> {
-        let bin = self.launcher.parent().context("Launcher has no directory")?;
+        let bin = self
+            .launcher
+            .parent()
+            .context("Launcher has no directory")?;
         ensure_directory(bin)?;
         let switch = tempfile::Builder::new()
             .prefix(".jcode-desktop-switch-")
@@ -244,7 +246,11 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// The newest managed build when it is newer than the one running.
-pub(crate) fn redirect_target(home: &Path, executable: &Path, running: &Version) -> Option<PathBuf> {
+pub(crate) fn redirect_target(
+    home: &Path,
+    executable: &Path,
+    running: &Version,
+) -> Option<PathBuf> {
     let root = root_of(home);
     let newest = versions(&root).into_iter().next()?;
     if !crate::is_newer(&newest, running) {
@@ -275,7 +281,11 @@ pub(crate) fn prune(home: &Path, running: &Version) {
     }
     if let Ok(entries) = fs::read_dir(&root) {
         for entry in entries.flatten() {
-            if entry.file_name().to_str().is_some_and(|name| name.starts_with(".jcode-update-")) {
+            if entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with(".jcode-update-"))
+            {
                 let _ = fs::remove_dir_all(entry.path());
             }
         }
@@ -303,7 +313,12 @@ mod tests {
     fn install_version(home: &Path, version: &str, contents: &str) -> PathBuf {
         let directory = root_of(home).join(version);
         fs::create_dir_all(&directory).unwrap();
-        for directory in [".local", ".local/opt", ".local/opt/jcode-desktop", ".local/bin"] {
+        for directory in [
+            ".local",
+            ".local/opt",
+            ".local/opt/jcode-desktop",
+            ".local/bin",
+        ] {
             let path = home.join(directory);
             fs::create_dir_all(&path).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -337,7 +352,9 @@ mod tests {
         let launcher = launcher_of(home.path());
         symlink("../opt/jcode-desktop/0.5.0/jcode-desktop", &launcher).unwrap();
 
-        let outcome = update(home.path(), &executable, "0.5.0", "0.6.0").unwrap().unwrap();
+        let outcome = update(home.path(), &executable, "0.5.0", "0.6.0")
+            .unwrap()
+            .unwrap();
         let new = root_of(home.path()).join("0.6.0/jcode-desktop");
         assert_eq!(
             outcome,
@@ -354,10 +371,21 @@ mod tests {
         assert_eq!(fs::metadata(&new).unwrap().mode() & 0o777, 0o755);
 
         // A second request from the same old process does not download again.
-        let again = update(home.path(), &executable, "0.5.0", "0.6.0").unwrap().unwrap();
-        assert!(matches!(again, crate::Outcome::Installed { fresh: false, .. }));
-        assert_eq!(redirect_target(home.path(), &executable, &Version::parse("0.5.0").unwrap()), Some(new.clone()));
-        assert_eq!(redirect_target(home.path(), &new, &Version::parse("0.6.0").unwrap()), None);
+        let again = update(home.path(), &executable, "0.5.0", "0.6.0")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            again,
+            crate::Outcome::Installed { fresh: false, .. }
+        ));
+        assert_eq!(
+            redirect_target(home.path(), &executable, &Version::parse("0.5.0").unwrap()),
+            Some(new.clone())
+        );
+        assert_eq!(
+            redirect_target(home.path(), &new, &Version::parse("0.6.0").unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -367,7 +395,9 @@ mod tests {
         let executable = system.path().join("jcode-desktop");
         fs::write(&executable, "system desktop").unwrap();
 
-        let outcome = update(home.path(), &executable, "0.5.0", "0.6.0").unwrap().unwrap();
+        let outcome = update(home.path(), &executable, "0.5.0", "0.6.0")
+            .unwrap()
+            .unwrap();
         let managed = root_of(home.path()).join("0.6.0/jcode-desktop");
         assert!(matches!(
             &outcome,
@@ -376,9 +406,15 @@ mod tests {
         assert_eq!(fs::read(&executable).unwrap(), b"system desktop");
         assert_eq!(fs::read_link(launcher_of(home.path())).unwrap(), managed);
         let running = Version::parse("0.5.0").unwrap();
-        assert_eq!(redirect_target(home.path(), &executable, &running), Some(managed));
+        assert_eq!(
+            redirect_target(home.path(), &executable, &running),
+            Some(managed)
+        );
         // A newer system package wins over an older managed copy.
-        assert_eq!(redirect_target(home.path(), &executable, &Version::parse("0.7.0").unwrap()), None);
+        assert_eq!(
+            redirect_target(home.path(), &executable, &Version::parse("0.7.0").unwrap()),
+            None
+        );
     }
 
     #[test]
@@ -390,8 +426,13 @@ mod tests {
         install_version(home.path(), "0.1.0", "unused");
         let launcher = launcher_of(home.path());
         fs::write(&launcher, "#!/bin/sh\nexec my-own-wrapper\n").unwrap();
-        update(home.path(), &executable, "0.5.0", "0.6.0").unwrap().unwrap();
-        assert_eq!(fs::read_to_string(&launcher).unwrap(), "#!/bin/sh\nexec my-own-wrapper\n");
+        update(home.path(), &executable, "0.5.0", "0.6.0")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(&launcher).unwrap(),
+            "#!/bin/sh\nexec my-own-wrapper\n"
+        );
     }
 
     #[test]

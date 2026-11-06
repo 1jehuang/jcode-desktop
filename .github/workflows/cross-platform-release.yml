@@ -85,11 +85,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: 1jehuang/jcode
-          ref: 217c196bbd7038b57a682221b5f1611f2ccc5bc3 # verified runtime: native voice, collections, commands, user responses and session presence
+          ref: c22c4aa93c279865512b4233473ece33a119d4d8 # verified runtime: account labels, effective token budgets, voice, collections and session presence
           path: jcode
           submodules: recursive
       - name: Verify runtime source compatibility
-        run: python jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit 217c196bbd7038b57a682221b5f1611f2ccc5bc3
+        run: python jcode-desktop/scripts/verify-runtime-source.py --runtime jcode --expected-commit c22c4aa93c279865512b4233473ece33a119d4d8
       - name: Validate release target and publication contracts
         run: python -m unittest discover -s jcode-desktop/tests -p test_release_targets.py -v
       - name: Configure MSVC build environment

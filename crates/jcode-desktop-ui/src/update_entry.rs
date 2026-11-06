@@ -22,9 +22,12 @@ pub(crate) fn report(
     use jcode_desktop_updater::Outcome;
     let (to, kind, outcome, stage) = match result {
         Ok(Outcome::UpToDate { version }) => (version.to_string(), None, "up_to_date", None),
-        Ok(Outcome::Installed { version, kind, fresh: true, .. }) => {
-            (version.to_string(), Some(*kind), "success", None)
-        }
+        Ok(Outcome::Installed {
+            version,
+            kind,
+            fresh: true,
+            ..
+        }) => (version.to_string(), Some(*kind), "success", None),
         // Already reported by the attempt that installed it.
         Ok(Outcome::Installed { fresh: false, .. }) => return,
         Err(failure) => (String::new(), failure.kind, "failure", Some(failure.stage)),
@@ -61,7 +64,12 @@ pub fn run_update_command_if_requested() -> Option<i32> {
             println!("Jcode Desktop {version} is up to date");
             0
         }
-        Ok(jcode_desktop_updater::Outcome::Installed { version, relaunch, kind, .. }) => {
+        Ok(jcode_desktop_updater::Outcome::Installed {
+            version,
+            relaunch,
+            kind,
+            ..
+        }) => {
             println!(
                 "Installed Jcode Desktop {version} ({}) at {}",
                 kind.as_str(),

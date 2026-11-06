@@ -19,7 +19,9 @@ class RuntimeSourceTests(unittest.TestCase):
             sources[path] = f'[package]\nname = "{package}"\n[features]\n' + ''.join(
                 f'"{feature}" = []\n' for feature in features)
         sources.update({
-            'crates/jcode-harness-api/src/events.rs': 'pub user_connected: bool',
+            'crates/jcode-harness-api/src/events.rs': (
+                'pub user_connected: bool\naccount_label: Option<String>\neffective_budget: Option<usize>'
+            ),
             'crates/jcode-sdk/src/client.rs': 'pub supports_user_response: bool\npub fn runtime_command(',
             'crates/jcode-sdk/src/ssh.rs': 'pub supports_user_response: bool',
             'crates/jcode-sdk/src/collections.rs': 'pub fn create_with_id(',
@@ -53,6 +55,15 @@ class RuntimeSourceTests(unittest.TestCase):
             with self.subTest(path=path):
                 sources = self.sources()
                 sources[path] = '// API absent in older runtime'
+                with self.assertRaisesRegex(ValueError, 'Missing required runtime API'):
+                    RUNTIME.verify(ROOT, sources.__getitem__)
+
+    def test_required_runtime_metadata_fields_cannot_be_omitted(self):
+        path = 'crates/jcode-harness-api/src/events.rs'
+        for field in ('account_label: Option<String>', 'effective_budget: Option<usize>'):
+            with self.subTest(field=field):
+                sources = self.sources()
+                sources[path] = sources[path].replace(field, '')
                 with self.assertRaisesRegex(ValueError, 'Missing required runtime API'):
                     RUNTIME.verify(ROOT, sources.__getitem__)
 

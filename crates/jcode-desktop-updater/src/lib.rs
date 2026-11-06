@@ -175,7 +175,12 @@ pub fn update(running: &Version, progress: &mut dyn FnMut(Progress)) -> Result<O
         } else {
             archive::MAX_ARCHIVE
         };
-        archive::download(&client, &format!("{base}/{asset}"), &mut WriteRef(writer), limit)
+        archive::download(
+            &client,
+            &format!("{base}/{asset}"),
+            &mut WriteRef(writer),
+            limit,
+        )
     };
     let outcome = install_with(&environment, running, &latest, &fetch, &mut |version| {
         progress(Progress::Downloading {
@@ -225,7 +230,9 @@ pub(crate) fn install_with(
         return Ok(if is_newer(&installed, running) {
             Some(Outcome::Installed {
                 version: installed,
-                relaunch: install.relaunch_executable(environment).stage("detect", kind)?,
+                relaunch: install
+                    .relaunch_executable(environment)
+                    .stage("detect", kind)?,
                 kind: install.kind(),
                 fresh: false,
             })
@@ -259,7 +266,9 @@ pub(crate) fn install_with(
     fetch(&asset, &mut file).stage("download", kind)?;
     archive::verify(&mut file, &expected).stage("verify", kind)?;
     let content = stage.path().join("content");
-    fs::create_dir(&content).context("Creating staged bundle").stage("stage", kind)?;
+    fs::create_dir(&content)
+        .context("Creating staged bundle")
+        .stage("stage", kind)?;
     archive::extract(&environment.target, file, &content, &archive_root).stage("extract", kind)?;
     if environment.smoke_test {
         smoke_test(&content.join(environment.target.executable()), latest)
@@ -270,7 +279,9 @@ pub(crate) fn install_with(
         .stage("activate", kind)?;
     Ok(Some(Outcome::Installed {
         version: latest.clone(),
-        relaunch: install.relaunch_executable(environment).stage("activate", kind)?,
+        relaunch: install
+            .relaunch_executable(environment)
+            .stage("activate", kind)?,
         kind: install.kind(),
         fresh: true,
     }))
@@ -454,7 +465,11 @@ pub fn cleanup_after_update(running: &Version) {
 pub(crate) mod tests {
     use super::*;
 
-    pub(crate) fn environment(target: Target, executable: PathBuf, home: Option<PathBuf>) -> Environment {
+    pub(crate) fn environment(
+        target: Target,
+        executable: PathBuf,
+        home: Option<PathBuf>,
+    ) -> Environment {
         Environment {
             target,
             executable,
@@ -477,21 +492,24 @@ pub(crate) mod tests {
                 .iter()
                 .map(|name| (format!("{root}/{name}"), contents))
                 .collect();
-            let borrowed: Vec<(&str, &[u8])> =
-                entries.iter().map(|(name, bytes)| (name.as_str(), *bytes)).collect();
+            let borrowed: Vec<(&str, &[u8])> = entries
+                .iter()
+                .map(|(name, bytes)| (name.as_str(), *bytes))
+                .collect();
             let mut file = archive::tests::zipfile(&borrowed);
             let mut bytes = Vec::new();
             std::io::Read::read_to_end(&mut file, &mut bytes).unwrap();
             bytes
         } else {
-            let encoder =
-                flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
             let mut builder = tar::Builder::new(encoder);
             let mut header = tar::Header::new_gnu();
             header.set_entry_type(tar::EntryType::Directory);
             header.set_mode(0o755);
             header.set_size(0);
-            builder.append_data(&mut header, format!("{root}/"), &[][..]).unwrap();
+            builder
+                .append_data(&mut header, format!("{root}/"), &[][..])
+                .unwrap();
             for name in names {
                 let mut header = tar::Header::new_gnu();
                 header.set_mode(0o755);
@@ -522,14 +540,20 @@ pub(crate) mod tests {
         let binary = checkout.path().join("target/release/jcode-desktop");
         assert!(is_source_build(&binary));
         assert!(is_source_build(
-            &checkout.path().join("target/x86_64-pc-windows-msvc/debug/jcode-desktop.exe")
+            &checkout
+                .path()
+                .join("target/x86_64-pc-windows-msvc/debug/jcode-desktop.exe")
         ));
-        assert!(!is_source_build(&checkout.path().join("dist/jcode-desktop")));
+        assert!(!is_source_build(
+            &checkout.path().join("dist/jcode-desktop")
+        ));
         assert!(!is_source_build(Path::new("/usr/bin/jcode-desktop")));
         // A managed install staged by an acceptance test under target/.
         assert!(!is_source_build(&checkout.path().join(
             "target/ui-review/home/.local/opt/jcode-desktop/0.5.0/jcode-desktop"
         )));
-        assert!(!is_source_build(&checkout.path().join("target/release/jcode")));
+        assert!(!is_source_build(
+            &checkout.path().join("target/release/jcode")
+        ));
     }
 }

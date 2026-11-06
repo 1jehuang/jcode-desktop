@@ -459,7 +459,20 @@ pub(super) fn offline_data() -> AccountsData {
             login("openai", "openai-fox", "jeremy@work.dev", false),
             login("claude", "claude-otter", "jeremy@personal.dev", true),
         ],
-        pool: AccountPool::default(),
+        // Fixture labels can also exist in the real credential store. Pin their
+        // priorities so previews and tests never depend on local plan metadata.
+        pool: AccountPool {
+            priorities: [
+                "openai:openai-otter",
+                "openai:openai-fox",
+                "claude:claude-otter",
+                "openai-api",
+            ]
+            .into_iter()
+            .map(|key| (key.to_owned(), 1))
+            .collect(),
+            ..AccountPool::default()
+        },
         default_route: None,
         default_key: None,
     }
@@ -1316,7 +1329,7 @@ mod tests {
         // One Claude login: its single report is attributed to it.
         assert_eq!(rows[3].limits.len(), 2);
 
-        let groups = group_rows(rows, &AccountPool::default());
+        let groups = group_rows(rows, &data.pool);
         let pooled: Vec<_> = groups.pooled.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(
             pooled,

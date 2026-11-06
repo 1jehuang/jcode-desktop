@@ -95,8 +95,13 @@ fn stream_and_resize(
                 (canvas.size.width - px(natural_width * scale)).abs() <= px(1.),
                 "unexpected canvas width at window {width}: {canvas:?}, natural={natural_width}x{natural_height}"
             );
+            // Layout snaps the narrow fitted width to device pixels before
+            // applying aspect ratio. For very tall diagrams a subpixel width
+            // adjustment becomes several vertical pixels, so derive height
+            // from the actual width rather than loosening aspect-ratio checks.
+            let fitted_height = f32::from(canvas.size.width) * natural_height / natural_width;
             assert!(
-                (canvas.size.height - px(natural_height * scale)).abs() <= px(1.),
+                (canvas.size.height - px(fitted_height)).abs() <= px(1.),
                 "aspect ratio or height changed at window {width}: {canvas:?}, natural={natural_width}x{natural_height}"
             );
             assert!(canvas.size.width <= px(natural_width + 1.));
@@ -173,10 +178,13 @@ fn native_mermaid_tall_diagram_fits_shared_viewport_without_clipping(
             .collect::<Vec<_>>()
             .join("\n")
     );
-    let (_, height) = crate::markdown::mermaid_natural_size(&source);
+    let (width, height) = crate::markdown::mermaid_natural_size(&source);
     assert!(height > 1500., "fixture must require vertical fitting");
     let sizes = stream_and_resize(cx, &source, &[480., 1600., 480.]);
     for size in sizes {
-        assert!((size.canvas.size.height - px(520.)).abs() <= px(1.));
+        // At most one pixel of width quantization, propagated through the
+        // aspect ratio, may reduce the fitted height. It must never overflow.
+        assert!(size.canvas.size.height <= px(521.));
+        assert!(size.canvas.size.height >= px(520. - height / width - 1.));
     }
 }

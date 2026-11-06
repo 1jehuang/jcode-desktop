@@ -2,7 +2,9 @@
 //! short pill labels for voice outcomes, and the idle microphone/shortcut
 //! crossfade. Holds no panel state, so it is testable without a Panel.
 use crate::theme::Theme;
-use gpui::{Context, IntoElement, ParentElement, Render, Styled, Task, Window, div, prelude::*, px};
+use gpui::{
+    Context, IntoElement, ParentElement, Render, Styled, Task, Window, div, prelude::*, px,
+};
 use std::time::{Duration, Instant};
 
 #[cfg(not(any(target_os = "macos", target_os = "windows")))]

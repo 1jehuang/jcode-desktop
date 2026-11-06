@@ -26,8 +26,6 @@ pub mod memory;
 mod native_mermaid;
 #[cfg(test)]
 mod native_mermaid_integration_tests;
-#[cfg(test)]
-mod test_input;
 mod panel;
 mod pdf_viewer;
 mod performance;
@@ -36,13 +34,15 @@ mod preview_control;
 pub mod preview_state;
 mod publish;
 mod restart_spawn;
-pub mod update_entry;
 mod resume_content_search;
 mod sound_events;
 mod sounds;
 mod terminal;
+#[cfg(test)]
+mod test_input;
 mod tool_icon;
 mod ui_actions;
+pub mod update_entry;
 mod update_notes;
 mod updates;
 mod window_caption;

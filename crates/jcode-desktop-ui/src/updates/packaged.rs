@@ -117,7 +117,10 @@ fn run(requested: bool) {
             message: format!("Jcode Desktop update failed: {failure}. Run /update to retry."),
         },
         Err(failure) => {
-            eprintln!("background desktop update failed at {}: {failure}", failure.stage);
+            eprintln!(
+                "background desktop update failed at {}: {failure}",
+                failure.stage
+            );
             UpdateState::Idle
         }
     });

@@ -1,8 +1,8 @@
 //! Explicit Nari streaming dictation. Audio and interim text are never snapshotted.
 use super::*;
 use gpui::FutureExt as _;
-use jcode_voice::{self as voice, NariEvent, NariRecording, VoiceError};
 use jcode_base::voice_intent::{self, SessionCandidate, VoiceIntent};
+use jcode_voice::{self as voice, NariEvent, NariRecording, VoiceError};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 gpui::actions!(panel_voice, [ToggleVoice]);
@@ -157,7 +157,6 @@ impl Drop for VoiceState {
         }
     }
 }
-
 
 impl Panel {
     #[cfg(test)]
@@ -1015,7 +1014,6 @@ impl Panel {
     }
 }
 
-
 #[cfg(test)]
 #[path = "panel_voice_live_tests.rs"]
 mod live_tests;
@@ -1630,7 +1628,6 @@ mod tests {
             }
         }
     }
-
 
     #[gpui::test]
     fn voice_controls_render_and_cancel_without_network(cx: &mut gpui::TestAppContext) {
