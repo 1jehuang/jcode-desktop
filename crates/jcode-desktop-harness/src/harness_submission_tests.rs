@@ -107,6 +107,7 @@ mod socket_tests {
                             routes: vec![],
                             reasoning_effort: None,
                             auth_method: None,
+                            account_label: None,
                         },
                         ApiRequest::SendMessage { .. } => {
                             let events = on_send(&frame.request);

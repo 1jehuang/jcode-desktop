@@ -2096,6 +2096,7 @@ fn session_worker_with_connector(
                     routes: info.routes,
                     reasoning_effort: info.reasoning_effort,
                     auth_method: info.auth_method,
+                    account_label: info.account_label,
                 },
             });
         }
@@ -2122,6 +2123,7 @@ fn session_worker_with_connector(
                                     routes: info.routes,
                                     reasoning_effort: info.reasoning_effort,
                                     auth_method: info.auth_method,
+                                    account_label: info.account_label,
                                 },
                             });
                         }
@@ -2965,6 +2967,7 @@ mod tests {
                 model: Some(model),
                 reasoning_effort: None,
                 auth_method: None,
+                account_label: None,
                 routes: Vec::new(),
             },
         }
@@ -3210,6 +3213,7 @@ mod tests {
                 model: Some(model.into()),
                 reasoning_effort: None,
                 auth_method: None,
+                account_label: None,
                 routes: Vec::new(),
             },
         };

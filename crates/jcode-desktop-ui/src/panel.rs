@@ -1997,6 +1997,7 @@ impl Panel {
                         model: Some("openai:atlas-01".into()),
                         reasoning_effort: None,
                         auth_method: None,
+                        account_label: None,
                         routes,
                     },
                     cx,
@@ -7579,6 +7580,7 @@ mod tests {
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
                         auth_method: None,
+                        account_label: None,
                         routes: vec![unavailable, route("gpt-5.6-sol", "openai-api-key")],
                     },
                     cx,
@@ -7636,6 +7638,7 @@ mod tests {
                         model: Some("claude-opus-5-5".into()),
                         reasoning_effort: None,
                         auth_method: Some("api_key".into()),
+                        account_label: None,
                         routes: vec![
                             route("claude-opus-5-5", "claude-api"),
                             route("claude-opus-5-5", "claude-oauth"),
@@ -7652,6 +7655,7 @@ mod tests {
                         model: Some("claude-opus-5-5".into()),
                         reasoning_effort: None,
                         auth_method: Some("oauth".into()),
+                        account_label: None,
                     },
                     cx,
                 );
@@ -8713,6 +8717,7 @@ mod tests {
                         provider: Some("openai".into()),
                         model: Some("gpt-5.6-sol".into()),
                         auth_method: None,
+                        account_label: None,
                         routes: vec![jcode_sdk::ModelRouteInfo {
                             usage: None,
                             model: "gpt-5.6-sol".into(),
@@ -8732,6 +8737,7 @@ mod tests {
                         output: 8_000,
                         cache_read_input: Some(28_000),
                         cache_creation_input: None,
+                        effective_budget: None,
                     },
                     cx,
                 );
@@ -8748,6 +8754,7 @@ mod tests {
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
                         auth_method: None,
+                        account_label: None,
                     },
                     cx,
                 );
@@ -8763,6 +8770,7 @@ mod tests {
                         model: Some("claude-fable-5".into()),
                         reasoning_effort: None,
                         auth_method: None,
+                        account_label: None,
                     },
                     cx,
                 );
@@ -9244,6 +9252,7 @@ mod tests {
                         model: Some("gpt-5.6-sol".into()),
                         reasoning_effort: None,
                         auth_method: None,
+                        account_label: None,
                         routes: vec![
                             route("claude-fable-5", "anthropic-api-key"),
                             route("gpt-5.6-sol", "openai-oauth"),

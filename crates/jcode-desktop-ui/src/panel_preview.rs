@@ -47,6 +47,7 @@ impl Panel {
                 model: Some("preview-model".into()),
                 reasoning_effort: None,
                 auth_method: None,
+                account_label: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
                     usage: None,
                     model: "preview-model".into(),

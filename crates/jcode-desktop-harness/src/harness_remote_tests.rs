@@ -76,6 +76,7 @@ impl Server {
                         routes: vec![],
                         reasoning_effort: None,
                         auth_method: None,
+                        account_label: None,
                     },
                     ApiRequest::RuntimeCommand {
                         session_id,

@@ -31,6 +31,7 @@ fn replay_processing_and_usage(panel: &mut Panel, cx: &mut Context<Panel>) {
             output: 20,
             cache_read_input: None,
             cache_creation_input: None,
+            effective_budget: None,
         },
         cx,
     );

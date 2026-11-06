@@ -352,6 +352,7 @@ fn footer_and_account_model_actions_share_slash_menu_without_new_windows(
                 model: Some("test".into()),
                 reasoning_effort: None,
                 auth_method: None,
+                account_label: None,
                 routes: vec![jcode_sdk::ModelRouteInfo {
                     model: "test".into(),
                     provider: "openai".into(),

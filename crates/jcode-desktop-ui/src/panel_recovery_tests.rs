@@ -70,6 +70,7 @@ fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui
                 model: None,
                 reasoning_effort: None,
                 auth_method: None,
+                account_label: None,
                 routes: vec![
                     jcode_sdk::ModelRouteInfo {
                         usage: None,

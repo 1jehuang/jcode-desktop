@@ -477,6 +477,7 @@ mod tests {
                             output: 8_000,
                             cache_read_input: read,
                             cache_creation_input: write,
+                            effective_budget: None,
                         },
                         cx,
                     );

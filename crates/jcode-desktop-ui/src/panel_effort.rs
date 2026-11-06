@@ -193,6 +193,7 @@ mod tests {
                     model: Some(model.into()),
                     reasoning_effort: effort.map(str::to_string),
                     auth_method: None,
+                    account_label: None,
                 },
                 cx,
             );
@@ -303,6 +304,7 @@ mod tests {
                     model: Some("gpt-5.6-sol".into()),
                     reasoning_effort: Some("high".into()),
                     auth_method: None,
+                    account_label: None,
                 },
                 cx,
             );
@@ -319,6 +321,7 @@ mod tests {
                     model: Some("gpt-5.6-sol".into()),
                     reasoning_effort: None,
                     auth_method: None,
+                    account_label: None,
                 },
                 cx,
             );

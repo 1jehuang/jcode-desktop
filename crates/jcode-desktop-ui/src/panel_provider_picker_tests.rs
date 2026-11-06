@@ -28,6 +28,7 @@ fn method_pill_selects_existing_provider_inline(cx: &mut gpui::TestAppContext) {
                 model: Some("gpt-5.6-sol".into()),
                 reasoning_effort: None,
                 auth_method: Some("oauth".into()),
+                account_label: None,
                 routes: vec![
                     route("gpt-5.6-sol", "openai-oauth"),
                     route("claude-fable-5", "claude-oauth"),

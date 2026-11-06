@@ -228,6 +228,7 @@ mod tests {
             output,
             cache_read_input: cache,
             cache_creation_input: None,
+            effective_budget: None,
         }
     }
 
