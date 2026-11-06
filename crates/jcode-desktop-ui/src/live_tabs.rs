@@ -37,15 +37,9 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
             + 64.0
 }
 
-/// Reserve a compact tag only when a full selected tab still fits. The tag
-/// precedes FPS, so all other left-anchored header content shares this offset.
-pub(super) fn version_header_width(tab_budget: f32) -> f32 {
-    let version_width = version::pill_width();
-    if tab_budget >= version_width + 208.0 + TAB_GROUP_LABEL_WIDTH {
-        version_width
-    } else {
-        0.0
-    }
+/// Build metadata lives at the bottom, leaving the header to navigation.
+pub(super) fn version_header_width(_tab_budget: f32) -> f32 {
+    0.0
 }
 
 fn group_label_width(available: f32, group_count: usize) -> f32 {
@@ -971,9 +965,6 @@ impl Workspace {
                 }
             })
             .child(tabs)
-            .when(version_width > 0.0, |el| {
-                el.child(self.render_version_header(version_width, cx))
-            })
             .children(coach_chip)
             .child(self.render_next_workspace_button(cx))
             .child(

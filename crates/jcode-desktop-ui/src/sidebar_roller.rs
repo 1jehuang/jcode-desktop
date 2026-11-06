@@ -166,7 +166,7 @@ impl Workspace {
             .pl(px(sidebar_header_left_padding(fullscreen)))
             .pr(px(12.0))
             .py(px(6.0))
-            .bg(Theme::global().HEADER_BG)
+            .bg(Theme::global().PANEL_BG)
             .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
             .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
             .child(
@@ -176,9 +176,9 @@ impl Workspace {
                     .size(px(28.0))
                     .rounded_full()
                     .bg(if self.sidebar_roller.expanded {
-                        Theme::global().PANEL_BG
+                        Theme::global().TOOL_BG
                     } else {
-                        Theme::global().HEADER_BG
+                        Theme::global().PANEL_BG
                     })
                     .flex()
                     .items_center()

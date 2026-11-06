@@ -229,6 +229,8 @@ const STRIP_PADDING_Y: f32 = 0.0;
 const STRIP_PADDING_TOP: f32 = 6.0;
 /// Reserve a dedicated top row for the live-session folder tabs.
 const FOLDER_CONTENT_INSET: f32 = 32.0;
+/// Shared bottom metadata stays outside transcript and composer hit targets.
+const WORKSPACE_FOOTER_HEIGHT: f32 = 24.0;
 /// The session sheet sits flush against the sidebar and the window's right edge.
 const FOLDER_CONNECTOR_WIDTH: f32 = 0.0;
 const FOLDER_RIGHT_MARGIN: f32 = 0.0;
@@ -8384,7 +8386,9 @@ impl Render for Workspace {
         // so no chrome should reserve space for them.
         let fullscreen = window.is_fullscreen();
         let content_top_inset = content_top_inset(self.show_sidebar && !compact, fullscreen);
-        let viewport_h = (f32::from(viewport.height) - content_top_inset).max(0.0);
+        // Reserve the shared version footer outside the session canvas.
+        let viewport_h =
+            (f32::from(viewport.height) - content_top_inset - WORKSPACE_FOOTER_HEIGHT).max(0.0);
 
         let now = Instant::now();
         let overview_was_animating = self.overview_progress.is_animating();
@@ -8537,11 +8541,7 @@ impl Render for Workspace {
             .flex()
             .flex_col()
             .relative()
-            .bg(if folders {
-                Theme::global().HEADER_BG
-            } else {
-                Theme::global().BG
-            })
+            .bg(Theme::global().PANEL_BG)
             .when(folders, |el| {
                 el.child(folder_surface::background(self.folder_frame.clone()))
             })
@@ -8635,6 +8635,7 @@ impl Render for Workspace {
             .child(
                 div()
                     .debug_selector(|| "workspace-body".into())
+                    .pb(px(WORKSPACE_FOOTER_HEIGHT))
                     .relative()
                     .w_full()
                     .flex_1()
@@ -8703,6 +8704,7 @@ impl Render for Workspace {
                     root.child(self.render_compact_sidebar_overlay(fullscreen, drawer_progress, cx))
                 },
             )
+            .child(self.render_version_footer(version::pill_width(), cx))
             .when_some(performance, |root, performance| root.child(performance))
             .when(hints_progress > 0.0, |root| {
                 root.child(self.render_hints_overlay(hints_progress, cx))

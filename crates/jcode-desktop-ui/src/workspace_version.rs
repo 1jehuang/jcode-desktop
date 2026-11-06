@@ -1,4 +1,4 @@
-//! Workspace-wide version and updater status, kept out of individual chat footers.
+//! Workspace-wide version and updater status in the bottom chrome.
 use super::*;
 use crate::updates::{ReleaseStatus, UpdateState};
 
@@ -95,7 +95,7 @@ impl Workspace {
         }
     }
 
-    pub(super) fn render_version_header(
+    pub(super) fn render_version_footer(
         &mut self,
         width: f32,
         cx: &mut Context<Self>,
@@ -153,8 +153,8 @@ impl Workspace {
             .id("workspace-version")
             .debug_selector(|| "workspace-version".into())
             .absolute()
-            .left(px(4.0))
-            .top(px(5.0))
+            .right(px(8.0))
+            .bottom(px(3.0))
             .w(px(width - 4.0))
             .h(px(18.0))
             .rounded_full()
@@ -344,7 +344,7 @@ mod tests {
         );
     }
     #[gpui::test]
-    fn workspace_version_lives_in_header_and_update_button_runs_platform_action(
+    fn workspace_version_lives_in_footer_and_update_button_runs_platform_action(
         cx: &mut gpui::TestAppContext,
     ) {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -374,13 +374,13 @@ mod tests {
         draw(vcx);
         let header = vcx
             .debug_bounds("workspace-version")
-            .expect("version in header");
-        assert!(header.origin.y < px(100.));
+            .expect("version in footer");
+        assert!(header.origin.y > px(700.));
         assert_eq!(header.size.height, px(18.0));
         assert!(header.size.width < px(132.0), "idle version stays compact");
         let fps = vcx.debug_bounds("fps-counter").unwrap();
         let build = vcx.debug_bounds("workspace-build").unwrap();
-        assert!(header.right() <= fps.left());
+        assert!(header.top() > fps.bottom());
         assert!(build.size.height <= px(16.0));
         assert!(build.top() >= header.top() && build.bottom() <= header.bottom());
         assert!(vcx.debug_bounds("workspace-version-status").is_none());
@@ -416,7 +416,7 @@ mod tests {
         );
         assert!(
             vcx.debug_bounds("update-chip").is_none(),
-            "workspace uses header, not bottom overlay"
+            "workspace uses footer pill, not update overlay"
         );
         // Clicking the version text itself also checks for and applies updates.
         updates::clear_test_actions();

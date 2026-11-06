@@ -238,8 +238,8 @@ def caption_checks(name, hwnd, out_dir):
                            ("empty header drags", right - int(260 * scale), HTCAPTION)):
         got = hit_test(hwnd, x, cy)
         check(f"hit-test {label}", got == want, f"got={got} want={want}")
-    # The version pill, left of the tab row, is an interactive header control.
-    pill_hit = hit_test(hwnd, left + 8 + int(260 * scale), cy)
+    # The far-left sidebar menu remains an interactive header control.
+    pill_hit = hit_test(hwnd, left + 8 + int(26 * scale), cy)
     check("header control is clickable, not caption", pill_hit != HTCAPTION, f"got={pill_hit}")
     body_hit = hit_test(hwnd, left + (right - left) // 2, top + (bottom - top) // 2)
     check("content is client area", body_hit == 1, f"got={body_hit}")
