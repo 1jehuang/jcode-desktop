@@ -329,7 +329,7 @@ fn super_shift_slash_creates_correlated_help_and_records_its_prompt(cx: &mut gpu
         });
         assert!(
             matches!(commands.try_recv(), Ok(Command::Send { session_id: id, content, images })
-            if id == session_id && content == HELP_SESSION_PROMPT && images.is_empty())
+            if id == session_id && content == help_session_prompt() && images.is_empty())
         );
         assert!(
             commands.try_recv().is_err(),
