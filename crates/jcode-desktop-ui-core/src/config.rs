@@ -555,6 +555,11 @@ fn persist_value_at(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
+    // The shared jcode config can already be invalid outside Desktop's
+    // sections (for example a duplicated `[display.colors]` table written by
+    // another tool). This line-level edit cannot make that worse, so only
+    // refuse an edit that breaks a file which parsed before it.
+    let was_valid = parse(&text, standalone).is_ok();
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let section_index = lines.iter().position(|line| {
         line.split('#')
@@ -592,8 +597,10 @@ fn persist_value_at(
     }
     text = lines.join("\n");
     text.push('\n');
-    parse(&text, standalone)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    if was_valid {
+        parse(&text, standalone)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -1163,5 +1170,20 @@ mod tests {
             parse(&text, false).unwrap().appearance.layout_mode,
             LayoutMode::FolderTabs
         );
+    }
+}
+
+#[cfg(test)]
+mod persist_tolerance_tests {
+    #[test]
+    fn pinned_dir_saves_despite_unrelated_duplicate_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "[display.colors]\n\n[display.colors]\n";
+        std::fs::write(&path, original).unwrap();
+        super::persist_pinned_working_dir_at(&path, false, "/tmp/project").unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(original));
+        assert!(text.contains("[desktop.workspace]\npinned_working_dir = \"/tmp/project\""));
     }
 }
