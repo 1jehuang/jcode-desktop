@@ -4,6 +4,7 @@ use super::*;
 fn history(prompt: &str) -> Vec<jcode_sdk::HistoryMessage> {
     vec![jcode_sdk::HistoryMessage {
         response_stats: None,
+        tool: None,
         role: "user".into(),
         content: prompt.into(),
     }]

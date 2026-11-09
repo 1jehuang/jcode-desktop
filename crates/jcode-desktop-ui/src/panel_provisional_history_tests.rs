@@ -5,6 +5,7 @@ fn history(pairs: &[(&str, &str)]) -> crate::persisted_history::History {
         .iter()
         .map(|(role, content)| jcode_sdk::HistoryMessage {
             response_stats: None,
+            tool: None,
             role: (*role).into(),
             content: (*content).into(),
         })

@@ -358,10 +358,12 @@ mod tests {
                     role: "user".into(),
                     content: "Question".into(),
                     response_stats: None,
+                    tool: None,
                 },
                 jcode_sdk::HistoryMessage {
                     role: "assistant".into(),
                     content: "Answer".into(),
+                    tool: None,
                     response_stats: Some(jcode_sdk::ResponseStats {
                         input_tokens: Some(12_000),
                         output_tokens: Some(500),

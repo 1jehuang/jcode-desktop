@@ -27,6 +27,7 @@ fn tool(call: &str) -> Item {
 fn message(role: &str, content: &str) -> jcode_sdk::HistoryMessage {
     jcode_sdk::HistoryMessage {
         response_stats: None,
+        tool: None,
         role: role.into(),
         content: content.into(),
     }

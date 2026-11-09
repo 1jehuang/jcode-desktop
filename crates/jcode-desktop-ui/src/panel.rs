@@ -6857,6 +6857,7 @@ mod tests {
                 vec![
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        tool: None,
                         role: "user".into(),
                         content: (0..80)
                             .map(|line| format!("Detailed request line {line}"))
@@ -6865,6 +6866,7 @@ mod tests {
                     },
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        tool: None,
                         role: "assistant".into(),
                         content: (0..80)
                             .map(|line| format!("Detailed response line {line}"))
@@ -6910,11 +6912,13 @@ mod tests {
                 vec![
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        tool: None,
                         role: "user".into(),
                         content: "Fix the rendering".into(),
                     },
                     jcode_sdk::HistoryMessage {
                         response_stats: None,
+                        tool: None,
                         role: "assistant".into(),
                         content: "Fixed.".into(),
                     },
@@ -7032,6 +7036,7 @@ mod tests {
             let history = (0..80)
                 .map(|index| jcode_sdk::HistoryMessage {
                     response_stats: None,
+                    tool: None,
                     role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
                     content: format!("restored message {index}"),
                 })
@@ -8827,12 +8832,12 @@ mod tests {
             panel.load_history(
                 vec![
                     jcode_sdk::HistoryMessage {
-                        response_stats: None,
+                        response_stats: None, tool: None,
                         role: "user".into(),
                         content: "hello".into(),
                     },
                     jcode_sdk::HistoryMessage {
-                        response_stats: None,
+                        response_stats: None, tool: None,
                         role: "assistant".into(),
                         content: "recovered response".into(),
                     },
@@ -8849,8 +8854,8 @@ mod tests {
             *panel.items = vec![Item::User("next".into())];
             panel.streaming_text = "partial".into();
             panel.load_history(
-                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None }, jcode_sdk::HistoryMessage {
-                    response_stats: None,
+                vec![jcode_sdk::HistoryMessage { role: "user".into(), content: "next".into(), response_stats: None, tool: None }, jcode_sdk::HistoryMessage {
+                    response_stats: None, tool: None,
                     role: "assistant".into(),
                     content: "partial response completed".into(),
                 }],
@@ -8926,6 +8931,7 @@ mod tests {
             panel.load_history(
                 vec![jcode_sdk::HistoryMessage {
                     response_stats: None,
+                    tool: None,
                     role: "user".into(),
                     content: "what is in this?".into(),
                 }],

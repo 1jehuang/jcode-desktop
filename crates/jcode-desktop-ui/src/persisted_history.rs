@@ -42,6 +42,15 @@ pub(crate) fn render(session: &jcode_base::session::Session) -> History {
                 .response_stats
                 .and_then(|stats| serde_json::to_value(stats).ok())
                 .and_then(|stats| serde_json::from_value(stats).ok()),
+            tool: (message.role == "tool")
+                .then_some(message.tool_data)
+                .flatten()
+                .filter(|call| !call.id.is_empty())
+                .map(|call| jcode_sdk::HistoryTool {
+                    id: call.id,
+                    name: call.name,
+                    input: call.input,
+                }),
             role: message.role,
             content: message.content,
         })
