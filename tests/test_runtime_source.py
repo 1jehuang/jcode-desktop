@@ -20,7 +20,8 @@ class RuntimeSourceTests(unittest.TestCase):
                 f'"{feature}" = []\n' for feature in features)
         sources.update({
             'crates/jcode-harness-api/src/events.rs': (
-                'pub user_connected: bool\naccount_label: Option<String>\neffective_budget: Option<usize>'
+                'pub user_connected: bool\naccount_label: Option<String>\neffective_budget: Option<usize>\n'
+                'pub struct HistoryTool {\npub tool: Option<HistoryTool>'
             ),
             'crates/jcode-sdk/src/client.rs': 'pub supports_user_response: bool\npub fn runtime_command(',
             'crates/jcode-sdk/src/ssh.rs': 'pub supports_user_response: bool',
@@ -60,7 +61,8 @@ class RuntimeSourceTests(unittest.TestCase):
 
     def test_required_runtime_metadata_fields_cannot_be_omitted(self):
         path = 'crates/jcode-harness-api/src/events.rs'
-        for field in ('account_label: Option<String>', 'effective_budget: Option<usize>'):
+        for field in ('account_label: Option<String>', 'effective_budget: Option<usize>',
+                      'pub struct HistoryTool', 'pub tool: Option<HistoryTool>'):
             with self.subTest(field=field):
                 sources = self.sources()
                 sources[path] = sources[path].replace(field, '')
