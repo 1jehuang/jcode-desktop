@@ -555,11 +555,18 @@ fn persist_value_at(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(error) => return Err(error),
     };
-    // The shared jcode config can already be invalid outside Desktop's
-    // sections (for example a duplicated `[display.colors]` table written by
-    // another tool). This line-level edit cannot make that worse, so only
-    // refuse an edit that breaks a file which parsed before it.
-    let was_valid = parse(&text, standalone).is_ok();
+    // The shared jcode config can already hold a duplicated table outside
+    // Desktop's sections (for example a second pasted `[display.colors]`).
+    // The file is still line-structured, so this edit cannot make it worse and
+    // must not be refused. Any other parse failure means the structure itself
+    // is unknown, so the file is left untouched.
+    let tolerated_duplicate = match parse(&text, standalone) {
+        Ok(_) => false,
+        Err(error) if is_duplicate_table(&error) => true,
+        Err(error) => {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+        }
+    };
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let section_index = lines.iter().position(|line| {
         line.split('#')
@@ -584,7 +591,9 @@ fn persist_value_at(
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
             let span = values[key].span();
             tail.replace_range(span, value);
-            lines.splice(index..end, tail.lines().map(str::to_owned));
+            // `split`, not `lines`: a trailing blank line before the next
+            // table must survive the round trip.
+            lines.splice(index..end, tail.split('\n').map(str::to_owned));
         } else {
             lines.insert(start + 1, format!("{key} = {value}"));
         }
@@ -597,9 +606,16 @@ fn persist_value_at(
     }
     text = lines.join("\n");
     text.push('\n');
-    if was_valid {
-        parse(&text, standalone)
-            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    match parse(&text, standalone) {
+        Ok(_) => {}
+        // Still the pre-existing duplicate, and Desktop's own tables parse.
+        Err(error)
+            if tolerated_duplicate
+                && is_duplicate_table(&error)
+                && parse(&desktop_sections(&text, standalone), standalone).is_ok() => {}
+        Err(error) => {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+        }
     }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -1173,8 +1189,61 @@ mod tests {
     }
 }
 
+/// toml reports a repeated header as "invalid table header\nduplicate key ...".
+fn is_duplicate_table(error: &toml::de::Error) -> bool {
+    error.message().contains("duplicate key")
+}
+
+/// Only the tables Desktop owns, so they can be validated on their own when
+/// an unrelated part of the shared file does not parse.
+fn desktop_sections(text: &str, standalone: bool) -> String {
+    if standalone {
+        return text.to_owned();
+    }
+    let mut owned = false;
+    let mut out = String::new();
+    for line in text.lines() {
+        let header = line.split('#').next().unwrap_or_default().trim();
+        if header.starts_with('[') {
+            let name = header.trim_matches(|c| c == '[' || c == ']').trim();
+            owned = name == "desktop" || name.starts_with("desktop.");
+        }
+        if owned {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod persist_tolerance_tests {
+    #[test]
+    fn duplicate_inside_desktop_sections_is_still_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let original = "[desktop.workspace]\nsidebar = true\n\n[desktop.workspace]\n";
+        std::fs::write(&path, original).unwrap();
+        assert!(super::persist_pinned_working_dir_at(&path, false, "/tmp/project").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn pinned_dir_updates_in_place_beside_a_duplicate_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[display.colors]\n\n[desktop.workspace]\npinned_working_dir = \"/old\"\n\n[display.colors]\nai = \"#ffaa00\"\n",
+        )
+        .unwrap();
+        super::persist_pinned_working_dir_at(&path, false, "/tmp/project").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[display.colors]\n\n[desktop.workspace]\npinned_working_dir = \"/tmp/project\"\n\n[display.colors]\nai = \"#ffaa00\"\n"
+        );
+    }
+
     #[test]
     fn pinned_dir_saves_despite_unrelated_duplicate_table() {
         let dir = tempfile::tempdir().unwrap();

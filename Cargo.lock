@@ -4682,6 +4682,7 @@ dependencies = [
  "cpal",
  "futures",
  "jcode-base",
+ "jcode-provider-env",
  "libc",
  "regex",
  "reqwest 0.12.28",
@@ -4690,6 +4691,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tokio-tungstenite",
+ "webpki-roots",
  "zbus",
 ]
 

@@ -17,6 +17,8 @@ API_REQUIREMENTS = {
         r"pub\s+user_connected\s*:\s*bool",
         r"account_label\s*:\s*Option<String>",
         r"effective_budget\s*:\s*Option<usize>",
+        r"pub\s+struct\s+HistoryTool\b",
+        r"pub\s+tool\s*:\s*Option<HistoryTool>",
     ),
     "crates/jcode-sdk/src/client.rs": (
         r"pub\s+supports_user_response\s*:\s*bool",
