@@ -319,7 +319,7 @@ impl Workspace {
             .pt(px(6.0))
             .pr_2()
             .pb_2()
-            .occlude()
+            // The transparent bridge must not occlude the sidebar controls below it.
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 if !*hovered && this.sidebar_roller.expanded {
                     this.sidebar_roller.expanded = false;
@@ -331,6 +331,11 @@ impl Workspace {
             .child(
                 div()
                     .debug_selector(|| "sidebar-section-menu".into())
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    })
+                    .on_mouse_up(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .p_2()
                     .rounded_xl()
                     .border_1()
@@ -458,6 +463,30 @@ mod tests {
         assert!(
             vcx.debug_bounds("theme-settings").is_some(),
             "leaving keeps the live selection"
+        );
+    }
+
+    #[gpui::test]
+    fn open_menu_does_not_block_sidebar_buttons(cx: &mut gpui::TestAppContext) {
+        let (_, vcx) = cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
+        vcx.update(|window, cx| window.simulate_mouse_move(trigger.center(), cx));
+        vcx.run_until_parked();
+        let button = vcx.debug_bounds("sidebar-new-collection").unwrap();
+        let bridge = vcx.debug_bounds("sidebar-roller-popout").unwrap();
+        assert!(
+            bridge.contains(&button.center()),
+            "exercise the transparent hover bridge"
+        );
+        vcx.update(|window, cx| window.simulate_mouse_move(button.center(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-section-menu").is_some());
+        vcx.simulate_click(button.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("collection-form").is_some(),
+            "sidebar button remains clickable with the menu open"
         );
     }
 
