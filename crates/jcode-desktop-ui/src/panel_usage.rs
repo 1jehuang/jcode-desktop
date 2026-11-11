@@ -399,7 +399,11 @@ impl Panel {
         if let Some((cost, turns)) = self.session_api_cost() {
             let detail = format!(
                 "{}: estimated API spend for this session, priced from {turns} reported response{} at list rates. Not a bill.",
-                account_method_label(self.provider.as_deref(), self.auth_method.as_deref()),
+                serving_account_label(
+                    self.provider.as_deref(),
+                    self.auth_method.as_deref(),
+                    self.account_label.as_deref()
+                ),
                 if turns == 1 { "" } else { "s" },
             );
             row = row.child(

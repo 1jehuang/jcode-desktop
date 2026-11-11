@@ -44,7 +44,11 @@ impl Panel {
         let account_label = if screenshot_mode {
             "Account hidden".to_string()
         } else {
-            account_method_label(self.provider.as_deref(), self.auth_method.as_deref())
+            serving_account_label(
+                self.provider.as_deref(),
+                self.auth_method.as_deref(),
+                self.account_label.as_deref(),
+            )
         };
         let model_label = pretty_model_label(self.model.as_deref());
         let limits = (!screenshot_mode)

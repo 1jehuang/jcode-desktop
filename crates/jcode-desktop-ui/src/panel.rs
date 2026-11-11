@@ -459,6 +459,7 @@ pub struct Panel {
     pub provider: Option<String>,
     /// Credential route for the current model, e.g. `oauth` or `api key`.
     pub auth_method: Option<String>,
+    pub account_label: Option<String>,
     /// Reasoning effort, e.g. `high`, when the provider exposes it.
     pub reasoning_effort: Option<String>,
     /// Effort requests the runtime has not answered yet.
@@ -936,6 +937,7 @@ impl Panel {
             model: usage_fixture.then(|| "gpt-5.6-sol".into()),
             provider: usage_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
+            account_label: None,
             reasoning_effort: usage_fixture.then(|| "high".into()),
             pending_effort: None,
             pending_save_requests: 0,
@@ -2975,6 +2977,7 @@ impl Panel {
                 model,
                 reasoning_effort,
                 auth_method,
+                account_label,
                 ..
             } => {
                 if provider.is_some() {
@@ -2989,6 +2992,7 @@ impl Panel {
                 if model.is_some() && *model != self.model {
                     self.model = model.clone();
                     self.auth_method = None;
+                    self.account_label = None;
                     self.input.update(cx, |input, cx| {
                         input.set_current_model(self.model.clone(), cx)
                     });
@@ -2997,6 +3001,11 @@ impl Panel {
                 // an OAuth<->API key switch that keeps the same model id.
                 if let Some(method) = auth_method.as_deref() {
                     self.auth_method = Some(human_auth_method(method));
+                    // A resolved credential report is authoritative even when
+                    // it clears a previous named OAuth account for an API key.
+                    self.account_label = account_label.clone();
+                } else if account_label.is_some() {
+                    self.account_label = account_label.clone();
                 }
                 self.sync_effort_menu(cx);
             }
@@ -3005,6 +3014,7 @@ impl Panel {
                 model,
                 reasoning_effort,
                 auth_method,
+                account_label,
                 routes,
                 ..
             } => {
@@ -3015,6 +3025,7 @@ impl Panel {
                 if model.is_some() {
                     self.model = model.clone();
                 }
+                self.account_label = account_label.clone();
                 self.auth_method = auth_method
                     .as_deref()
                     .map(human_auth_method)
@@ -4255,6 +4266,36 @@ impl Panel {
         window.focus(&handle, cx);
     }
 
+    /// Only neutral reading surfaces may hand typing back to the composer.
+    /// Never redirect keys from another editor, picker, terminal or dialog.
+    pub(crate) fn resume_composer_typing(
+        &self,
+        event: &gpui::KeyDownEvent,
+        workspace_focused: bool,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> bool {
+        let key = &event.keystroke;
+        if key.modifiers.control || key.modifiers.platform || key.modifiers.alt
+            || !key.key_char.as_deref().is_some_and(|text| {
+                !text.is_empty() && text.chars().all(|c| !c.is_control())
+            })
+            || self.transcript_only
+            || self.input_focus_handle(cx) != self.input.read(cx).focus_handle
+            || !(workspace_focused
+                || self.transcript_selection.read(cx).focus_handle().is_focused(window))
+        {
+            return false;
+        }
+        self.focus_input(window, cx);
+        self.input.update(cx, |input, cx| {
+            gpui::EntityInputHandler::replace_text_in_range(
+                input, None, key.key_char.as_deref().unwrap(), window, cx,
+            );
+        });
+        true
+    }
+
     /// Whether keys typed now are delivered to this panel: its composer, its
     /// current primary surface, or its selectable transcript.
     pub(crate) fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
@@ -5139,6 +5180,11 @@ impl Render for Panel {
                     panel.step_effort(-1, cx);
                 }),
             )
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.resume_composer_typing(event, false, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                 if this.login.is_some() && event.keystroke.key == "escape" {
                     this.close_login_picker(cx);
@@ -5384,7 +5430,7 @@ impl Render for Panel {
                 cx.listener(|this, _event, window, cx| {
                     // A read-only preview must not steal focus from its host.
                     if !this.transcript_only {
-                        this.focus_input(window, cx);
+                        window.focus(&this.transcript_selection.read(cx).focus_handle(), cx);
                     }
                     cx.notify();
                 }),
@@ -5599,6 +5645,18 @@ fn format_tool_elapsed(elapsed: Duration) -> String {
         format!("{}m {:02}s", secs / 60, secs % 60)
     } else {
         format!("{}h {:02}m", secs / 3600, secs % 3600 / 60)
+    }
+}
+
+fn serving_account_label(
+    provider: Option<&str>,
+    auth_method: Option<&str>,
+    account: Option<&str>,
+) -> String {
+    let method = account_method_label(provider, auth_method);
+    match account.map(str::trim).filter(|account| !account.is_empty()) {
+        Some(account) => format!("{method} · {account}"),
+        None => method,
     }
 }
 
@@ -7678,7 +7736,7 @@ mod tests {
                         model: Some("claude-opus-5-5".into()),
                         reasoning_effort: None,
                         auth_method: Some("api_key".into()),
-                        account_label: None,
+                        account_label: Some("initial".into()),
                         routes: vec![
                             route("claude-opus-5-5", "claude-api"),
                             route("claude-opus-5-5", "claude-oauth"),
@@ -7687,6 +7745,7 @@ mod tests {
                     cx,
                 );
                 assert_eq!(panel.auth_method.as_deref(), Some("api key"));
+                assert_eq!(panel.account_label.as_deref(), Some("initial"));
                 // A same-model credential switch reported by the daemon.
                 panel.apply(
                     &ApiEvent::ModelInfo {
@@ -7695,11 +7754,37 @@ mod tests {
                         model: Some("claude-opus-5-5".into()),
                         reasoning_effort: None,
                         auth_method: Some("oauth".into()),
-                        account_label: None,
+                        account_label: Some("work".into()),
                     },
                     cx,
                 );
                 assert_eq!(panel.auth_method.as_deref(), Some("oauth"));
+                assert_eq!(panel.account_label.as_deref(), Some("work"));
+                // Automatic failover can change the account without changing model or auth.
+                panel.apply(
+                    &ApiEvent::ModelInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("Claude".into()),
+                        model: Some("claude-opus-5-5".into()),
+                        reasoning_effort: None,
+                        auth_method: Some("oauth".into()),
+                        account_label: Some("personal".into()),
+                    },
+                    cx,
+                );
+                assert_eq!(panel.account_label.as_deref(), Some("personal"));
+                panel.apply(
+                    &ApiEvent::ModelInfo {
+                        session_id: "session-a".into(),
+                        provider: Some("Claude".into()),
+                        model: Some("claude-opus-5-5".into()),
+                        reasoning_effort: None,
+                        auth_method: Some("api_key".into()),
+                        account_label: None,
+                    },
+                    cx,
+                );
+                assert_eq!(panel.account_label, None);
             });
         });
     }
@@ -7712,6 +7797,26 @@ mod tests {
         assert_eq!(
             compact_dir(&format!("{home}-other")),
             format!("{home}-other")
+        );
+    }
+
+    #[test]
+    fn serving_account_labels_identify_the_actual_login() {
+        assert_eq!(
+            serving_account_label(Some("openai"), Some("oauth"), Some("work")),
+            "OpenAI · OAuth · work"
+        );
+        assert_eq!(
+            serving_account_label(Some("claude"), Some("oauth"), Some("personal@example.com")),
+            "Anthropic · OAuth · personal@example.com"
+        );
+        assert_eq!(
+            serving_account_label(Some("openai"), Some("oauth"), Some("  ")),
+            "OpenAI · OAuth"
+        );
+        assert_eq!(
+            serving_account_label(Some("openai"), Some("api_key"), None),
+            "OpenAI · API key"
         );
     }
 
