@@ -1,8 +1,69 @@
 use super::*;
 use serde_json::json;
 
-fn event(value: serde_json::Value) -> ApiEvent {
+fn event(mut value: serde_json::Value) -> ApiEvent {
+    if value.get("session_id").is_none() {
+        value["session_id"] = json!("queue-test");
+    }
     serde_json::from_value(value).unwrap()
+}
+
+#[gpui::test]
+fn hidden_retry_output_resumes_queue_without_acceptance_but_cancelled_retry_does_not(
+    cx: &mut gpui::TestAppContext,
+) {
+    for cancelled in [false, true] {
+        for output in [
+            json!({"ev":"text_delta", "text":"Recovered"}),
+            json!({"ev":"reasoning_delta", "text":"Checking again"}),
+            json!({"ev":"tool_start", "call_id":"retry-tool", "name":"read"}),
+        ] {
+            let (bridge, commands) = crate::harness::spawn_recording();
+            let panel = cx.new(|cx| {
+                let mut panel = Panel::new("queue-test".into(), None, None, bridge, cx);
+                panel.history_loaded = true;
+                panel.status = "running".into();
+                panel
+            });
+            panel.update(cx, |panel, cx| {
+                panel.submit_or_queue("follow up".into(), vec![], true, cx);
+                panel.apply(
+                    &event(json!({"ev":"error", "code":"internal", "message":"connection reset"})),
+                    cx,
+                );
+                panel.apply(
+                    &event(json!({"ev":"connection_phase", "phase":"retrying in 1s (1/3)"})),
+                    cx,
+                );
+                if cancelled {
+                    panel.apply(&event(json!({"ev":"connection_phase", "phase":""})), cx);
+                }
+                panel.apply(&event(output), cx);
+            });
+            cx.run_until_parked();
+            assert!(
+                commands.try_recv().is_err(),
+                "retry output is not turn completion"
+            );
+            panel.update(cx, |panel, cx| {
+                panel.apply(
+                    &event(json!({"ev":"turn_done", "session_id":"queue-test"})),
+                    cx,
+                );
+                panel.apply(&event(json!({"ev":"session_status", "status":"idle"})), cx);
+            });
+            cx.run_until_parked();
+            if cancelled {
+                assert!(commands.try_recv().is_err());
+                panel.read_with(cx, |panel, _| assert!(panel.prompt_queue.paused));
+            } else {
+                assert!(
+                    matches!(commands.try_recv(), Ok(Command::Send { content, .. }) if content == "follow up")
+                );
+                assert!(commands.try_recv().is_err(), "queue sends only once");
+            }
+        }
+    }
 }
 
 #[gpui::test]

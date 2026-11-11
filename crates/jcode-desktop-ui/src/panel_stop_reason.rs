@@ -83,6 +83,12 @@ fn connection_lost_detail(reason: &str) -> String {
 
 impl Panel {
     pub(super) fn record_stop(&mut self, notice: StopNotice) {
+        if !notice.provisional {
+            // Confirmed rejection/cancellation settles unacknowledged prompts.
+            // A transport loss alone is ambiguous and must preserve them for
+            // reconnect reconciliation rather than claiming delivery.
+            self.pending_users.clear();
+        }
         self.pause_queue_for_stop();
         self.sound_events.cancel();
         // Reconnect can replay processing and usage without delivering new

@@ -105,6 +105,14 @@ fn completed_work_runs_quality_gates_then_final_response_once(cx: &mut gpui::Tes
         ..item("ship", "completed")
     };
     panel.update(cx, |p, cx| {
+        // Quality reviews are opt-in in the shared policy. This test exercises
+        // that mode, not the default incomplete-work-only poke behavior.
+        p.prompt_queue
+            .auto_poke
+            .policy
+            .as_mut()
+            .unwrap()
+            .set_gate_digest_enabled(true);
         p.submit_or_queue("ship it".into(), vec![], false, cx)
     });
     let mut followups = Vec::new();

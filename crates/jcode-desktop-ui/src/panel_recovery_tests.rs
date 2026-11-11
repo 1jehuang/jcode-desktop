@@ -45,6 +45,216 @@ fn error(message: &str) -> ApiEvent {
     }
 }
 
+fn failed_turn(panel: &mut Panel, message: &str, cx: &mut Context<Panel>) {
+    panel.apply(
+        &ApiEvent::TurnStopped {
+            session_id: panel.session_id.clone(),
+            reason: jcode_sdk::TurnStopReason::Failure,
+            message: message.into(),
+            provider_stop_reason: None,
+        },
+        cx,
+    );
+    panel.apply(&error(message), cx);
+    panel.apply(
+        &ApiEvent::TurnDone {
+            session_id: panel.session_id.clone(),
+            pending_soft_interrupts: None,
+        },
+        cx,
+    );
+    assert!(matches!(panel.items.last(), Some(Item::Stopped(notice)) if notice.detail == message));
+    assert!(
+        !panel
+            .items
+            .iter()
+            .any(|item| matches!(item, Item::Error(_))),
+        "duplicate terminal error is suppressed"
+    );
+}
+
+#[gpui::test]
+fn recovery_resume_click_sends_one_fresh_continuation_and_preserves_draft(
+    cx: &mut gpui::TestAppContext,
+) {
+    for (status, stopped) in [("idle", false), ("connected", false), ("idle", true)] {
+        let (bridge, commands) = crate::harness::spawn_recording();
+        let (panel, vcx) =
+            cx.add_window_view(|_, cx| Panel::new("resume-test".into(), None, None, bridge, cx));
+        panel.update(vcx, |panel, cx| {
+            panel
+                .items
+                .push(Item::User("Original request must not be replayed".into()));
+            panel.input.update(cx, |input, cx| {
+                input.set_content("untouched draft".into(), cx)
+            });
+            if stopped {
+                failed_turn(panel, "503 Service Unavailable: connection reset", cx);
+            } else {
+                panel.apply(&error("503 Service Unavailable: connection reset"), cx);
+            }
+            panel.status = status.into();
+        });
+        vcx.run_until_parked();
+        assert!(commands.try_recv().is_err(), "no automatic replay");
+        let resume = vcx
+            .debug_bounds("recovery-resume")
+            .expect("explicit Resume pill");
+        vcx.simulate_click(resume.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(
+            matches!(commands.try_recv(), Ok(Command::Send { content, images, .. })
+            if content.starts_with("Continue the task from where you left off.")
+                && !content.contains("Original request") && images.is_empty())
+        );
+        assert!(commands.try_recv().is_err());
+        assert!(vcx.debug_bounds("recovery-resume").is_none());
+        panel.update(vcx, |panel, cx| {
+            // A stale painted click cannot submit twice while acceptance is pending.
+            panel.resume_failed_turn(1, "503 Service Unavailable: connection reset", cx);
+            assert_eq!(panel.pending_users.len(), 1);
+            assert_eq!(panel.input.read(cx).content.as_ref(), "untouched draft");
+        });
+        assert!(commands.try_recv().is_err());
+    }
+}
+
+#[gpui::test]
+fn recovery_resume_never_bypasses_active_retry_or_queued_user_requests(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("resume-test".into(), None, None, bridge, cx));
+    for message in [
+        "401 Unauthorized: connection reset",
+        "400 bad request",
+        "usage limit reached",
+    ] {
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            panel.apply(&error(message), cx);
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("recovery-resume").is_none(), "{message}");
+    }
+    for provisional in [false, true] {
+        panel.update(vcx, |panel, cx| {
+            panel.items.clear();
+            let mut notice = stop_reason::StopNotice::from_event(
+                if provisional {
+                    &jcode_sdk::TurnStopReason::Failure
+                } else {
+                    &jcode_sdk::TurnStopReason::Interrupted
+                },
+                "connection reset",
+                None,
+            );
+            notice.provisional = provisional;
+            panel.record_stop(notice);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(
+            vcx.debug_bounds("recovery-resume").is_none(),
+            "cancellation/provisional loss is not permission to resume"
+        );
+    }
+    panel.update(vcx, |panel, cx| {
+        panel.items.clear();
+        panel.apply(&error("connection reset"), cx);
+        panel.apply(
+            &ApiEvent::ConnectionPhase {
+                session_id: "resume-test".into(),
+                phase: "retrying in 2s (1/3)".into(),
+            },
+            cx,
+        );
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-resume").is_none());
+    panel.update(vcx, |panel, cx| {
+        panel.submit_or_queue("queued user priority".into(), vec![], true, cx);
+        panel.apply(&error("connection reset"), cx);
+        panel.resume_failed_turn(0, "connection reset", cx);
+        assert!(panel.has_queued_prompts());
+        assert!(panel.prompt_queue.paused);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-resume").is_none());
+    assert!(
+        commands.try_recv().is_err(),
+        "a synthetic continuation cannot jump the queue"
+    );
+}
+
+#[gpui::test]
+fn recovery_failover_preserves_cost_and_requires_model_choice_consent(
+    cx: &mut gpui::TestAppContext,
+) {
+    let offer = jcode_base::provider::ProviderFailoverPrompt {
+        from_provider: "openai".into(),
+        from_label: "OpenAI".into(),
+        to_provider: "minimax".into(),
+        to_label: "MiniMax".into(),
+        target_route: Some("minimax:new-model".into()),
+        reason: "503 Service Unavailable".into(),
+        estimated_input_chars: 48000,
+        estimated_input_tokens: 12000,
+    }
+    .to_error_message();
+    let native = native_error_message(&offer);
+    assert!(native.contains("OpenAI") && native.contains("MiniMax"));
+    assert!(native.contains("12000 input tokens") && native.contains("48000 characters"));
+    assert!(native.contains("confirm") && !native.contains("[jcode-provider-failover]"));
+    let (bridge, commands) = crate::harness::spawn_recording();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new("failover-test".into(), None, None, bridge, cx));
+    vcx.update(|_, cx| Panel::connect_input(&panel, cx));
+    panel.update(vcx, |panel, cx| {
+        panel.available_models = vec!["minimax:new-model".into()];
+        panel.input.update(cx, |input, cx| {
+            input.set_command_models(panel.available_models.clone(), cx);
+            input.set_content("keep draft".into(), cx);
+        });
+        failed_turn(panel, &offer, cx);
+    });
+    vcx.run_until_parked();
+    assert!(vcx.debug_bounds("recovery-resume").is_none());
+    assert!(
+        commands.try_recv().is_err(),
+        "failover never switches providers automatically"
+    );
+    let copy = vcx.debug_bounds("recovery-copy").unwrap();
+    vcx.simulate_click(copy.center(), gpui::Modifiers::default());
+    vcx.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard().unwrap().text().as_deref(),
+            Some(offer.as_str())
+        )
+    });
+    let choose = vcx.debug_bounds("recovery-choose-model").unwrap();
+    vcx.simulate_click(choose.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        commands.try_recv().is_err(),
+        "opening choices is not consent to switch"
+    );
+    let route = vcx.debug_bounds("slash-command-row-0").unwrap();
+    vcx.simulate_click(route.center(), gpui::Modifiers::default());
+    vcx.run_until_parked();
+    assert!(
+        matches!(commands.try_recv(), Ok(Command::SetModel { model, .. }) if model == "minimax:new-model")
+    );
+    assert!(
+        commands.try_recv().is_err(),
+        "choosing a route does not replay the request"
+    );
+    panel.read_with(vcx, |panel, cx| {
+        assert_eq!(panel.input.read(cx).content.as_ref(), "keep draft")
+    });
+}
+
 #[gpui::test]
 fn recovery_actual_clicks_switch_models_copy_errors_and_open_login(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = crate::harness::spawn_recording();

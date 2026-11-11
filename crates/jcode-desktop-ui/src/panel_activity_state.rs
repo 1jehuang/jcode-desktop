@@ -5,8 +5,28 @@ use super::*;
 
 impl Panel {
     pub(super) fn observe_activity_state(&mut self, event: &ApiEvent) {
+        // The harness explicitly clears this phase when an automatic retry is
+        // cancelled. A countdown made the panel busy even though no request was
+        // in flight, so clearing only its label would leave an endless spinner.
+        // Once real output arrives it clears the retry phase below, which also
+        // prevents a late transport clear from ending a live response.
+        if matches!(event, ApiEvent::ConnectionPhase { phase, .. } if phase.is_empty())
+            && is_retry_phase(&self.connection_phase)
+        {
+            self.finish_response();
+        }
+        if matches!(event, ApiEvent::Error { .. }) {
+            // A rejected send never receives MessageAccepted. Keep its text in
+            // the transcript, but do not leave it pending forever or block the
+            // next explicitly resumed follow-up behind a stale acknowledgement.
+            self.pending_users.clear();
+        }
         let status = match event {
-            ApiEvent::MessageAccepted { .. } if !self.activity_active() => Some("running"),
+            ApiEvent::MessageAccepted { .. }
+                if !self.activity_active() || is_retry_phase(&self.connection_phase) =>
+            {
+                Some("running")
+            }
             ApiEvent::ConnectionPhase { phase, .. } if !self.activity_active() => {
                 if phase == "streaming" {
                     Some("streaming")
@@ -40,6 +60,10 @@ impl Panel {
     }
 }
 
+pub(super) fn is_retry_phase(phase: &str) -> bool {
+    phase.trim().to_ascii_lowercase().starts_with("retrying")
+}
+
 pub(super) fn is_request_phase(phase: &str) -> bool {
     let phase = phase.trim().replace('_', " ").to_ascii_lowercase();
     matches!(
@@ -68,6 +92,99 @@ mod tests {
     fn event(mut value: serde_json::Value) -> ApiEvent {
         value["session_id"] = json!("activity-lifecycle");
         serde_json::from_value(value).unwrap()
+    }
+
+    #[gpui::test]
+    fn clearing_retry_settles_countdown_but_not_an_accepted_or_streaming_turn(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for live in [
+            None,
+            Some(json!({"ev":"message_accepted"})),
+            Some(json!({"ev":"text_delta", "text":"Recovered"})),
+        ] {
+            let panel = cx.new(|cx| {
+                Panel::new(
+                    "activity-lifecycle".into(),
+                    None,
+                    None,
+                    crate::harness::spawn_inert(),
+                    cx,
+                )
+            });
+            panel.update(cx, |panel, cx| {
+                panel.apply(
+                    &event(json!({"ev":"connection_phase", "phase":"retrying in 5s (1/3)"})),
+                    cx,
+                );
+                assert!(panel.activity_active());
+                assert_eq!(panel.status_line(), "Retrying in 5s (1/3)");
+                if let Some(live) = &live {
+                    panel.apply(&event(live.clone()), cx);
+                }
+                panel.apply(&event(json!({"ev":"connection_phase", "phase":""})), cx);
+                assert_eq!(panel.activity_active(), live.is_some());
+                if live.is_none() {
+                    assert_eq!(panel.status_line(), "Ready");
+                    assert!(!panel.is_busy());
+                }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn rejected_or_cancelled_sends_do_not_leave_permanent_pending_markers(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        for terminal in [
+            json!({"ev":"error", "code":"internal", "message":"request rejected"}),
+            json!({"ev":"session_status", "status":"cancelled"}),
+            json!({"ev":"session_status", "status":"failed"}),
+            json!({"ev":"turn_stopped", "reason":"interrupted", "message":"Cancelled"}),
+        ] {
+            let panel = cx.new(|cx| {
+                Panel::new(
+                    "activity-lifecycle".into(),
+                    None,
+                    None,
+                    crate::harness::spawn_inert(),
+                    cx,
+                )
+            });
+            panel.update(cx, |panel, cx| {
+                panel.submit_or_queue("Keep my prompt".into(), vec![], false, cx);
+                assert_eq!(panel.pending_users.len(), 1);
+                panel.apply(&event(terminal), cx);
+                assert!(panel.pending_users.is_empty());
+                assert!(panel.accepted_users.is_empty(), "rejection is not acceptance");
+                assert!(matches!(panel.items.first(), Some(Item::User(text)) if text == "Keep my prompt"));
+                assert!(!panel.activity_active());
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn ambiguous_disconnect_keeps_pending_send_until_confirmed_stop(cx: &mut gpui::TestAppContext) {
+        let panel = cx.new(|cx| {
+            Panel::new(
+                "activity-lifecycle".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        });
+        panel.update(cx, |panel, cx| {
+            panel.submit_or_queue("Possibly delivered".into(), vec![], false, cx);
+            panel.connection_lost("connection reset", cx);
+            assert_eq!(panel.pending_users.len(), 1);
+            assert!(panel.accepted_users.is_empty());
+            panel.apply(
+                &event(json!({"ev":"session_status", "status":"cancelled"})),
+                cx,
+            );
+            assert!(panel.pending_users.is_empty());
+        });
     }
 
     #[gpui::test]

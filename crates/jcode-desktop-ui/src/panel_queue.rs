@@ -113,15 +113,26 @@ impl Panel {
                 self.prompt_queue.resume_after_retry = false;
             }
             ApiEvent::ConnectionPhase { phase, .. }
-                if phase.trim().starts_with("retrying") && self.prompt_queue.paused =>
+                if activity_state::is_retry_phase(phase) && self.prompt_queue.paused =>
             {
                 self.prompt_queue.resume_after_retry = true;
             }
-            ApiEvent::MessageAccepted { .. } if self.prompt_queue.resume_after_retry => {
+            ApiEvent::MessageAccepted { .. }
+            | ApiEvent::TextDelta { .. }
+            | ApiEvent::ReasoningDelta { .. }
+            | ApiEvent::ToolStart { .. }
+                if self.prompt_queue.resume_after_retry =>
+            {
                 // Resume only once the retry starts, not on the countdown or
-                // TurnDone, which also terminates failed attempts.
+                // TurnDone, which also terminates failed attempts. Hidden
+                // continuation reminders may stream without MessageAccepted.
                 self.prompt_queue.resume_after_retry = false;
                 self.prompt_queue.paused = false;
+            }
+            ApiEvent::ConnectionPhase { phase, .. } if phase.is_empty() => {
+                // An abandoned retry must not re-arm the queue on unrelated
+                // output arriving later (or after a user's Stop).
+                self.prompt_queue.resume_after_retry = false;
             }
             ApiEvent::SessionStatus { status, .. }
                 if matches!(status.as_str(), "cancelled" | "canceled") =>
