@@ -144,6 +144,7 @@ def main():
                         help="scroll the transcript upward on the private display before capture")
     parser.add_argument("--learn-stage", type=int, choices=(1, 2, 3),
                         help="show the staged tutorial in the top-left Learn tab")
+    parser.add_argument("--session-map", action="store_true", help="open the pannable session map before capture")
     parser.add_argument("--panels", type=int, choices=range(1, 7), default=1,
                         help="show a connected folder group with its middle panel focused")
     parser.add_argument("--focus-panel", type=int,
@@ -670,6 +671,9 @@ def main():
                 if args.record is not None:
                     from demo_recording import record
                     record(args.record.resolve(), args.demo, env, root, width, height)
+                if args.session_map:
+                    subprocess.run(["xdotool", "key", "super+o"], env=env, cwd=root, check=True, timeout=10)
+                    time.sleep(0.5)
                 subprocess.run(["import", "-window", "root", "png:" + str(output)], env=env, cwd=root, check=True, timeout=15)
                 print(f"Screenshot: {output}\nFixture state: {state.read_text().strip()}")
                 if args.beta_notice_interact:

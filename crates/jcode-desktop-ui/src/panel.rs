@@ -937,7 +937,7 @@ impl Panel {
             model: usage_fixture.then(|| "gpt-5.6-sol".into()),
             provider: usage_fixture.then(|| "openai".into()),
             auth_method: usage_fixture.then(|| "oauth".into()),
-            account_label: None,
+            account_label: usage_fixture.then(|| "work@example.com".into()),
             reasoning_effort: usage_fixture.then(|| "high".into()),
             pending_effort: None,
             pending_save_requests: 0,

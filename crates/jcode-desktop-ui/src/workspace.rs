@@ -110,6 +110,8 @@ mod fps_header_tests;
 #[cfg(test)]
 #[path = "hidden_animation_tests.rs"]
 mod hidden_animation_tests;
+#[path = "workspace_map_gesture.rs"]
+mod map_gesture;
 #[path = "workspace_map_motion.rs"]
 mod map_motion;
 #[cfg(test)]
@@ -803,6 +805,7 @@ pub struct Workspace {
     camera_snap_pending: [bool; STRIP_COUNT],
     overview: bool,
     overview_progress: AnimatedValue,
+    map_gesture: map_gesture::MapGesture,
     hints_overlay: bool,
     hints_progress: AnimatedValue,
     /// Presenter-friendly mode that briefly explains workspace actions on screen.
@@ -1130,6 +1133,7 @@ impl Workspace {
             camera_dirty: [true; STRIP_COUNT],
             camera_snap_pending: [false; STRIP_COUNT],
             overview: false,
+            map_gesture: Default::default(),
             overview_progress: AnimatedValue::new(
                 0.0,
                 transition::policy(Transition::Overview).duration,
@@ -1517,6 +1521,7 @@ impl Workspace {
             camera_dirty: [true; STRIP_COUNT],
             camera_snap_pending: [false; STRIP_COUNT],
             overview: false,
+            map_gesture: Default::default(),
             overview_progress: AnimatedValue::new(
                 0.0,
                 transition::policy(Transition::Overview).duration,
@@ -4013,6 +4018,11 @@ impl Workspace {
         self.tutorial_cue("O", "Toggle overview", "overview", cx);
         self.learned("overview", cx);
         self.overview = !self.overview;
+        self.map_gesture.reset_view();
+        if self.overview {
+            self.map_gesture
+                .focus_session(self.active_position_in_row(), self.active_row);
+        }
         self.overview_progress
             .set(if self.overview { 1.0 } else { 0.0 }, Instant::now());
         self.hints_overlay = false;
@@ -5060,23 +5070,14 @@ impl Workspace {
     }
 
     fn render_overview(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let mut grid = div()
-            .flex()
-            .flex_row()
-            .flex_wrap()
-            .gap_4()
-            .p_8()
-            .justify_center()
-            .items_center()
-            .content_center()
-            .size_full();
+        let mut grid = div().relative().size_full().overflow_hidden();
+        let mut columns = [0usize; STRIP_COUNT];
 
         for (index, slot) in self.slots.iter().enumerate() {
             let panel = slot.panel.read(cx);
             let focused = index == self.active;
             let title = panel.title.clone();
             let status = panel.status.clone();
-            let busy = panel.is_busy();
             let preview: String = panel
                 .items
                 .iter()
@@ -5089,9 +5090,16 @@ impl Workspace {
                 })
                 .unwrap_or_default();
 
+            let column = columns[slot.row];
+            columns[slot.row] += 1;
+            let (left, top) = self.map_gesture.card_position(column, slot.row);
             grid = grid.child(
                 div()
                     .id(("overview-panel", index))
+                    .debug_selector(move || format!("overview-panel-{index}"))
+                    .absolute()
+                    .left(px(left))
+                    .top(px(top))
                     .w(px(300.0))
                     .h(px(190.0))
                     .flex()
@@ -5124,11 +5132,6 @@ impl Workspace {
                             .px_3()
                             .py_2()
                             .bg(Theme::global().HEADER_BG)
-                            .child(div().size(px(7.0)).rounded_full().bg(if busy {
-                                Theme::global().WARN
-                            } else {
-                                Theme::global().OK
-                            }))
                             .child(
                                 div()
                                     .flex_1()
@@ -5158,9 +5161,15 @@ impl Workspace {
         }
 
         // New session card.
+        let (new_left, new_top) = self
+            .map_gesture
+            .card_position(columns[self.active_row], self.active_row);
         grid = grid.child(
             div()
                 .id("overview-new")
+                .absolute()
+                .left(px(new_left))
+                .top(px(new_top))
                 .w(px(300.0))
                 .h(px(190.0))
                 .flex()
@@ -5190,11 +5199,20 @@ impl Workspace {
         );
 
         div()
+            .id("session-map")
+            .debug_selector(|| "session-map".into())
             .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
+            .relative()
+            .overflow_hidden()
+            .on_scroll_wheel(cx.listener(Self::pan_session_map))
+            .on_mouse_down(gpui::MouseButton::Left, cx.listener(Self::start_map_drag))
+            .on_mouse_move(cx.listener(Self::drag_session_map))
+            .on_mouse_up(gpui::MouseButton::Left, cx.listener(Self::end_map_drag))
+            .on_mouse_up_out(gpui::MouseButton::Left, cx.listener(Self::end_map_drag))
             .child(grid)
+            .child(div().absolute().bottom_2().left_4().text_size(px(11.0))
+                .text_color(Theme::global().TEXT_DIM)
+                .child("Session map · two-finger scroll to pan · pinch open or select a session to return"))
             .into_any_element()
     }
 
@@ -8744,6 +8762,8 @@ impl Render for Workspace {
                                     .flex_1()
                                     .min_h_0()
                                     .overflow_hidden()
+                                    .capture_pinch(cx.listener(Self::release_map_pinch))
+                                    .on_pinch(cx.listener(Self::handle_map_pinch))
                                     .when(folders, |el| {
                                         el.child(folder_surface::measure(
                                             self.folder_frame.clone(),
