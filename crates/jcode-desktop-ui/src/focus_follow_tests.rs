@@ -1,6 +1,128 @@
 //! The highlighted panel must always be the one that receives typing.
 use super::*;
 
+#[gpui::test]
+fn clicking_transcript_background_unfocuses_until_typing(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = two_conversations(cx);
+    let first = workspace.read_with(vcx, |w, _| w.test_panel(0).unwrap());
+    let bounds = vcx.debug_bounds("panel-0").unwrap();
+    let transcript = vcx.debug_bounds("transcript").unwrap();
+    vcx.simulate_click(
+        gpui::point(bounds.center().x, transcript.center().y),
+        Default::default(),
+    );
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        assert!(
+            !first
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
+        );
+    });
+    let reading_focus = vcx.update(|window, cx| window.focused(cx).unwrap());
+    vcx.simulate_keystrokes("ctrl-c");
+    vcx.run_until_parked();
+    vcx.update(|window, _| assert!(reading_focus.is_focused(window)));
+    vcx.simulate_keystrokes("h e l l o");
+    vcx.run_until_parked();
+    first.read_with(vcx, |panel, cx| {
+        assert_eq!(panel.input.read(cx).content.as_ref(), "hello");
+    });
+    vcx.update(|window, cx| {
+        assert!(
+            first
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
+        );
+    });
+}
+
+#[gpui::test]
+fn typing_from_workspace_targets_active_composer_and_preserves_first_key(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (workspace, vcx) = two_panels(cx);
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.set_active(1, cx);
+            window.focus(&w.focus_handle, cx);
+        })
+    });
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("H i space !");
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, cx| {
+        assert_eq!(
+            w.test_panel(1)
+                .unwrap()
+                .read(cx)
+                .input
+                .read(cx)
+                .content
+                .as_ref(),
+            "Hi !"
+        );
+        assert!(
+            w.test_panel(0)
+                .unwrap()
+                .read(cx)
+                .input
+                .read(cx)
+                .content
+                .is_empty()
+        );
+    });
+}
+
+#[gpui::test]
+fn typing_in_rename_field_does_not_focus_composer(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = two_panels(cx);
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            w.rename_session(&RenameSession, window, cx);
+        })
+    });
+    vcx.run_until_parked();
+    let rename_focus = vcx.update(|window, cx| window.focused(cx).unwrap());
+    vcx.simulate_keystrokes("n e w");
+    vcx.run_until_parked();
+    vcx.update(|window, _| assert!(rename_focus.is_focused(window)));
+    workspace.read_with(vcx, |w, cx| {
+        assert!(w.rename_editor.is_some());
+        assert!(
+            w.test_panel(0)
+                .unwrap()
+                .read(cx)
+                .input
+                .read(cx)
+                .content
+                .is_empty()
+        );
+    });
+}
+
+#[gpui::test]
+fn navigation_and_shortcuts_do_not_resume_composer(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = two_panels(cx);
+    vcx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            window.focus(&w.focus_handle, cx);
+        })
+    });
+    vcx.run_until_parked();
+    vcx.simulate_keystrokes("left ctrl-c escape");
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        assert!(workspace.read(cx).focus_handle.is_focused(window));
+    });
+}
+
 fn two_panels(cx: &mut gpui::TestAppContext) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -142,7 +264,12 @@ fn clicking_another_docked_composer_highlights_its_panel(cx: &mut gpui::TestAppC
         vcx.run_until_parked();
         let panel = workspace.read_with(vcx, |w, _| w.test_panel(target).unwrap());
         let typing = vcx.update(|window, cx| {
-            panel.read(cx).input.read(cx).focus_handle.is_focused(window)
+            panel
+                .read(cx)
+                .input
+                .read(cx)
+                .focus_handle
+                .is_focused(window)
         });
         assert!(typing, "the click must put the caret in composer {target}");
         workspace.read_with(vcx, |w, _| {

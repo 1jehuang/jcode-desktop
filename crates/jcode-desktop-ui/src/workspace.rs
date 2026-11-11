@@ -4684,7 +4684,8 @@ impl Workspace {
                     cx.listener(move |this, _event, window, cx| {
                         this.clicked_to_focus(index, cx);
                         this.set_active(index, cx);
-                        this.focus_active(window, cx);
+                        this.focus_pending = false;
+                        window.focus(&this.focus_handle, cx);
                         cx.notify();
                     }),
                 )
@@ -8652,6 +8653,25 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::begin_global_voice_hold_action))
             .capture_action(cx.listener(Self::end_global_voice_hold_action))
             .capture_key_down(cx.listener(Self::copilot_key_down))
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
+                if this.focus_handle.is_focused(window)
+                    && !this.overview
+                    && !this.overview_progress.is_animating()
+                    && !this.account_sign_in.visible
+                    && !this.show_beta_notice
+                    && this.onboarding_launch.error.is_none()
+                    && this.rename_editor.is_none()
+                    && this.folder_picker_dir.is_none()
+                    && this.usage_reset.is_none()
+                    && !this.compact_sidebar_open
+                    && let Some(slot) = this.slots.get(this.active).filter(|slot| !slot.closing)
+                    && slot.panel.clone().update(cx, |panel, cx| {
+                        panel.resume_composer_typing(event, true, window, cx)
+                    })
+                {
+                    cx.stop_propagation();
+                }
+            }))
             .capture_key_up(cx.listener(Self::copilot_key_up))
             .capture_action(cx.listener(|this, _: &crate::input::Clear, window, cx| {
                 if this.compact_sidebar_open {

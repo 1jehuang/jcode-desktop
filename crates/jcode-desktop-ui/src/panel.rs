@@ -4276,22 +4276,35 @@ impl Panel {
         cx: &mut App,
     ) -> bool {
         let key = &event.keystroke;
-        if key.modifiers.control || key.modifiers.platform || key.modifiers.alt
-            || !key.key_char.as_deref().is_some_and(|text| {
-                !text.is_empty() && text.chars().all(|c| !c.is_control())
-            })
+        if key.modifiers.control
+            || key.modifiers.platform
+            || key.modifiers.alt
+            || !key
+                .key_char
+                .as_deref()
+                .is_some_and(|text| !text.is_empty() && text.chars().all(|c| !c.is_control()))
             || self.transcript_only
+            || self.login.is_some()
+            || self.recovery_picker_open
             || self.input_focus_handle(cx) != self.input.read(cx).focus_handle
             || !(workspace_focused
-                || self.transcript_selection.read(cx).focus_handle().is_focused(window))
+                || self
+                    .transcript_selection
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window))
         {
             return false;
         }
         self.focus_input(window, cx);
-        self.input.update(cx, |input, cx| {
-            gpui::EntityInputHandler::replace_text_in_range(
-                input, None, key.key_char.as_deref().unwrap(), window, cx,
-            );
+        let input = self.input.clone();
+        let text = key.key_char.clone().unwrap();
+        // The input's on_change callback updates this panel synchronously.
+        // Release the panel borrow before inserting the first character.
+        window.defer(cx, move |window, cx| {
+            input.update(cx, |input, cx| {
+                gpui::EntityInputHandler::replace_text_in_range(input, None, &text, window, cx);
+            });
         });
         true
     }
