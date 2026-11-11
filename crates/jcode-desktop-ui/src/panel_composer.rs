@@ -333,6 +333,17 @@ impl Panel {
             // Do not let clicks reach transcript rows hidden under the veil,
             // but keep wheel and touchpad scrolling the transcript.
             .block_mouse_except_scroll()
+            // Blocking the mouse also hides the press from the workspace, so
+            // take the keyboard here. The workspace highlights whichever
+            // panel owns the keyboard, which keeps the two in step.
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    if !this.owns_keyboard_focus(window, cx) {
+                        this.focus_input(window, cx);
+                    }
+                }),
+            )
             .child(
                 div()
                     .debug_selector(|| "composer-veil".into())

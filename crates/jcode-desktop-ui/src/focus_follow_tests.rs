@@ -29,6 +29,29 @@ fn two_panels(cx: &mut gpui::TestAppContext) -> (Entity<Workspace>, &mut gpui::V
     (workspace, vcx)
 }
 
+/// Two side-by-side sessions with history, so each composer is docked over
+/// its transcript the way it is in a real conversation.
+fn two_conversations(
+    cx: &mut gpui::TestAppContext,
+) -> (Entity<Workspace>, &mut gpui::VisualTestContext) {
+    let (workspace, vcx) = two_panels(cx);
+    for index in 0..2 {
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(index).unwrap());
+        panel.update(vcx, |panel, cx| panel.test_settled_conversation(40, cx));
+    }
+    vcx.run_until_parked();
+    for _ in 0..120 {
+        if vcx.debug_bounds("composer-dock").is_some() {
+            break;
+        }
+        vcx.executor().advance_clock(Duration::from_millis(16));
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+    }
+    assert!(vcx.debug_bounds("composer-dock").is_some());
+    (workspace, vcx)
+}
+
 #[gpui::test]
 fn keyboard_focus_entering_another_panel_activates_it(cx: &mut gpui::TestAppContext) {
     let (workspace, vcx) = two_panels(cx);
@@ -99,4 +122,44 @@ fn activating_another_panel_moves_typing_to_it(cx: &mut gpui::TestAppContext) {
             "the outgoing session must not receive the prompt"
         );
     });
+}
+
+/// The recorded bug: with transcripts present the composer is docked and
+/// blocks the mouse from the panel surface, so a click in the other session's
+/// composer moved the caret there while the previous session stayed
+/// highlighted.
+#[gpui::test]
+fn clicking_another_docked_composer_highlights_its_panel(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = two_conversations(cx);
+    let composer = vcx.debug_bounds("prompt-input").unwrap();
+    let panels = [
+        vcx.debug_bounds("panel-0").unwrap(),
+        vcx.debug_bounds("panel-1").unwrap(),
+    ];
+    for target in [1, 0, 1] {
+        let point = gpui::point(panels[target].center().x, composer.center().y);
+        vcx.simulate_click(point, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        let panel = workspace.read_with(vcx, |w, _| w.test_panel(target).unwrap());
+        let typing = vcx.update(|window, cx| {
+            panel.read(cx).input.read(cx).focus_handle.is_focused(window)
+        });
+        assert!(typing, "the click must put the caret in composer {target}");
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.active, target, "the clicked session must be highlighted");
+        });
+    }
+}
+
+/// The dock's pills and veil are part of the session too.
+#[gpui::test]
+fn clicking_the_dock_beside_the_composer_activates_its_panel(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = two_conversations(cx);
+    let composer = vcx.debug_bounds("prompt-input").unwrap();
+    let second = vcx.debug_bounds("panel-1").unwrap();
+    // Just above the input, inside the veil.
+    let point = gpui::point(second.center().x, composer.top() - px(6.));
+    vcx.simulate_click(point, gpui::Modifiers::default());
+    vcx.run_until_parked();
+    workspace.read_with(vcx, |w, _| assert_eq!(w.active, 1));
 }

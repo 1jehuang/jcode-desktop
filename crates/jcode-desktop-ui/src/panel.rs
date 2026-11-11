@@ -4337,6 +4337,17 @@ impl Panel {
             .map(|terminal| terminal.read(cx).screen_contents())
     }
 
+    /// Give this panel a settled conversation, so its composer is docked
+    /// over the transcript as it is in a real session.
+    #[cfg(test)]
+    pub(crate) fn test_settled_conversation(&mut self, lines: usize, cx: &mut Context<Self>) {
+        self.startup_layout = None;
+        *self.items = (0..lines)
+            .map(|n| Item::Assistant(format!("message {n}")))
+            .collect();
+        cx.notify();
+    }
+
     /// The transcript's vertical scroll offset, so tests can prove a gesture
     /// did or did not scroll it.
     #[cfg(test)]
