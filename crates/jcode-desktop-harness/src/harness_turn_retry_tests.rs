@@ -55,6 +55,34 @@ fn retry_phase(update: &Update) -> Option<String> {
     }
 }
 
+#[test]
+fn retry_countdown_ticks_and_rounds_up_partial_seconds() {
+    let now = Instant::now();
+    let mut retry = jcode_sdk::TurnRetry::default();
+    assert_eq!(retry_countdown_phase(&retry, now), None);
+    retry.observe(
+        &ApiEvent::Error {
+            code: jcode_sdk::api::ErrorCode::Internal,
+            message: "request timed out".into(),
+        },
+        now,
+    );
+    assert_eq!(
+        retry_countdown_phase(&retry, now).as_deref(),
+        Some("retrying in 3s (1/3)")
+    );
+    assert_eq!(
+        retry_countdown_phase(&retry, now + Duration::from_millis(1)).as_deref(),
+        Some("retrying in 3s (1/3)")
+    );
+    assert_eq!(
+        retry_countdown_phase(&retry, now + Duration::from_secs(1)).as_deref(),
+        Some("retrying in 2s (1/3)")
+    );
+    retry.user_cancelled();
+    assert_eq!(retry_countdown_phase(&retry, now), None);
+}
+
 /// Wait until the worker has seen the server accept the last send, as the
 /// real runtime always accepts a message before its turn can fail.
 fn wait_accepted(updates: &UpdateReceiver) {
@@ -109,6 +137,19 @@ fn transient_turn_failure_is_continued_automatically_until_the_budget_runs_out()
 
     // Budget exhausted: the error stays for the user and nothing is resent.
     fail_turn(&server, "stream error: connection reset by peer");
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "retry exhaustion was not explained"
+        );
+        if let Ok(Update::CommandFailed { reason, .. }) = updates.try_recv() {
+            assert!(reason.contains("paused after 2 retries"), "{reason}");
+            assert!(reason.contains("send a message to continue"), "{reason}");
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
     std::thread::sleep(Duration::from_millis(150));
     assert!(server.requests.try_recv().is_err());
 
@@ -144,6 +185,9 @@ fn permanent_failures_and_cancellation_never_retry() {
     wait_update(&updates, |update| {
         retry_phase(update).is_some_and(|p| p.is_empty())
     });
+    // Cancelling the transport does not guarantee an already buffered provider
+    // error disappears. That late terminal sequence must not arm a new retry.
+    fail_turn(&server, "503 Service Unavailable after cancellation");
     std::thread::sleep(Duration::from_millis(2300));
     assert!(
         server.requests.try_recv().is_err(),

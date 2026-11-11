@@ -2079,6 +2079,7 @@ fn session_worker_with_connector(
         // the previous connection must not block server-directed recovery.
         // Explicit attachment-mismatch retries already live in `pending`.
         let mut unaccepted_sends = VecDeque::new();
+        let mut retry_countdown = None;
         eprintln!("jcode desktop: session {session_id} connected");
         let _ = updates.send(Update::SessionConnected {
             session_id: session_id.clone(),
@@ -2231,10 +2232,22 @@ fn session_worker_with_connector(
                         if turn_retry.user_cancelled() == jcode_sdk::RetryDecision::Cancelled {
                             send_retry_phase(&updates, &session_id, String::new());
                         }
-                        let _ = client.cancel(real_id);
+                        if let Err(error) = client.cancel(real_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!("Could not stop the running turn: {error}. Automatic retries have been cancelled, but the runtime may still be working."),
+                            });
+                        }
                     }
                     SessionCommand::BackgroundTool => {
-                        let _ = client.background_tool(real_id);
+                        if let Err(error) = client.background_tool(real_id) {
+                            let _ = updates.send(Update::CommandFailed {
+                                session_id: session_id.clone(),
+                                reason: format!(
+                                    "Could not move the running tool to the background: {error}"
+                                ),
+                            });
+                        }
                     }
                     SessionCommand::ForkWithPrompt { prompt, internal } => {
                         let fork = (|| -> jcode_sdk::Result<(SessionInfo, JcodeClient)> {
@@ -2401,6 +2414,17 @@ fn session_worker_with_connector(
                 }
             }
 
+            // Update the visible countdown while waiting, not just when the
+            // error arrives. A frozen "in 3s" label looks like a stalled retry.
+            if let Some(phase) = retry_countdown_phase(&turn_retry, std::time::Instant::now()) {
+                if retry_countdown.as_ref() != Some(&phase) {
+                    send_retry_phase(&updates, &session_id, phase.clone());
+                    retry_countdown = Some(phase);
+                }
+            } else {
+                retry_countdown = None;
+            }
+
             // A transient turn failure scheduled an automatic continuation.
             // The failed prompt is already in the transcript, so resume the
             // session with a hidden reminder rather than resending it.
@@ -2532,6 +2556,20 @@ fn session_worker_with_connector(
                 update_turn_activity(&event, &mut turn_active);
                 _detach.set_processing(turn_active);
                 let retry_decision = turn_retry.observe(&event, std::time::Instant::now());
+                let retry_failure = match &event {
+                    ApiEvent::Error { message, .. }
+                        if matches!(
+                            retry_decision,
+                            jcode_sdk::RetryDecision::GaveUp {
+                                exhausted: true,
+                                ..
+                            }
+                        ) =>
+                    {
+                        Some(message.clone())
+                    }
+                    _ => None,
+                };
                 let closes_turn =
                     matches!(event, ApiEvent::Error { .. } | ApiEvent::TurnDone { .. });
                 let _ = updates.send(Update::Event {
@@ -2541,24 +2579,26 @@ fn session_worker_with_connector(
                 // The panel clears its phase when a turn ends, so announce
                 // the pending retry after forwarding the closing event.
                 match retry_decision {
+                    jcode_sdk::RetryDecision::GaveUp {
+                        attempts,
+                        exhausted: true,
+                    } if attempts > 0 => {
+                        send_retry_phase(&updates, &session_id, String::new());
+                        let _ = updates.send(Update::CommandFailed {
+                            session_id: session_id.clone(),
+                            reason: format!("Automatic recovery paused after {attempts} retries. Check the connection or provider account, choose another model if needed, then send a message to continue. Last failure: {}", retry_failure.as_deref().unwrap_or("unknown provider failure")),
+                        });
+                    }
                     jcode_sdk::RetryDecision::Cancelled => {
                         send_retry_phase(&updates, &session_id, String::new());
                     }
                     _ if closes_turn => {
-                        if let Some(at) = turn_retry.pending() {
-                            let secs = at
-                                .saturating_duration_since(std::time::Instant::now())
-                                .as_secs()
-                                .max(1);
-                            send_retry_phase(
-                                &updates,
-                                &session_id,
-                                format!(
-                                    "retrying in {secs}s ({}/{})",
-                                    turn_retry.attempts(),
-                                    turn_retry.policy().max_attempts
-                                ),
-                            );
+                        if turn_retry.pending().is_some() {
+                            let phase =
+                                retry_countdown_phase(&turn_retry, std::time::Instant::now())
+                                    .expect("pending retry has a countdown");
+                            retry_countdown = Some(phase.clone());
+                            send_retry_phase(&updates, &session_id, phase);
                         }
                     }
                     _ => {}
@@ -2609,6 +2649,19 @@ fn turn_retry_policy() -> jcode_sdk::RetryPolicy {
 thread_local! {
     static TEST_RETRY_POLICY: std::cell::RefCell<Option<jcode_sdk::RetryPolicy>> =
         const { std::cell::RefCell::new(None) };
+}
+
+fn retry_countdown_phase(retry: &jcode_sdk::TurnRetry, now: std::time::Instant) -> Option<String> {
+    let remaining = retry.pending()?.saturating_duration_since(now);
+    let seconds = remaining
+        .as_secs()
+        .saturating_add(u64::from(remaining.subsec_nanos() > 0))
+        .max(1);
+    Some(format!(
+        "retrying in {seconds}s ({}/{})",
+        retry.attempts(),
+        retry.policy().max_attempts
+    ))
 }
 
 /// Surface automatic retry progress in the panel status line. An empty phase
