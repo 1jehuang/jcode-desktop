@@ -4255,6 +4255,19 @@ impl Panel {
         window.focus(&handle, cx);
     }
 
+    /// Whether keys typed now are delivered to this panel: its composer, its
+    /// current primary surface, or its selectable transcript.
+    pub(crate) fn owns_keyboard_focus(&self, window: &Window, cx: &App) -> bool {
+        self.input.read(cx).focus_handle.is_focused(window)
+            || self.input_focus_handle(cx).is_focused(window)
+            || self.focus_handle.contains_focused(window, cx)
+            || self
+                .transcript_selection
+                .read(cx)
+                .focus_handle()
+                .is_focused(window)
+    }
+
     pub fn input_focus_handle(&self, cx: &App) -> FocusHandle {
         if let Some(handle) = self.login_input_focus_handle(cx) {
             return handle;

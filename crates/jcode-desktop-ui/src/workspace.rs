@@ -256,6 +256,10 @@ mod panel_surface_tests;
 #[cfg(test)]
 #[path = "hover_scroll_tests.rs"]
 mod hover_scroll_tests;
+
+#[cfg(test)]
+#[path = "focus_follow_tests.rs"]
+mod focus_follow_tests;
 #[path = "workspace_pull.rs"]
 mod workspace_pull;
 #[cfg(test)]
@@ -854,6 +858,8 @@ pub struct Workspace {
     /// Focus the active panel's input on the next render (set when panels
     /// appear from background updates, where no Window is available).
     focus_pending: bool,
+    /// Active panel when highlight and keyboard focus were last reconciled.
+    focus_synced_active: Option<gpui::EntityId>,
     /// When the last touchpad pan delta arrived. Drives the gesture reticle
     /// that marks where focus will land while a swipe is in flight.
     gesture_last: Option<Instant>,
@@ -1166,6 +1172,7 @@ impl Workspace {
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
+            focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),
             gesture_seen: None,
@@ -1552,6 +1559,7 @@ impl Workspace {
             live_tabs: live_tabs::TabMotion::default(),
             sidebar_roller: sidebar_roller::Roller::default(),
             focus_pending: false,
+            focus_synced_active: None,
             gesture_last: None,
             gesture: StripGesture::default(),
             gesture_seen: None,
@@ -4198,6 +4206,47 @@ impl Workspace {
         self.learned("maximize", cx);
     }
 
+    /// Keep the highlighted panel equal to the panel that receives typing.
+    ///
+    /// Keyboard focus can enter a panel without passing through `set_active`:
+    /// a hot reload restores the focused composer by index, panel controls
+    /// call `focus_input` and stop the click from reaching the surface, and a
+    /// press inside one composer can be released over another panel. The
+    /// reverse also happens: several paths call `set_active` and leave focus
+    /// in the outgoing composer. Either way one session was highlighted while
+    /// another took the prompt.
+    ///
+    /// Whichever side moved since the last frame is the user's intent. A new
+    /// active panel pulls focus to it, otherwise the highlight follows focus.
+    /// Focus held outside every panel (menus, search, the workspace) is left
+    /// alone.
+    fn follow_keyboard_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overview || self.overview_progress.is_animating() {
+            return;
+        }
+        let active = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+        let owner = self
+            .slots
+            .iter()
+            .position(|slot| !slot.closing && slot.panel.read(cx).owns_keyboard_focus(window, cx));
+        if let Some(index) = owner
+            && index != self.active
+        {
+            if self.focus_synced_active == active {
+                self.set_active(index, cx);
+            } else {
+                self.focus_active(window, cx);
+            }
+        }
+        self.focus_synced_active = self
+            .slots
+            .get(self.active)
+            .map(|slot| slot.panel.entity_id());
+    }
+
     pub fn focus_active(&self, window: &mut Window, cx: &mut App) {
         // Runtime updates must not move focus behind a launch-only modal.
         if self.account_sign_in.visible || self.onboarding_launch.error.is_some() {
@@ -4608,6 +4657,18 @@ impl Workspace {
                     ))
                 })
                 .overflow_hidden()
+                // Activate during capture so no child can swallow the press.
+                // Composers, selectable text and buttons all stop propagation,
+                // which used to leave the old panel highlighted while the
+                // pressed one took keyboard focus.
+                .capture_any_mouse_down(cx.listener(
+                    move |this, event: &gpui::MouseDownEvent, _window, cx| {
+                        if event.button == gpui::MouseButton::Left {
+                            this.clicked_to_focus(index, cx);
+                            this.set_active(index, cx);
+                        }
+                    },
+                ))
                 .on_mouse_down(
                     gpui::MouseButton::Left,
                     cx.listener(move |this, _event, window, cx| {
@@ -8415,6 +8476,7 @@ impl Render for Workspace {
             self.focus_pending = false;
             self.focus_active(window, cx);
         }
+        self.follow_keyboard_focus(window, cx);
         let hints_progress = self.hints_progress.sample(now);
         // Keep the outgoing content mounted until the fade completes.
         let coach_hint = crate::config::get()
