@@ -27,6 +27,10 @@ struct QueuedPrompt {
 }
 
 impl Panel {
+    pub(super) fn has_queued_prompts(&self) -> bool {
+        !self.prompt_queue.prompts.is_empty()
+    }
+
     pub(super) fn pause_queue_for_stop(&mut self) {
         self.prompt_queue.paused = true;
         self.prompt_queue.resume_after_retry = false;

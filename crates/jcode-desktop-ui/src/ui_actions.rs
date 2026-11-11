@@ -42,6 +42,13 @@ pub(crate) struct PublishDesktop {
     pub source: gpui::EntityId,
 }
 
+/// Pick another folder for the source panel, from its location pill.
+#[derive(Clone, PartialEq, gpui::Action)]
+#[action(no_json)]
+pub(crate) struct SwitchDirectory {
+    pub source: gpui::EntityId,
+}
+
 /// Open the change review for one tool call's proposed edits.
 #[derive(Clone, PartialEq, gpui::Action)]
 #[action(no_json)]

@@ -77,6 +77,7 @@ impl Panel {
                     location_label(dir)
                 }
             });
+        let can_switch_location = remote_machine.is_none() && self.offers_directory_switch();
         // Build info, usage limits and status share the pill row, so the
         // panel needs no separate footer bar below the composer.
         let status_line = self.status_line();
@@ -225,16 +226,35 @@ impl Panel {
                     }))
                     .children(location.map(|(name, detail)| {
                         div()
+                            .id("composer-location")
                             .debug_selector(|| "composer-location".into())
                             .flex_shrink_1()
                             .min_w_0()
-                            .px_1()
+                            .h(px(TAB_HEIGHT))
+                            .px_2()
                             .flex()
                             .items_baseline()
                             .gap_1p5()
                             .overflow_hidden()
                             .whitespace_nowrap()
                             .text_size(px(11.5))
+                            .rounded_full()
+                            // The folder browser reads this computer's disk,
+                            // so only local sessions offer the switch.
+                            .when(can_switch_location, |el| {
+                                el.cursor_pointer()
+                                    .hover(|el| el.bg(theme.USER_BG))
+                                    .tooltip(|_, cx| cx.new(|_| LocationTooltip).into())
+                                    .on_click(cx.listener(|_, _, window, cx| {
+                                        cx.stop_propagation();
+                                        window.dispatch_action(
+                                            Box::new(crate::ui_actions::SwitchDirectory {
+                                                source: cx.entity_id(),
+                                            }),
+                                            cx,
+                                        );
+                                    }))
+                            })
                             .child(
                                 div()
                                     .flex_none()
@@ -419,6 +439,72 @@ impl Panel {
 }
 
 /// A compact rounded pill, filled like the transcript's user prompt cards.
+struct LocationTooltip;
+
+impl Render for LocationTooltip {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("LocationTooltip");
+        div()
+            .debug_selector(|| "composer-location-tooltip".into())
+            .max_w(px(300.))
+            .p_2()
+            .rounded_md()
+            .bg(Theme::global().HEADER_BG)
+            .text_size(px(12.))
+            .text_color(Theme::global().TEXT)
+            .child("Switch folder")
+    }
+}
+
+impl Panel {
+    /// Chat panels on this computer can pick another folder from the pill.
+    fn offers_directory_switch(&self) -> bool {
+        self.preview_state.is_none()
+            && !self.transcript_only
+            && !self.is_side_document()
+            && !self.is_publish_tracker()
+            && crate::harness::remote_host(&self.session_id).is_none()
+            && !self.session_id.starts_with("startup://draft/remote/")
+            && (self.is_pending_session() || !self.session_id.contains("://"))
+    }
+
+    /// An untouched session has nothing tied to its folder yet, so it can be
+    /// replaced by one in another folder without losing anything. History
+    /// must have arrived first: an unloaded transcript also looks empty.
+    pub(crate) fn can_switch_directory_in_place(&self) -> bool {
+        self.offers_directory_switch()
+            && (self.is_pending_session() || self.history_loaded)
+            && !self.session_id.starts_with("startup://draft/help/")
+            && !self.awaiting_persisted
+            && !self.restored_transcript
+            && self.provisional_items == 0
+            && self.items.is_empty()
+            && self.pending_users.is_empty()
+            && !self.has_queued_prompts()
+            && !self.activity_active()
+    }
+
+    /// Become a draft for a session in `directory`, keeping the editor and
+    /// its text. Returns the identity this panel had before.
+    pub(crate) fn retarget_draft(
+        &mut self,
+        request_id: String,
+        directory: String,
+        cx: &mut Context<Self>,
+    ) -> String {
+        let previous = std::mem::replace(&mut self.session_id, request_id);
+        self.working_dir = Some(directory);
+        self.title = "New session".into();
+        self.status = "Starting session · you can type now".into();
+        self.connection_phase.clear();
+        self.history_loaded = false;
+        self.input
+            .update(cx, |input, cx| input.set_pending_session(true, cx));
+        cx.notify();
+        previous
+    }
+}
+
 pub(super) fn composer_pill(id: &'static str) -> gpui::Stateful<gpui::Div> {
     let theme = Theme::global();
     div()

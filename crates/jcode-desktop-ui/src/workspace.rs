@@ -39,6 +39,9 @@ mod changelog_panel;
 #[path = "workspace_publish.rs"]
 mod publish_panel;
 
+#[path = "workspace_switch_directory.rs"]
+mod switch_directory;
+
 #[path = "workspace_responsive.rs"]
 mod responsive;
 
@@ -154,7 +157,7 @@ mod default_directory_tests;
 // panel layer does not depend on this one.
 pub(crate) use crate::ui_actions::{
     ClosePanel, OpenAccounts, OpenAppletShowcase, OpenChangelog, OpenResume, PublishDesktop,
-    ToggleOnboardingSimulator,
+    SwitchDirectory, ToggleOnboardingSimulator,
 };
 
 #[derive(Clone, PartialEq, gpui::Action)]
@@ -863,6 +866,9 @@ pub struct Workspace {
     scroll_snap: scroll_snap::ScrollSnap,
     /// Saving a preference rather than opening a new session.
     folder_picker_sets_default: bool,
+    /// The panel whose location pill opened the browser, if any. Its folder
+    /// is the one being switched.
+    folder_picker_source: Option<gpui::EntityId>,
     /// Directory currently shown by the in-app folder browser. `None` closes it.
     folder_picker_dir: Option<PathBuf>,
     folder_picker_error: Option<String>,
@@ -1165,6 +1171,7 @@ impl Workspace {
             gesture_seen: None,
             scroll_snap: Default::default(),
             folder_picker_sets_default: false,
+            folder_picker_source: None,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -1550,6 +1557,7 @@ impl Workspace {
             gesture_seen: None,
             scroll_snap: Default::default(),
             folder_picker_sets_default: false,
+            folder_picker_source: None,
             folder_picker_dir: None,
             folder_picker_error: None,
             folder_search: None,
@@ -3767,6 +3775,7 @@ impl Workspace {
     fn open_folder(&mut self, _: &OpenFolder, window: &mut Window, cx: &mut Context<Self>) {
         self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
+        self.folder_picker_source = None;
         self.folder_picker_dir = Some(
             self.default_working_dir()
                 .map(PathBuf::from)
@@ -3851,13 +3860,18 @@ impl Workspace {
         // a mounted target on the next render so navigation keeps working even
         // if session creation is slow or fails.
         self.focus_pending = true;
-        self.open_local_draft(Some(path.to_string_lossy().into_owned()), cx);
+        let directory = path.to_string_lossy().into_owned();
+        let source = self.folder_picker_source.take();
+        if !self.switch_source_directory(source, &directory, cx) {
+            self.open_local_draft(Some(directory), cx);
+        }
         cx.notify();
     }
 
     fn close_folder_picker(&mut self, cx: &mut Context<Self>) {
         self.remove_default_directory_panel(cx);
         self.folder_picker_sets_default = false;
+        self.folder_picker_source = None;
         self.folder_picker_dir = None;
         self.folder_picker_error = None;
         self.folder_search = None;
@@ -8140,6 +8154,8 @@ impl Workspace {
                             .child(div().text_size(px(14.0)).child(
                                 if self.folder_picker_sets_default {
                                     "Default directory"
+                                } else if self.folder_picker_source.is_some() {
+                                    "switch folder"
                                 } else {
                                     "open folder"
                                 },
@@ -8612,6 +8628,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::open_accounts))
             .on_action(cx.listener(Self::open_usage_reset_command))
             .on_action(cx.listener(Self::publish_desktop))
+            .on_action(cx.listener(Self::switch_directory))
             .on_action(cx.listener(Self::open_model_window_or_picker))
             .on_action(cx.listener(Self::open_todoist))
             .on_action(cx.listener(Self::new_unfinished_work))
