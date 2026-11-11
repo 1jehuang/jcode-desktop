@@ -1,6 +1,8 @@
 //! Real SDK socket-pair tests for the native SSH address routing boundary.
 use super::*;
 include!("harness_recovery_reconnect_tests.rs");
+include!("harness_history_recovery_tests.rs");
+include!("harness_protocol_recovery_tests.rs");
 include!("harness_turn_retry_tests.rs");
 use jcode_sdk::api::{ApiRequest, ClientFrame, ServerFrame, read_frame, write_frame};
 use std::io::{BufRead, BufReader, Write};
@@ -45,6 +47,10 @@ struct Server {
 }
 impl Server {
     fn new() -> (JcodeClient, Self) {
+        Self::with_history_failures(0)
+    }
+
+    fn with_history_failures(mut history_failures: usize) -> (JcodeClient, Self) {
         let (socket, server) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(server.try_clone().unwrap());
         let writer = Arc::new(Mutex::new(server));
@@ -62,6 +68,13 @@ impl Server {
                     ApiRequest::CreateSession { .. } | ApiRequest::AttachSession { .. } => {
                         ApiEvent::Attached {
                             session: info("same-id"),
+                        }
+                    }
+                    ApiRequest::GetHistory { .. } if history_failures > 0 => {
+                        history_failures -= 1;
+                        ApiEvent::Error {
+                            code: jcode_sdk::api::ErrorCode::Internal,
+                            message: "History is temporarily unavailable".into(),
                         }
                     }
                     ApiRequest::GetHistory { .. } => ApiEvent::History {

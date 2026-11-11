@@ -65,6 +65,10 @@ mod transport {
     }
 }
 
+#[path = "harness_disconnect.rs"]
+mod disconnect;
+#[path = "harness_history.rs"]
+mod history;
 #[path = "harness_recovery.rs"]
 mod recovery;
 
@@ -2019,6 +2023,9 @@ fn session_worker_with_connector(
         {
             Ok(client) => client,
             Err(error) => {
+                if disconnect::report_protocol_failure(&error, &session_id, &updates) {
+                    return;
+                }
                 if should_log_reconnect(failed_attempts) {
                     lost(format!("{error}; reconnecting"));
                 }
@@ -2038,6 +2045,9 @@ fn session_worker_with_connector(
         };
         let events = client.events(None);
         if !already_attached && let Err(error) = client.attach_session(real_id) {
+            if disconnect::report_protocol_failure(&error, &session_id, &updates) {
+                return;
+            }
             if should_log_reconnect(failed_attempts) {
                 lost(format!("{error}; reconnecting"));
             }
@@ -2074,13 +2084,8 @@ fn session_worker_with_connector(
             session_id: session_id.clone(),
         });
 
-        if let Ok((messages, images)) = client.get_history_with_images(real_id) {
-            let _ = updates.send(Update::History {
-                session_id: session_id.clone(),
-                messages,
-                images,
-            });
-        }
+        let mut history = history::HistoryRecovery::default();
+        history.load(&client, real_id, &session_id, &updates);
 
         // Identity for the panel's status footer: which model and provider are
         // serving this session, and through which credential route. Delivered
@@ -2434,6 +2439,13 @@ fn session_worker_with_connector(
                 }
             }
 
+            // A failed bootstrap read is not a turn failure. Retry just the
+            // read with a bounded budget, leaving commands/events live between
+            // attempts instead of silently keeping an empty transcript forever.
+            if history.due(std::time::Instant::now()) && !client.is_closed() {
+                history.load(&client, real_id, &session_id, &updates);
+            }
+
             let event_wait_started = std::time::Instant::now();
             if let Some(event) = events.next_timeout(Duration::from_millis(100)) {
                 reported_disconnected_events = false;
@@ -2457,6 +2469,9 @@ fn session_worker_with_connector(
                 // new session has no active turn to interrupt.
                 if event_session_id(&event).is_some_and(|id| id != real_id) {
                     continue;
+                }
+                if matches!(event, ApiEvent::History { .. }) {
+                    history.loaded();
                 }
                 if let ApiEvent::SessionRecovery {
                     continuation_message,
@@ -2549,6 +2564,11 @@ fn session_worker_with_connector(
                     _ => {}
                 }
             } else if client.is_closed() {
+                if let Some(error) = client.disconnect_reason()
+                    && disconnect::report_protocol_failure(&error, &session_id, &updates)
+                {
+                    return;
+                }
                 lost("runtime connection closed; reconnecting".into());
                 break;
             } else if event_wait_started.elapsed() < Duration::from_millis(10) {
@@ -2569,7 +2589,9 @@ fn session_worker_with_connector(
         if address.host.is_some() {
             // A reachable SSH server whose API immediately closes should not
             // produce an unbounded rapid reconnect storm either.
-            std::thread::sleep(reconnect_delay);
+            if wait_for_reconnect(&commands, &mut pending, reconnect_delay) == ReconnectWait::Stop {
+                return;
+            }
         }
     }
 }
