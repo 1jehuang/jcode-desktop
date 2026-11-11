@@ -39,6 +39,8 @@ const STALE: Duration = Duration::from_millis(250);
 pub(super) struct Steady {
     y: f32,
     at: Instant,
+    /// Resting place when sampled. It moves only when the viewport resizes.
+    rest: f32,
 }
 
 pub(super) type SteadyCell = Rc<Cell<Option<Steady>>>;
@@ -133,8 +135,8 @@ impl Element for SteadyRow {
         let mask = window.content_mask().bounds;
         let viewport = f32::from(mask.top());
         let laid_out = f32::from(bounds.top()) - viewport;
+        let rest = f32::from(mask.size.height) - self.end_pad - f32::from(bounds.size.height);
         let target = if self.enabled {
-            let rest = f32::from(mask.size.height) - self.end_pad - f32::from(bounds.size.height);
             pinned(laid_out, rest)
         } else {
             laid_out
@@ -152,11 +154,14 @@ impl Element for SteadyRow {
                     .saturating_duration_since(previous.at)
                     .min(MAX_STEP)
                     .as_secs_f32();
-                ease(previous.y, target, dt)
+                // Positions are relative to the viewport top. When the
+                // viewport resizes (pinned chrome above it changed), the
+                // resting place shifts with it and that is not motion to ease.
+                ease(previous.y + (rest - previous.rest), target, dt)
             }
             None => target,
         };
-        self.cell.set(Some(Steady { y, at: now }));
+        self.cell.set(Some(Steady { y, at: now, rest }));
         if y != target {
             window.request_animation_frame();
         }

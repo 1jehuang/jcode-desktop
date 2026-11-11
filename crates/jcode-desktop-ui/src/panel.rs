@@ -4696,6 +4696,16 @@ impl Render for Panel {
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
+        // Pinned chrome resizes the transcript viewport when it changes.
+        let tail_header = {
+            use std::hash::{Hash, Hasher};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            publish_tracker.is_some().hash(&mut hasher);
+            if let Some(payload) = &pinned_todo {
+                format!("{payload:?}").hash(&mut hasher);
+            }
+            hasher.finish()
+        };
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
         let row_count = rows.len() + usize::from(self.activity_active());
@@ -4807,7 +4817,7 @@ impl Render for Panel {
             self.transcript_list.scroll_to(gpui::ListOffset::default());
         } else if self.stick_to_bottom {
             // Ease wrapped-line growth of live text instead of jumping a line.
-            self.follow_transcript_tail(instant_motion, row_count_changed, window);
+            self.follow_transcript_tail(instant_motion, row_count_changed, tail_header, window);
         } else {
             self.tail_glide.reset();
         }

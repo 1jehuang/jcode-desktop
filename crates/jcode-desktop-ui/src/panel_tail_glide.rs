@@ -52,6 +52,11 @@ pub(super) struct TailGlide {
     /// Last frame the turn was producing output. Growth right after a turn
     /// ends (response stats, the final tool result) still glides.
     live_at: Option<Instant>,
+    /// Viewport height seen by the previous follow frame.
+    viewport: f32,
+    /// Fingerprint of the chrome pinned above the transcript (todo card,
+    /// publish tracker). A change resizes the viewport in the coming layout.
+    header: u64,
 }
 
 impl TailGlide {
@@ -62,6 +67,8 @@ impl TailGlide {
     pub(super) fn reset(&mut self) {
         *self = Self {
             live_at: self.live_at,
+            viewport: self.viewport,
+            header: self.header,
             ..Self::default()
         };
     }
@@ -125,10 +132,34 @@ impl Panel {
         &mut self,
         snap: bool,
         _structural: bool,
+        header: u64,
         window: &mut Window,
     ) {
         let bounds = self.transcript_list.viewport_bounds();
         let viewport = f32::from(bounds.size.height);
+        // The viewport itself changing height (the pinned todo card appearing
+        // or growing after a todo call, a window resize) moves the end of the
+        // scroll range without adding anything to read. Easing toward it
+        // would drop the whole transcript and float it back up, so a resting
+        // tail stays pinned to the end through the resize instead.
+        let header_changed = std::mem::replace(&mut self.tail_glide.header, header) != header;
+        let previous_viewport = std::mem::replace(&mut self.tail_glide.viewport, viewport);
+        let resized = previous_viewport > 0.0 && (viewport - previous_viewport).abs() > 0.5;
+        if self.stick_to_bottom
+            && !snap
+            && viewport > 0.0
+            && (header_changed || resized)
+            && self.tail_glide.held
+        {
+            // Layout pins the end whatever height the viewport turns out to
+            // have. The next frame resumes holding from there.
+            self.transcript_list.scroll_to_end();
+            if self.tail_live() {
+                self.tail_glide.live_at = Some(Instant::now());
+            }
+            window.request_animation_frame();
+            return;
+        }
         let max = f32::from(self.transcript_list.max_offset_for_scrollbar().y).max(0.0);
         let listed = -f32::from(self.transcript_list.scroll_px_offset_for_scrollbar().y);
         let now = Instant::now();
@@ -542,5 +573,99 @@ mod tests {
         panel.read_with(vcx, |panel, _| {
             assert!(gap(panel).abs() <= 0.5, "caught up: {}", gap(panel));
         });
+    }
+}
+
+#[cfg(test)]
+mod pinned_header_tests {
+    use super::*;
+
+    fn frame(vcx: &mut gpui::VisualTestContext) {
+        vcx.update(|window, cx| window.simulate_next_frame(cx));
+        vcx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(8));
+    }
+
+    /// A todo call adds or grows the pinned card above the transcript, which
+    /// shortens the viewport. That is not new content at the tail: the last
+    /// rows must stay exactly where they are instead of dropping by the
+    /// card's height and gliding back up.
+    #[gpui::test]
+    fn todo_calls_do_not_move_a_following_transcript(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace =
+                crate::workspace::Workspace::for_test(crate::learning::Coach::new(), cx);
+            workspace.push_test_panel("todo-follow", cx);
+            workspace
+        });
+        let panel = workspace.update(vcx, |workspace, _| workspace.test_panel(0).unwrap());
+        panel.update(vcx, |panel, cx| {
+            panel.animate_stream_in_tests = true;
+            *panel.items = (0..60)
+                .map(|n| Item::Assistant(format!("History {n}")))
+                .collect();
+            panel.apply(
+                &ApiEvent::SessionStatus {
+                    session_id: panel.session_id.clone(),
+                    status: "processing".into(),
+                    pending_soft_interrupts: None,
+                },
+                cx,
+            );
+        });
+        for _ in 0..40 {
+            frame(vcx);
+        }
+        let tops = |vcx: &mut gpui::VisualTestContext| {
+            (
+                f32::from(vcx.debug_bounds("transcript-row-59").unwrap().top()),
+                vcx.debug_bounds("transcript-activity")
+                    .map(|bounds| f32::from(bounds.top())),
+            )
+        };
+        let (row, activity) = tops(vcx);
+        let activity = activity.expect("activity row is visible at the tail");
+        let outputs = [
+            r#"[{"content":"Reproduce","status":"in_progress"},{"content":"Fix","status":"pending"}]"#,
+            r#"[{"content":"Reproduce","status":"completed"},{"content":"Fix","status":"in_progress"},{"content":"Test","status":"pending"},{"content":"Ship","status":"pending"}]"#,
+        ];
+        let mut card = 0.0;
+        for (call, output) in outputs.into_iter().enumerate() {
+            let session_id = panel.read_with(vcx, |panel, _| panel.session_id.clone());
+            let call_id = format!("todo-{call}");
+            let events = [
+                ApiEvent::ToolStart {
+                    session_id: session_id.clone(),
+                    call_id: call_id.clone(),
+                    name: "todo".into(),
+                },
+                ApiEvent::ToolDone {
+                    session_id,
+                    call_id,
+                    name: "todo".into(),
+                    output: output.into(),
+                    error: None,
+                },
+            ];
+            for event in events {
+                panel.update(vcx, |panel, cx| panel.apply(&event, cx));
+                for step in 0..30 {
+                    frame(vcx);
+                    let (now_row, now_activity) = tops(vcx);
+                    assert!(
+                        (now_row - row).abs() <= 0.5,
+                        "call {call} frame {step}: last row moved from {row} to {now_row}"
+                    );
+                    let now_activity = now_activity.expect("activity row stays visible");
+                    assert!(
+                        (now_activity - activity).abs() <= 0.5,
+                        "call {call} frame {step}: activity moved from {activity} to {now_activity}"
+                    );
+                }
+            }
+            let height = f32::from(vcx.debug_bounds("pinned-todo-card").unwrap().size.height);
+            assert!(height > card, "the pinned card grew: {card} -> {height}");
+            card = height;
+        }
     }
 }
