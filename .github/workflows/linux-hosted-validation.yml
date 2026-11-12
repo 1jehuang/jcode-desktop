@@ -14,7 +14,7 @@ on:
       jcode_revision:
         description: Reviewed full Jcode runtime commit with metadata snapshot rerun support
         required: true
-        default: 446302f1b6dc57120a1ee3ebacb6cb6b933545eb
+        default: d2be4dc6a31d56791dbd7ba7de5805e179fb1748
       rust_version:
         description: Exact stable Rust version installed on the hosted fleet (major.minor.patch)
         required: true
