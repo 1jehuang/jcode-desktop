@@ -187,6 +187,14 @@ impl Workspace {
                     .text_size(px(12.0))
                     .text_color(Theme::global().TEXT)
                     .cursor_pointer()
+                    // The Windows caption drag region lies behind the header.
+                    // The pop-out bridge no longer occludes it, so the trigger
+                    // must, or Windows treats the menu button as title bar.
+                    // Occluding also hides the header's own listeners, so the
+                    // trigger repeats them.
+                    .occlude()
+                    .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
+                    .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
                     .hover(|el| el.bg(Theme::global().PANEL_BG))
                     .tooltip(move |_, cx| {
                         cx.new(|_| {
