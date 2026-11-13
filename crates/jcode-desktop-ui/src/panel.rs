@@ -3666,7 +3666,7 @@ impl Panel {
                 .into_any_element();
         }
         let notice_title = match item {
-            Item::Stopped(notice) => Some(notice.title.as_str()),
+            Item::Stopped(notice) => Some(notice.title()),
             Item::CacheMiss(_) => Some("Cache miss"),
             _ => None,
         };

@@ -155,7 +155,7 @@ impl Panel {
         let confirmed_failure = match self.items.get(index) {
             Some(Item::Error(current)) => current == message,
             Some(Item::Stopped(notice)) => {
-                notice.failure && !notice.provisional && notice.detail == message
+                notice.shows_error() && !notice.provisional && notice.detail == message
             }
             _ => false,
         };

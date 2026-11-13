@@ -13,7 +13,13 @@ impl Panel {
         if matches!(event, ApiEvent::ConnectionPhase { phase, .. } if phase.is_empty())
             && is_retry_phase(&self.connection_phase)
         {
+            // Cancelled or exhausted: the failure is final after all.
+            self.set_auto_retry(stop_reason::AutoRetry::None);
             self.finish_response();
+        }
+        if matches!(event, ApiEvent::ConnectionPhase { phase, .. } if is_retry_phase(phase)) {
+            // "Response stopped" beside a retry countdown is a contradiction.
+            self.set_auto_retry(stop_reason::AutoRetry::Pending);
         }
         if matches!(event, ApiEvent::Error { .. }) {
             // A rejected send never receives MessageAccepted. Keep its text in
@@ -52,6 +58,9 @@ impl Panel {
             _ => None,
         };
         if let Some(status) = status {
+            if !matches!(event, ApiEvent::ConnectionPhase { .. }) {
+                self.set_auto_retry(stop_reason::AutoRetry::Recovered);
+            }
             self.status = status.into();
             // Actual output supersedes a stale waiting/auth/retry transport
             // phase, including providers that omit a streaming phase event.
@@ -128,6 +137,59 @@ mod tests {
                     assert_eq!(panel.status_line(), "Ready");
                     assert!(!panel.is_busy());
                 }
+            });
+        }
+    }
+
+    #[gpui::test]
+    fn failure_being_retried_is_not_reported_as_a_stopped_response(cx: &mut gpui::TestAppContext) {
+        let failed = json!({"ev":"turn_stopped", "reason":"failure",
+            "message":"Anthropic API error (503 Service Unavailable): credential validation failed"});
+        for (outcome, title, error) in [
+            (None, "Request failed. Retrying automatically", false),
+            (
+                Some(json!({"ev":"text_delta", "text":"Recovered"})),
+                "Request failed. Retried automatically",
+                false,
+            ),
+            (
+                Some(json!({"ev":"connection_phase", "phase":""})),
+                "Response stopped: error",
+                true,
+            ),
+        ] {
+            let panel = cx.new(|cx| {
+                Panel::new(
+                    "activity-lifecycle".into(),
+                    None,
+                    None,
+                    crate::harness::spawn_inert(),
+                    cx,
+                )
+            });
+            panel.update(cx, |panel, cx| {
+                panel.apply(&event(json!({"ev":"text_delta", "text":"Partial"})), cx);
+                panel.apply(&event(failed.clone()), cx);
+                let notice = |panel: &Panel| {
+                    panel
+                        .items
+                        .iter()
+                        .find_map(|item| match item {
+                            Item::Stopped(notice) => Some(notice.clone()),
+                            _ => None,
+                        })
+                        .unwrap()
+                };
+                assert_eq!(notice(panel).title(), "Response stopped: error");
+                assert!(notice(panel).shows_error());
+                for phase in ["retrying in 8s (3/3)", "retrying in 7s (3/3)"] {
+                    panel.apply(&event(json!({"ev":"connection_phase", "phase":phase})), cx);
+                }
+                if let Some(outcome) = &outcome {
+                    panel.apply(&event(outcome.clone()), cx);
+                }
+                assert_eq!(notice(panel).title(), title);
+                assert_eq!(notice(panel).shows_error(), error);
             });
         }
     }

@@ -122,6 +122,7 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
         Item::Stopped(notice) => {
             notice.detail.hash(&mut state);
             notice.failure.hash(&mut state);
+            notice.retry.hash(&mut state);
         }
         Item::CacheMiss(notice) => notice.text().hash(&mut state),
         Item::Image(_) | Item::ResponseStats(_) | Item::Todos(_) => {}
@@ -155,7 +156,7 @@ pub(super) fn segments_with_display(
             Item::Stopped(notice) => {
                 return vec![(
                     format!("{index}-notice-title").into(),
-                    notice.title.clone().into(),
+                    notice.title().to_owned().into(),
                 )];
             }
             Item::CacheMiss(_) => {
@@ -240,13 +241,13 @@ pub(super) fn segments_with_display(
             recovery::native_error_message(message),
         ),
         Item::Stopped(notice) => {
-            if notice.failure {
+            if notice.shows_error() {
                 push(
                     format!("{index}-error"),
                     recovery::native_error_message(&notice.detail),
                 );
             } else {
-                push(format!("{index}-stop-reason"), notice.detail.clone());
+                push(format!("{index}-stop-reason"), notice.plain_detail());
             }
         }
         Item::BackgroundTask { label, summary, .. } => {

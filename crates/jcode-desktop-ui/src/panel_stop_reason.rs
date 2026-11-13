@@ -12,9 +12,50 @@ pub struct StopNotice {
     /// The complete raw text for Copy, when `detail` is a summary of it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) raw: Option<String>,
+    /// Set while automatic recovery owns this failure. A failed attempt that
+    /// is being retried has not stopped the response.
+    #[serde(default, skip_serializing_if = "AutoRetry::is_transient")]
+    pub(super) retry: AutoRetry,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub(super) enum AutoRetry {
+    #[default]
+    None,
+    Pending,
+    Recovered,
+}
+
+impl AutoRetry {
+    /// A countdown does not survive a restart, so only the outcome persists.
+    fn is_transient(&self) -> bool {
+        *self != Self::Recovered
+    }
 }
 
 impl StopNotice {
+    pub(super) fn title(&self) -> &str {
+        match self.retry {
+            AutoRetry::None => &self.title,
+            AutoRetry::Pending => "Request failed. Retrying automatically",
+            AutoRetry::Recovered => "Request failed. Retried automatically",
+        }
+    }
+
+    /// The red recovery box with Resume belongs to a failure nobody is handling.
+    pub(super) fn shows_error(&self) -> bool {
+        self.failure && self.retry == AutoRetry::None
+    }
+
+    /// Text shown under the title when this is not an actionable error.
+    pub(super) fn plain_detail(&self) -> String {
+        if self.failure {
+            crate::friendly_error::summarize(&self.detail)
+        } else {
+            self.detail.clone()
+        }
+    }
+
     pub(super) fn from_event(
         reason: &TurnStopReason,
         message: &str,
@@ -35,6 +76,7 @@ impl StopNotice {
             failure: *reason != TurnStopReason::Interrupted,
             provisional: false,
             raw: None,
+            retry: AutoRetry::None,
         }
     }
 
@@ -48,6 +90,7 @@ impl StopNotice {
             failure: false,
             provisional: true,
             raw: None,
+            retry: AutoRetry::None,
         }
     }
 
@@ -82,6 +125,27 @@ fn connection_lost_detail(reason: &str) -> String {
 }
 
 impl Panel {
+    /// Update the failure of the current turn as automatic recovery progresses.
+    pub(super) fn set_auto_retry(&mut self, retry: AutoRetry) {
+        let notice = self
+            .items
+            .iter_mut()
+            .rev()
+            .take_while(|item| !matches!(item, Item::User(_)))
+            .find_map(|item| match item {
+                Item::Stopped(notice) if notice.failure && !notice.provisional => Some(notice),
+                _ => None,
+            });
+        if let Some(notice) = notice
+            && notice.retry != retry
+            // Only a countdown that was shown can be recovered from or abandoned.
+            && (retry == AutoRetry::Pending || notice.retry == AutoRetry::Pending)
+        {
+            notice.retry = retry;
+            self.transcript_measurements.dirty = true;
+        }
+    }
+
     pub(super) fn record_stop(&mut self, notice: StopNotice) {
         if !notice.provisional {
             // Confirmed rejection/cancellation settles unacknowledged prompts.
@@ -149,6 +213,7 @@ impl Panel {
                 failure: false,
                 provisional: true,
                 raw: Some(reason.to_owned()),
+                retry: AutoRetry::None,
             });
         }
         self.status = format!("lost: {}", crate::friendly_error::summarize(reason));
@@ -182,12 +247,12 @@ impl Panel {
                 div()
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(Theme::global().TEXT)
-                    .child(notice.title.clone()),
+                    .child(notice.title().to_owned()),
             )
-            .when(notice.failure, |el| {
+            .when(notice.shows_error(), |el| {
                 el.child(self.render_recovery_error(index, &notice.detail, window, cx))
             })
-            .when(!notice.failure, |el| {
+            .when(!notice.shows_error(), |el| {
                 let copy = notice.raw.clone().unwrap_or_else(|| notice.detail.clone());
                 el.child(
                     div()
@@ -197,7 +262,7 @@ impl Panel {
                         .child(div().flex_1().min_w_0().child(text_selection::plain(
                             self.transcript_selection.clone(),
                             format!("{index}-stop-reason"),
-                            notice.detail.clone(),
+                            notice.plain_detail(),
                             window,
                             cx,
                         )))
