@@ -634,6 +634,8 @@ pub struct WorkspaceSnapshot {
     #[serde(default)]
     recent_accounts: Vec<String>,
     #[serde(default)]
+    sidebar_closed_sessions: HashSet<String>,
+    #[serde(default)]
     sidebar_view: SidebarView,
     #[serde(default)]
     tutorial_page: usize,
@@ -825,6 +827,8 @@ pub struct Workspace {
     coach_expiry_task: Option<gpui::Task<()>>,
     /// Every non-archived session offered by the runtime, oldest to newest.
     sessions: Vec<jcode_sdk::SessionInfo>,
+    /// Past rows belong to this window only, never the durable session catalog.
+    sidebar_closed_sessions: HashSet<String>,
     /// Sessions the shared daemon is running a turn for right now, from its
     /// streaming markers, with the sidebar mark shown while no panel is open.
     /// Marks persist across polls so the orb animates instead of restarting.
@@ -1152,6 +1156,7 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: crate::config::get().workspace.pinned_working_dir.clone(),
             remotes: remotes::Machines::from_config(),
@@ -1540,6 +1545,7 @@ impl Workspace {
             coach_expiry_task: None,
             coach_display_hint: None,
             sessions: Vec::new(),
+            sidebar_closed_sessions: HashSet::new(),
             daemon_running: HashMap::new(),
             pinned_working_dir: None,
             remotes: remotes::Machines::default(),
@@ -1681,6 +1687,11 @@ impl Workspace {
             side_panel_snapshots: self.side_panel_snapshots.clone(),
             layout_mode: self.layout_mode,
             recent_accounts: self.recent_accounts.clone(),
+            sidebar_closed_sessions: if for_reload {
+                self.sidebar_closed_sessions.clone()
+            } else {
+                HashSet::new()
+            },
             sidebar_view: self.sidebar_view,
             tutorial_page: self.tutorial_page,
             slots: slots
@@ -1721,6 +1732,7 @@ impl Workspace {
         self.side_panel_snapshots = snapshot.side_panel_snapshots;
         self.layout_mode = snapshot.layout_mode;
         self.recent_accounts = snapshot.recent_accounts;
+        self.sidebar_closed_sessions = snapshot.sidebar_closed_sessions;
         self.sidebar_view = snapshot.sidebar_view;
         self.tutorial_page = snapshot.tutorial_page.min(2);
         self.slots.clear();
@@ -3953,6 +3965,7 @@ impl Workspace {
             && !self.slots[closed].panel.read(cx).is_machines()
             && self.slots[closed].panel.read(cx).preview_state.is_none()
         {
+            self.sidebar_closed_sessions.insert(session_id.clone());
             self.bridge.send(Command::Unwatch { session_id });
         }
         if self.previous == Some(closed_id) {
@@ -5594,6 +5607,13 @@ impl Workspace {
                 });
             }
         }
+        // Only this window's explicitly closed sessions belong in Past. Keep
+        // the full runtime catalog elsewhere for search and session recovery.
+        catalog.retain(|session| {
+            open_marks.contains_key(&session.session_id)
+                || session.user_connected
+                || self.sidebar_closed_sessions.contains(&session.session_id)
+        });
         let ordered_sessions = sidebar_session_order(&catalog);
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         // Swarms and worktrees are one concept here: an agent is a thread. It
@@ -9938,6 +9958,7 @@ mod tests {
         };
         let snapshot = WorkspaceSnapshot {
             launch: None,
+            sidebar_closed_sessions: HashSet::new(),
             format_version: SNAPSHOT_FORMAT_VERSION,
             resume: resume::Snapshot::Closed,
             side_panel_snapshots: HashMap::new(),
@@ -10146,6 +10167,7 @@ mod tests {
             workspace.apply_snapshot(
                 WorkspaceSnapshot {
                     launch: None,
+                    sidebar_closed_sessions: HashSet::new(),
                     format_version: SNAPSHOT_FORMAT_VERSION,
                     resume: resume::Snapshot::Closed,
                     side_panel_snapshots: HashMap::new(),
@@ -10285,6 +10307,9 @@ mod tests {
     ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace
+                .sidebar_closed_sessions
+                .extend(["background-run".into(), "history".into()]);
             workspace.sessions = vec![
                 session_info("background-run", Some("Running in the daemon")),
                 session_info("history", Some("Previous session")),
@@ -10405,6 +10430,7 @@ mod tests {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
             workspace.push_test_panel("sidebar-activity", cx);
             workspace.push_test_panel("quiet-session", cx);
+            workspace.sidebar_closed_sessions.insert("history".into());
             workspace.sessions = vec![
                 session_info("sidebar-activity", Some("Live session")),
                 session_info("quiet-session", Some("Idle session")),
@@ -10614,6 +10640,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .insert("session_fox_disk".into());
             workspace.apply(Update::Sessions { sessions }, cx);
             cx.notify();
         });
@@ -10636,6 +10665,11 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_closed_sessions.extend([
+                "session_fox_short".into(),
+                "session_owl_long".into(),
+                "session_cat_multiline".into(),
+            ]);
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
@@ -10676,6 +10710,9 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         for count in [10, 100, 500] {
             workspace.update(vcx, |workspace, cx| {
+                workspace
+                    .sidebar_closed_sessions
+                    .extend((0..count).map(|index| format!("session_fox_{index}")));
                 workspace.sessions = (0..count)
                     .map(|index| {
                         session_info(
@@ -10717,6 +10754,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .extend((0..500).map(|index| format!("session_fox_{index}")));
             workspace.sessions = (0..500)
                 .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
                 .collect();
@@ -10758,6 +10798,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .extend((0..100).map(|index| format!("session_fox_{index}")));
             workspace.sessions = (0..100)
                 .map(|index| session_info(&format!("session_fox_{index}"), Some("Previous work")))
                 .collect();
@@ -10774,6 +10817,9 @@ mod tests {
         vcx.run_until_parked();
         let before = vcx.debug_bounds("sidebar-session-50").unwrap();
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .insert("session_fox_100".into());
             workspace.sessions[50].title = Some("Renamed without changing row height".into());
             workspace
                 .sessions
@@ -10813,6 +10859,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .extend(["session_fox_saved".into(), "session_owl_previous".into()]);
             let mut saved = session_info("session_fox_saved", Some("saved work"));
             saved.saved = true;
             workspace.apply(
@@ -10840,6 +10889,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .insert("session_owl_closed".into());
             workspace.push_test_panel("session_fox_open", cx);
             workspace.apply(
                 Update::Sessions {
@@ -10926,6 +10978,9 @@ mod tests {
                 external.working_dir = Some("/presence/external".into());
                 external.user_connected = true;
                 external.status = status.into();
+                workspace
+                    .sidebar_closed_sessions
+                    .insert("loaded-history".into());
                 let mut history = session_info("loaded-history", Some("Loaded but disconnected"));
                 history.working_dir = external.working_dir.clone();
                 history.status = "active".into();
@@ -10994,6 +11049,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .extend((0..80).map(|index| format!("session_fox_history_{index}")));
             workspace.apply(
                 Update::Sessions {
                     sessions: (0..80)
@@ -11063,6 +11121,8 @@ mod tests {
             w.slots[0].panel.update(cx, |panel, _| {
                 panel.working_dir = Some(project.path().display().to_string());
             });
+            w.sidebar_closed_sessions
+                .extend((0..80).map(|index| format!("session_fox_gutter_{index}")));
             w.apply(
                 Update::Sessions {
                     sessions: (0..80)
@@ -11513,6 +11573,10 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace.sidebar_closed_sessions.extend([
+                "session_fox_1234567890_deadbeef".into(),
+                "session_owl_1234567890_deadbeef".into(),
+            ]);
             workspace.apply(
                 Update::Sessions {
                     sessions: vec![
@@ -11556,6 +11620,9 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |workspace, cx| {
+            workspace
+                .sidebar_closed_sessions
+                .extend((0..80).map(|index| format!("session_fox_history_{index}")));
             workspace.apply(
                 Update::Sessions {
                     sessions: (0..80)

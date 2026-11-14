@@ -566,6 +566,9 @@ mod tests {
             history.working_dir = Some("/nowhere/alpha".into());
             let mut gamma = super::super::tests::session_info("session_elk_gamma", Some("gamma"));
             gamma.working_dir = Some("/nowhere/gamma".into());
+            workspace
+                .sidebar_closed_sessions
+                .extend(["session_cat_alpha_old".into(), "session_elk_gamma".into()]);
             workspace.sessions = vec![history, gamma];
             workspace.active = 0;
             workspace

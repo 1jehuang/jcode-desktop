@@ -48,6 +48,9 @@ fn setup(
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
         w.set_test_bridge(bridge);
+        // These fixtures represent threads previously closed in this window.
+        w.sidebar_closed_sessions
+            .extend(sessions.iter().map(|session| session.session_id.clone()));
         w.sessions = sessions;
         w
     });

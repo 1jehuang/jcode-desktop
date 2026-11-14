@@ -84,7 +84,7 @@ impl Workspace {
 mod tests {
     use super::*;
     #[gpui::test]
-    fn sidebar_keeps_past_sessions_listed_and_dimmed(cx: &mut gpui::TestAppContext) {
+    fn sidebar_only_keeps_this_windows_past_sessions(cx: &mut gpui::TestAppContext) {
         use super::super::tests::session_info;
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
@@ -94,8 +94,12 @@ mod tests {
             workspace.sessions = vec![
                 session_info("open", None),
                 session_info("old", None),
+                session_info("closed-here", None),
                 external,
             ];
+            workspace
+                .sidebar_closed_sessions
+                .insert("closed-here".into());
             workspace
         });
         vcx.run_until_parked();
@@ -105,9 +109,14 @@ mod tests {
                 .iter()
                 .map(|row| row.session_id.as_str())
                 .collect::<Vec<_>>();
-            for id in ["open", "external", "old"] {
+            for id in ["open", "external", "closed-here"] {
                 assert!(ids.contains(&id), "{id} must stay in the sidebar");
             }
+            assert!(
+                !ids.contains(&"old"),
+                "older history stays out of this window"
+            );
+            assert_eq!(w.sessions.len(), 4, "durable history must stay available");
         });
         assert!(vcx.debug_bounds("sidebar-history-toggle").is_none());
     }
@@ -128,6 +137,34 @@ mod tests {
         assert_eq!(s.ids, ["d"].map(String::from).into());
         s.click("c", &order[2..], true, false);
         assert_eq!(s.ids, ["c"].map(String::from).into());
+    }
+
+    #[gpui::test]
+    fn past_sessions_survive_reload_but_not_window_recovery(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut workspace = Workspace::for_test(learning::Coach::new(), cx);
+            workspace
+                .sidebar_closed_sessions
+                .insert("closed-here".into());
+            workspace
+        });
+        workspace.update_in(vcx, |workspace, window, cx| {
+            let reload = workspace.snapshot_for_reload(window, cx).unwrap();
+            let reload = WorkspaceSnapshot::decode(&reload.encode().unwrap()).unwrap();
+            assert_eq!(
+                reload.sidebar_closed_sessions,
+                workspace.sidebar_closed_sessions
+            );
+            assert!(
+                workspace
+                    .snapshot(window, cx)
+                    .unwrap()
+                    .sidebar_closed_sessions
+                    .is_empty()
+            );
+            workspace.apply_snapshot(reload, cx);
+            assert!(workspace.sidebar_closed_sessions.contains("closed-here"));
+        });
     }
 }
 
@@ -197,6 +234,28 @@ mod interaction_tests {
             assert_eq!(live, ["fourth"]);
             assert!(w.sidebar_selection.ids.is_empty());
             assert_eq!(w.sessions.len(), 4, "closing must preserve session history");
+            assert_eq!(
+                w.sidebar_closed_sessions,
+                ["first", "second", "third"].map(String::from).into()
+            );
+        });
+        // Past rows appear after the closing panels finish fading out.
+        workspace.update_in(vcx, |w, window, cx| {
+            w.remove_finished_closing_panels(Instant::now() + Duration::from_secs(1), window, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| {
+            for id in ["first", "second", "third"] {
+                let row = w
+                    .sidebar_session_layout
+                    .iter()
+                    .find(|row| row.session_id == id);
+                assert!(
+                    row.is_some_and(|row| !row.open),
+                    "closed session must remain as Past"
+                );
+            }
         });
         // The inline close must not bubble into the row and reopen the panel.
         let row = vcx.debug_bounds("sidebar-session-0").unwrap();

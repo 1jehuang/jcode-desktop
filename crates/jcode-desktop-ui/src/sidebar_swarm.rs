@@ -339,6 +339,8 @@ mod tests {
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         let sessions = vec![session("root", None), session("child", None)];
         workspace.update(vcx, |w, cx| {
+            w.sidebar_closed_sessions
+                .extend(["root".into(), "child".into()]);
             w.apply(
                 Update::Sessions {
                     sessions: sessions.clone(),
@@ -447,6 +449,8 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         workspace.update(vcx, |w, cx| {
+            w.sidebar_closed_sessions
+                .extend(["root".into(), "other".into()]);
             w.sessions = vec![session("root", None), session("other", None)];
             cx.notify();
         });

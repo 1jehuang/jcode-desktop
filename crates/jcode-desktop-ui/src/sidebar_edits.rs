@@ -158,6 +158,8 @@ mod tests {
         second.edit_stats = Some(stats(2, 0));
         let unknown = session_info("unknown", Some("No statistics available"));
         workspace.update(vcx, |w, cx| {
+            w.sidebar_closed_sessions
+                .extend(["first".into(), "second".into(), "unknown".into()]);
             w.apply(
                 Update::Sessions {
                     sessions: vec![first.clone(), second.clone(), unknown.clone()],
@@ -226,6 +228,7 @@ mod tests {
         let root = session_info("root", Some("Parent"));
         workspace.update(vcx, |w, cx| {
             w.layout_mode = crate::config::LayoutMode::Normal;
+            w.sidebar_closed_sessions.insert("root".into());
             w.apply(
                 Update::Sessions {
                     sessions: vec![root.clone()],
