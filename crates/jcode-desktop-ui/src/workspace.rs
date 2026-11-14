@@ -15801,6 +15801,7 @@ mod accounts_panel_tests {
             w.active = 1;
             w
         });
+        vcx.simulate_resize(gpui::size(px(1200.), px(800.)));
         let source = workspace.read_with(vcx, |w, _| w.slots[0].panel.clone());
         let request = OpenAccounts {
             source: source.entity_id(),
@@ -15846,11 +15847,17 @@ mod accounts_panel_tests {
         );
         assert!(commands.try_recv().is_err());
         workspace.update_in(vcx, |w, window, cx| {
+            // GPUI's executor does not advance these wall-clock animations.
+            // Remove the outgoing accounts surface before opening another one,
+            // otherwise its duplicate login-close selector can win debug_bounds.
+            let settled = Instant::now() + Duration::from_secs(1);
+            w.remove_finished_closing_panels(settled, window, cx);
             w.open_accounts(&request, window, cx);
-            // The test executor does not advance wall-clock row animation.
-            // Settle it before clicking, or Close is still above the viewport.
-            w.row_progress
-                .sample(Instant::now() + Duration::from_secs(1));
+            w.row_progress.sample(settled);
+            for slot in &mut w.slots {
+                slot.animated_width.sample(settled);
+            }
+            w.camera_snap_pending[w.active_row] = true;
             cx.notify();
         });
         vcx.run_until_parked();
@@ -15862,6 +15869,10 @@ mod accounts_panel_tests {
         let close = vcx
             .debug_bounds("login-close")
             .expect("dedicated Close button paints");
+        assert!(
+            close.left() >= px(0.) && close.right() <= px(1200.),
+            "Close must be inside the resized viewport: {close:?}"
+        );
         vcx.simulate_click(close.center(), gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, _| assert_eq!(w.slots[w.active].panel, source));

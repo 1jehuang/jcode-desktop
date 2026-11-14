@@ -1,6 +1,6 @@
 [package]
 name = "jcode-desktop-ui"
-version = "0.6.5"
+version = "0.7.0"
 edition.workspace = true
 license.workspace = true
 build = "build.rs"
@@ -47,6 +47,9 @@ mermaid-rs-renderer = { git = "https://github.com/1jehuang/mermaid-rs-renderer.g
 ratex-layout = "0.1.14"
 ratex-parser = "0.1.14"
 ratex-svg = { version = "0.1.14", features = ["standalone", "embed-fonts"] }
+# RaTeX uses rust-embed for its fonts. Debug binaries are also relocated by
+# hosted builds and UI hot reload, so they cannot read compile-host font paths.
+rust-embed = { version = "8", features = ["debug-embed"] }
 unicode-segmentation = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"

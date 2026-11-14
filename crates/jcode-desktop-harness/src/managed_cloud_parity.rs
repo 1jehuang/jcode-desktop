@@ -97,6 +97,27 @@ pub struct Snapshot {
 }
 
 impl Snapshot {
+    /// Process-local cache identity. Secrets are hashed, never retained in a
+    /// transport cache key or exposed in diagnostics.
+    pub(crate) fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hash = std::collections::hash_map::DefaultHasher::new();
+        self.provider.hash(&mut hash);
+        for (provider, payload) in &self.oauth {
+            match provider {
+                TransferProvider::Claude => "claude",
+                TransferProvider::OpenAi => "openai",
+            }
+            .hash(&mut hash);
+            payload.hash(&mut hash);
+        }
+        self.api_keys.hash(&mut hash);
+        self.notify.hash(&mut hash);
+        self.default_model.hash(&mut hash);
+        self.reasoning_effort.hash(&mut hash);
+        hash.finish()
+    }
+
     /// Read local settings and credentials. Never refreshes or migrates them.
     pub fn collect() -> Self {
         let mut snapshot = Self::from_config_toml(&read_local_config());
@@ -295,6 +316,39 @@ pub fn apply_to_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warm_identity_tracks_models_effort_and_credentials() {
+        let snapshot = || {
+            Snapshot::from_config_toml(
+                "[provider]\ndefault_model = 'openai:test'\nopenai_reasoning_effort = 'high'",
+            )
+        };
+        let original = snapshot().fingerprint();
+        assert_eq!(original, snapshot().fingerprint());
+        let mut changed = snapshot();
+        changed.default_model = Some("other".into());
+        assert_ne!(original, changed.fingerprint());
+        let mut changed = snapshot();
+        changed.reasoning_effort = Some("low".into());
+        assert_ne!(original, changed.fingerprint());
+        let mut changed = snapshot();
+        changed
+            .oauth
+            .push((TransferProvider::OpenAi, b"first".to_vec()));
+        let oauth = changed.fingerprint();
+        assert_ne!(original, oauth);
+        changed.oauth[0].1 = b"refreshed".to_vec();
+        assert_ne!(oauth, changed.fingerprint());
+        let mut changed = snapshot();
+        changed
+            .api_keys
+            .push(("OPENAI_API_KEY", "openai.env", "first".into()));
+        let api_key = changed.fingerprint();
+        assert_ne!(original, api_key);
+        changed.api_keys[0].2 = "rotated".into();
+        assert_ne!(api_key, changed.fingerprint());
+    }
 
     #[test]
     fn provider_defaults_are_read_from_local_config() {

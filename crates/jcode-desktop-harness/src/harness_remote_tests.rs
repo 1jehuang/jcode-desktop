@@ -527,6 +527,72 @@ fn last_bridge_handle_stops_its_coordinator_for_ssh_cleanup() {
 }
 
 /// Live end-to-end check of managed Jcode Cloud through Desktop's own create
+/// path, without a model request. Reports cold and warm panel startup separately.
+#[cfg(unix)]
+#[test]
+#[ignore = "live: creates two sessions on the account's Jcode Cloud machine"]
+fn managed_cloud_live_warm_panels_use_distinct_sessions() {
+    let transports = transport::RemoteTransports::default();
+    let mut clients = Vec::new();
+    let mut ids = Vec::new();
+    for index in 0..2 {
+        if index == 1 {
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !transports.cloud_spare_ready() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            assert!(
+                transports.cloud_spare_ready(),
+                "cloud API stream did not preconnect"
+            );
+        }
+        let (internal, created) = channel();
+        let (tx, _updates) = update_channel();
+        let started = Instant::now();
+        let mut phases = Vec::new();
+        create_remote_session(
+            crate::managed_cloud::HOST.into(),
+            None,
+            Some(format!("live-warm-{index}")),
+            tx,
+            internal,
+            |host| {
+                let connecting = Instant::now();
+                let result = transports.connect_with_progress(host, &mut |message| {
+                    eprintln!("[cloud {index}] {message}");
+                    phases.push(message.to_owned());
+                });
+                eprintln!(
+                    "[cloud {index}] transport ready after {:?}",
+                    connecting.elapsed()
+                );
+                result
+            },
+        );
+        let (session, client) = match created.recv_timeout(Duration::from_secs(5)) {
+            Ok(Command::CreatedInternal {
+                session, client, ..
+            }) => (session, client),
+            _ => panic!("cloud panel {index} failed before session creation"),
+        };
+        eprintln!("[cloud {index}] ready after {:?}", started.elapsed());
+        assert!(session.session_id.starts_with("ssh://jcode-cloud/"));
+        if index == 1 {
+            assert!(
+                phases.iter().any(|phase| phase.contains("Reusing ready")),
+                "warm path not used: {phases:?}"
+            );
+        }
+        ids.push(session.session_id);
+        clients.push(client);
+    }
+    assert_ne!(
+        ids[0], ids[1],
+        "panels must never share an attached API client"
+    );
+}
+
+/// Live end-to-end check of managed Jcode Cloud through Desktop's own create
 /// path. Requires a signed-in, subscribed Jcode account and provisions or wakes
 /// that account's real cloud machine. Uses no AWS credentials or SSH config.
 /// Run: cargo test -p jcode-desktop-ui managed_cloud_live -- --ignored --nocapture

@@ -1,5 +1,34 @@
 ## What's new
 
+### Jcode Desktop 0.7.0
+
+A more fluid workspace, native recovery controls, and faster cloud chats.
+
+#### Highlights
+
+- Resume interrupted turns with a native Resume action. Provider recovery explains the proposed route and context size before you confirm a model switch.
+- Open a managed cloud chat directly from the sidebar cloud destination. On Linux, macOS, and FreeBSD, a ready cloud API connection makes the next panel open without repeating authorization or connection setup.
+- Switch a panel's folder from its location pill, or open a pasted session ID directly from the resume picker with Enter.
+
+#### Improvements
+
+- Workspace chrome is unified, version details live in the footer, and wide conversations use a centered transcript with a responsive composer.
+- Rounded session tabs keep hover and click targets stable. Switching workspace rows pans vertically, and a lone chat regains the full canvas width.
+- The composer shows the authoritative serving account. Reading no longer requires composer focus, and typing returns focus to the active chat.
+- Large streaming transcripts and crash recovery use less allocation churn, with shared edit previews and coalesced runtime catalog updates.
+
+#### Fixes
+
+- Retry cancellation and exhausted retries offer actionable recovery. A failure being retried no longer appears as a stopped response.
+- Restored history preserves tool cards, and failed history loads retry without blocking the session. Fatal protocol errors stop reconnect loops.
+- Desktop settings save even when unrelated configuration sections are invalid.
+- Sidebar past sessions are scoped to the current window. Menu controls remain clickable, including beside the Windows caption drag region.
+- Panel activation, keyboard input, and transcript following stay in sync, including when pinned todo cards resize.
+
+Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
+
+## Previous releases
+
 ### Jcode Desktop 0.6.5
 
 Past sessions are back in the sidebar.
@@ -11,8 +40,6 @@ Past sessions are back in the sidebar.
 - Windows cold starts launch exactly one harness bridge. A reconnect during startup no longer spawns a duplicate.
 
 Downloads are available at https://jcode.sh/desktop after all platform builds and public download checks pass.
-
-## Previous releases
 
 ### Jcode Desktop 0.6.1
 

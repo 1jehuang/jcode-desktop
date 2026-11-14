@@ -207,8 +207,18 @@ fn describe_error(status: u16, code: &str, message: &str) -> String {
 pub fn connect(
     progress: &mut dyn FnMut(&str),
     client_name: String,
-    mut request: impl FnMut(&Account, &str) -> Result<ConnectReply, String>,
+    request: impl FnMut(&Account, &str) -> Result<ConnectReply, String>,
     open: impl FnOnce(SshConnectOptions) -> jcode_sdk::Result<JcodeClient>,
+) -> Result<JcodeClient, String> {
+    connect_with_sync_status(progress, client_name, request, |options, _| open(options))
+}
+
+/// A failed best-effort login sync must not be cached as a synchronized host.
+pub(crate) fn connect_with_sync_status(
+    progress: &mut dyn FnMut(&str),
+    client_name: String,
+    mut request: impl FnMut(&Account, &str) -> Result<ConnectReply, String>,
+    open: impl FnOnce(SshConnectOptions, bool) -> jcode_sdk::Result<JcodeClient>,
 ) -> Result<JcodeClient, String> {
     let account = account()?;
     let key = EphemeralKey::generate()?;
@@ -254,13 +264,15 @@ pub fn connect(
     // Mirror this computer's default model and logins before the daemon
     // serves the new session. A failure is shown but never blocks the session.
     let snapshot = crate::managed_cloud_parity::Snapshot::collect();
+    let mut synchronized = true;
     if !snapshot.is_empty() {
         progress("Syncing your models and logins…");
         if let Err(message) = sync(&options, &snapshot) {
+            synchronized = false;
             progress(&message);
         }
     }
-    open(options).map_err(|e| e.to_string())
+    open(options, synchronized).map_err(|e| e.to_string())
     // `key` drops here. The authorized key expires server-side within 60s and
     // the established connection does not need the file again.
 }

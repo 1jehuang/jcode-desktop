@@ -1,6 +1,205 @@
 use super::*;
 use std::sync::Weak;
 
+fn cloud_account(key: &str, base: &str) -> crate::managed_cloud::Account {
+    crate::managed_cloud::Account {
+        api_key: key.into(),
+        api_base: base.into(),
+    }
+}
+
+#[test]
+fn managed_cloud_reuses_only_exact_authenticated_account() {
+    let mut cloud = CloudTransport::<_, ()>::default();
+    let account = cloud_account("first", "https://api.example/v1");
+    cloud.select_account(Some(&account), 1);
+    let owner = Arc::new(1);
+    cloud.publish(Arc::downgrade(&owner));
+    cloud.select_account(Some(&account), 1);
+    assert!(Arc::ptr_eq(&owner, &cloud.reserve(Weak::upgrade).unwrap()));
+    for changed in [
+        cloud_account("second", "https://api.example/v1"),
+        cloud_account("second", "https://other.example/v1"),
+    ] {
+        cloud.select_account(Some(&changed), 1);
+        assert!(cloud.reserve(Weak::upgrade).is_none());
+        cloud.publish(Arc::downgrade(&owner));
+    }
+    cloud.select_account(None, 1);
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    // Signing back in must not resurrect a master from before sign-out.
+    cloud.select_account(Some(&account), 1);
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    assert_eq!(*owner, 1);
+}
+
+#[test]
+fn managed_cloud_changed_parity_fingerprint_invalidates_live_master() {
+    let mut cloud = CloudTransport::<_, ()>::default();
+    let account = cloud_account("first", "https://api.example/v1");
+    let owner = Arc::new(1);
+    cloud.select_account(Some(&account), 10);
+    cloud.publish(Arc::downgrade(&owner));
+    cloud.select_account(Some(&account), 10);
+    assert!(cloud.reserve(Weak::upgrade).is_some());
+    cloud.select_account(Some(&account), 11);
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    assert_eq!(cloud.reservations, 0);
+    cloud.publish(Arc::downgrade(&owner));
+    cloud.select_account(Some(&account), 10);
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    // Existing clients remain alive even when defaults change.
+    assert_eq!(*owner, 1);
+}
+
+#[test]
+fn managed_cloud_reservations_are_bounded_and_new_master_resets_budget() {
+    let mut cloud = CloudTransport::<_, ()>::default();
+    let owner = Arc::new(1);
+    cloud.publish(Arc::downgrade(&owner));
+    for _ in 1..CHANNELS_PER_MASTER {
+        assert!(Arc::ptr_eq(&owner, &cloud.reserve(Weak::upgrade).unwrap()));
+    }
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    assert!(cloud.owner.is_none());
+    let replacement = Arc::new(2);
+    cloud.publish(Arc::downgrade(&replacement));
+    assert_eq!(cloud.reservations, 1);
+    assert!(Arc::ptr_eq(
+        &replacement,
+        &cloud.reserve(Weak::upgrade).unwrap()
+    ));
+    assert_eq!(*owner, 1);
+}
+
+#[test]
+fn managed_cloud_failure_and_expired_owner_require_fresh_initialization() {
+    let mut cloud = CloudTransport::<_, ()>::default();
+    let owner = Arc::new(1);
+    cloud.publish(Arc::downgrade(&owner));
+    cloud.invalidate();
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    cloud.publish(Arc::downgrade(&owner));
+    let weak = Arc::downgrade(&owner);
+    drop(owner);
+    assert!(weak.upgrade().is_none());
+    assert!(cloud.reserve(Weak::upgrade).is_none());
+    assert!(cloud.owner.is_none());
+}
+
+#[test]
+fn cloud_initialization_does_not_lock_ordinary_ssh_pool() {
+    let transports = RemoteTransports::default();
+    let _cloud_initialization = transports.cloud.lock().unwrap();
+    assert!(transports.pool.try_lock().is_ok());
+    assert!(Arc::ptr_eq(&transports.cloud, &transports.clone().cloud));
+    assert!(!Arc::ptr_eq(
+        &transports.cloud,
+        &RemoteTransports::default().cloud
+    ));
+}
+
+fn spare_cache() -> (CloudTransport<Weak<usize>, Arc<usize>>, Arc<usize>) {
+    let owner = Arc::new(1);
+    let mut cloud = CloudTransport::default();
+    cloud.select_account(Some(&cloud_account("first", "https://api.example/v1")), 10);
+    cloud.publish(Arc::downgrade(&owner));
+    (cloud, owner)
+}
+
+#[test]
+fn cloud_spare_is_one_shot_and_reserves_only_during_preparation() {
+    let (mut cloud, owner) = spare_cache();
+    let now = Instant::now();
+    let (generation, prepared_owner) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    assert!(Arc::ptr_eq(&owner, &prepared_owner));
+    assert_eq!(cloud.reservations, 2);
+    assert!(cloud.begin_prepare(Weak::upgrade, now).is_none());
+    assert!(cloud.finish_prepare(generation, Some(prepared_owner), now));
+    assert!(cloud.begin_prepare(Weak::upgrade, now).is_none());
+    assert!(Arc::ptr_eq(&owner, &cloud.take_spare(now).unwrap()));
+    assert_eq!(cloud.reservations, 2);
+    assert!(cloud.take_spare(now).is_none());
+    let (next, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    assert_ne!(generation, next);
+    assert_eq!(cloud.reservations, 3);
+}
+
+#[test]
+fn cloud_spare_expiration_actively_drops_last_connection() {
+    let (mut cloud, owner) = spare_cache();
+    let weak = Arc::downgrade(&owner);
+    let now = Instant::now();
+    let (generation, prepared_owner) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    assert!(cloud.finish_prepare(generation, Some(prepared_owner), now));
+    drop(owner);
+    cloud.expire_spare(generation, now + SPARE_TTL - Duration::from_nanos(1));
+    assert!(weak.upgrade().is_some());
+    cloud.expire_spare(generation, now + SPARE_TTL);
+    assert!(weak.upgrade().is_none());
+    assert!(cloud.take_spare(now + SPARE_TTL).is_none());
+}
+
+#[test]
+fn cloud_spare_take_enforces_deadline_even_before_timer_runs() {
+    let (mut cloud, owner) = spare_cache();
+    let now = Instant::now();
+    let (generation, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    cloud.finish_prepare(generation, Some(owner), now);
+    assert!(cloud.take_spare(now + SPARE_TTL).is_none());
+}
+
+#[test]
+fn cloud_spare_account_and_fingerprint_changes_drop_ready_and_fence_pending() {
+    for (account, fingerprint) in [
+        (Some(cloud_account("second", "https://api.example/v1")), 10),
+        (Some(cloud_account("first", "https://other.example/v1")), 10),
+        (Some(cloud_account("first", "https://api.example/v1")), 11),
+        (None, 10),
+    ] {
+        let (mut cloud, owner) = spare_cache();
+        let now = Instant::now();
+        let (generation, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+        cloud.select_account(account.as_ref(), fingerprint);
+        assert!(!cloud.finish_prepare(generation, Some(owner.clone()), now));
+        assert!(cloud.take_spare(now).is_none());
+        assert!(cloud.owner.is_none());
+
+        let (mut cloud, owner) = spare_cache();
+        let (generation, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+        cloud.finish_prepare(generation, Some(owner), now);
+        cloud.select_account(account.as_ref(), fingerprint);
+        assert!(cloud.take_spare(now).is_none());
+    }
+}
+
+#[test]
+fn cloud_spare_stale_completion_and_timer_cannot_touch_replacement() {
+    let (mut cloud, owner) = spare_cache();
+    let now = Instant::now();
+    let (old, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    cloud.publish(Arc::downgrade(&owner));
+    let (new, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    assert!(!cloud.finish_prepare(old, Some(owner.clone()), now));
+    assert!(cloud.preparing);
+    assert!(cloud.finish_prepare(new, Some(owner), now + SPARE_TTL));
+    cloud.expire_spare(old, now + SPARE_TTL * 3);
+    assert!(cloud.take_spare(now + SPARE_TTL).is_some());
+}
+
+#[test]
+fn cloud_spare_failed_background_does_not_retry_or_refund_budget() {
+    let (mut cloud, _owner) = spare_cache();
+    let now = Instant::now();
+    let (generation, _) = cloud.begin_prepare(Weak::upgrade, now).unwrap();
+    assert!(!cloud.finish_prepare(generation, None, now));
+    assert!(!cloud.preparing);
+    assert!(cloud.spare.is_none());
+    assert_eq!(cloud.reservations, 2);
+    assert!(!cloud.finish_prepare(generation, Some(Arc::new(9)), now));
+    assert!(cloud.take_spare(now).is_none());
+}
+
 fn target(host: &str, identity: u64) -> Target {
     Target {
         host: host.into(),

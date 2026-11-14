@@ -1,5 +1,4 @@
-//! Bridge-run-scoped SSH master reuse. Only transport owners are cached, never
-//! attached API clients. Weak entries release idle masters with the last client.
+//! Bridge-run-scoped SSH master reuse with one short-lived unattached cloud client.
 use jcode_sdk::{JcodeClient, SharedSshTransport, SshConnectOptions, WeakSharedSshTransport};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
@@ -9,6 +8,7 @@ use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+const SPARE_TTL: Duration = Duration::from_secs(60);
 const MAX_TARGETS: usize = 32;
 // Stay below sshd's usual MaxSessions=10. Reservations are cumulative, not
 // returned, so concurrent selection cannot oversubscribe a master.
@@ -19,6 +19,8 @@ const CONFIG_LIMIT: u64 = 1024 * 1024;
 #[derive(Clone, Default)]
 pub(super) struct RemoteTransports {
     pool: Arc<Mutex<Pool<WeakSharedSshTransport>>>,
+    // Provisioning is serialized independently of ordinary SSH selection.
+    cloud: Arc<Mutex<CloudTransport<WeakSharedSshTransport, JcodeClient>>>,
     #[cfg(test)]
     connector: Option<Arc<dyn Fn(&str) -> jcode_sdk::Result<JcodeClient> + Send + Sync>>,
 }
@@ -49,17 +51,7 @@ impl RemoteTransports {
             return connector(host);
         }
         if host == crate::managed_cloud::HOST {
-            // Account-authorized, Jcode-operated host. Never an SSH alias,
-            // the user's SSH config, or a personal AWS profile.
-            return crate::managed_cloud::connect(
-                progress,
-                format!("jcode-desktop-remote/{}", crate::client_version()),
-                crate::managed_cloud::request_connect,
-                JcodeClient::connect_ssh,
-            )
-            .map_err(|message| {
-                jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message)
-            });
+            return self.connect_cloud(progress);
         }
         let host = crate::remote_targets::validate_host(host).map_err(|message| {
             jcode_sdk::Error::new(jcode_sdk::ErrorKind::InvalidOption, message)
@@ -115,6 +107,239 @@ impl RemoteTransports {
             self.pool.lock().unwrap().remove(&key, generation);
         }
         result
+    }
+
+    #[cfg(test)]
+    pub(super) fn cloud_spare_ready(&self) -> bool {
+        self.cloud
+            .lock()
+            .unwrap()
+            .spare
+            .as_ref()
+            .is_some_and(|(client, deadline)| Instant::now() < *deadline && !client.is_closed())
+    }
+
+    fn connect_cloud(&self, progress: &mut dyn FnMut(&str)) -> jcode_sdk::Result<JcodeClient> {
+        let error = |message| jcode_sdk::Error::new(jcode_sdk::ErrorKind::ConnectFailed, message);
+        // This lock serializes cloud initialization only, never the global pool.
+        let mut cloud = self.cloud.lock().unwrap();
+        let account = crate::managed_cloud::account();
+        let fingerprint = crate::managed_cloud_parity::Snapshot::collect().fingerprint();
+        cloud.select_account(account.as_ref().ok(), fingerprint);
+        let account = account.map_err(error)?;
+        let result = if let Some(client) = cloud
+            .take_spare(Instant::now())
+            .filter(|client| !client.is_closed())
+        {
+            progress("Reusing ready Jcode Cloud connection…");
+            Ok(client)
+        } else if let Some(owner) = cloud.reserve(WeakSharedSshTransport::upgrade) {
+            progress("Reusing your Jcode Cloud connection…");
+            owner.connect()
+        } else {
+            crate::managed_cloud::connect_with_sync_status(
+                progress,
+                format!("jcode-desktop-remote/{}", crate::client_version()),
+                |current, key| {
+                    // connect reads credentials again. Never authorize a new
+                    // account under the identity selected above.
+                    if !same_cloud_account(&account, current) {
+                        return Err(
+                            "Jcode account changed while connecting; reconnect explicitly".into(),
+                        );
+                    }
+                    crate::managed_cloud::request_connect(current, key)
+                },
+                |options, synchronized| {
+                    let owner = SharedSshTransport::new(options)?;
+                    // Startup must finish inside this closure, while connect
+                    // still owns the ephemeral private key and pinned hosts.
+                    let client = owner.connect()?;
+                    if synchronized {
+                        cloud.publish(owner.downgrade());
+                    }
+                    Ok(client)
+                },
+            )
+            .map_err(error)
+        };
+        // Credentials and synchronized defaults can change during provisioning
+        // or an API handshake. Do not publish a client with stale parity.
+        let unchanged = crate::managed_cloud::account()
+            .is_ok_and(|current| same_cloud_account(&account, &current))
+            && fingerprint == crate::managed_cloud_parity::Snapshot::collect().fingerprint();
+        if result.is_err() || !unchanged {
+            cloud.invalidate();
+        }
+        if !unchanged {
+            return Err(error(
+                "Jcode account or cloud configuration changed while connecting; reconnect explicitly".into(),
+            ));
+        }
+        // Reserve the channel now, never again when the ready client is consumed.
+        let prepare = result
+            .as_ref()
+            .ok()
+            .and_then(|_| cloud.begin_prepare(WeakSharedSshTransport::upgrade, Instant::now()));
+        drop(cloud);
+        if let Some((generation, owner)) = prepare {
+            let state = Arc::clone(&self.cloud);
+            std::thread::spawn(move || {
+                // No cloud lock during the API handshake. Foreground clicks can
+                // select another channel without waiting for this preparation.
+                let result = owner.connect();
+                let account = crate::managed_cloud::account();
+                let fingerprint = crate::managed_cloud_parity::Snapshot::collect().fingerprint();
+                let mut cloud = state.lock().unwrap();
+                cloud.select_account(account.as_ref().ok(), fingerprint);
+                let published = cloud.finish_prepare(generation, result.ok(), Instant::now());
+                drop(cloud);
+                if published {
+                    let weak = Arc::downgrade(&state);
+                    drop(state);
+                    // The timer owns no client or strong cache reference.
+                    std::thread::spawn(move || {
+                        std::thread::sleep(SPARE_TTL);
+                        if let Some(state) = weak.upgrade() {
+                            state
+                                .lock()
+                                .unwrap()
+                                .expire_spare(generation, Instant::now());
+                        }
+                    });
+                }
+            });
+        }
+        // Do not retry failed API handshakes, which may be ambiguous.
+        result
+    }
+}
+
+fn same_cloud_account(
+    a: &crate::managed_cloud::Account,
+    b: &crate::managed_cloud::Account,
+) -> bool {
+    a.api_base == b.api_base && a.api_key == b.api_key
+}
+
+// Exact account matching avoids hash collisions. Never derive Debug for this
+// state, which contains credentials, and never include credentials in errors.
+struct CloudTransport<W, S = JcodeClient> {
+    account: Option<crate::managed_cloud::Account>,
+    fingerprint: u64,
+    owner: Option<W>,
+    reservations: usize,
+    generation: u64,
+    preparing: bool,
+    spare: Option<(S, Instant)>,
+}
+
+impl<W, S> Default for CloudTransport<W, S> {
+    fn default() -> Self {
+        Self {
+            account: None,
+            fingerprint: 0,
+            owner: None,
+            reservations: 0,
+            generation: 0,
+            preparing: false,
+            spare: None,
+        }
+    }
+}
+
+impl<W, S> CloudTransport<W, S> {
+    fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+        self.preparing = false;
+        self.spare = None;
+        self.owner = None;
+        self.reservations = 0;
+    }
+
+    fn select_account(
+        &mut self,
+        account: Option<&crate::managed_cloud::Account>,
+        fingerprint: u64,
+    ) {
+        let unchanged = self
+            .account
+            .as_ref()
+            .zip(account)
+            .is_some_and(|(old, new)| same_cloud_account(old, new))
+            && self.fingerprint == fingerprint;
+        if !unchanged {
+            self.invalidate();
+            self.fingerprint = fingerprint;
+            self.account = account.map(|a| crate::managed_cloud::Account {
+                api_key: a.api_key.clone(),
+                api_base: a.api_base.clone(),
+            });
+        }
+    }
+
+    fn reserve<T>(&mut self, upgrade: impl FnOnce(&W) -> Option<T>) -> Option<T> {
+        if self.reservations < CHANNELS_PER_MASTER
+            && let Some(owner) = self.owner.as_ref().and_then(upgrade)
+        {
+            self.reservations += 1;
+            return Some(owner);
+        }
+        self.owner = None;
+        None
+    }
+
+    fn take_spare(&mut self, now: Instant) -> Option<S> {
+        self.spare
+            .take()
+            .and_then(|(client, deadline)| (now < deadline).then_some(client))
+    }
+
+    fn begin_prepare<T>(
+        &mut self,
+        upgrade: impl FnOnce(&W) -> Option<T>,
+        now: Instant,
+    ) -> Option<(u64, T)> {
+        if self
+            .spare
+            .as_ref()
+            .is_some_and(|(_, deadline)| now >= *deadline)
+        {
+            self.spare = None;
+        }
+        if self.preparing || self.spare.is_some() {
+            return None;
+        }
+        let owner = self.reserve(upgrade)?;
+        self.generation = self.generation.wrapping_add(1);
+        self.preparing = true;
+        Some((self.generation, owner))
+    }
+
+    fn finish_prepare(&mut self, generation: u64, client: Option<S>, now: Instant) -> bool {
+        if generation != self.generation || !self.preparing {
+            return false;
+        }
+        self.preparing = false;
+        self.spare = client.map(|client| (client, now + SPARE_TTL));
+        self.spare.is_some()
+    }
+
+    fn expire_spare(&mut self, generation: u64, now: Instant) {
+        if generation == self.generation
+            && self
+                .spare
+                .as_ref()
+                .is_some_and(|(_, deadline)| now >= *deadline)
+        {
+            self.spare = None;
+        }
+    }
+
+    fn publish(&mut self, owner: W) {
+        self.invalidate();
+        self.owner = Some(owner);
+        self.reservations = 1;
     }
 }
 

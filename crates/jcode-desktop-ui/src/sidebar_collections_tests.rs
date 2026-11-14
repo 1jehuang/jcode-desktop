@@ -30,7 +30,7 @@ fn keys_never_collide_with_project_paths() {
 }
 
 #[test]
-fn changes_replay_identically_on_disk() {
+fn changes_replay_same_logical_state_on_disk() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("collections.json");
     let mut memory = jcode_sdk::collections::Collections::default();
@@ -47,11 +47,24 @@ fn changes_replay_identically_on_disk() {
             collection: Some(id.clone()),
         },
     ];
+    let mut persisted = None;
     for change in &changes {
         change.apply(&mut memory).unwrap();
-        jcode_sdk::collections::update_at(&path, |store| change.apply(store)).unwrap();
+        let (store, ()) =
+            jcode_sdk::collections::update_at(&path, |store| change.apply(store)).unwrap();
+        persisted = Some(store);
     }
-    let disk = jcode_sdk::collections::load_from(&path).unwrap();
+    let mut disk = jcode_sdk::collections::load_from(&path).unwrap();
+    // Serialization must preserve the committed snapshot exactly, timestamps included.
+    assert_eq!(Some(&disk), persisted.as_ref());
+
+    // create_with_id timestamps each application, not the logical change. The
+    // optimistic copy and the later locked replay must agree on every other
+    // collection field and its order, but need not have identical creation times.
+    for collection in memory.collections.iter_mut().chain(&mut disk.collections) {
+        assert!(collection.created_at_ms > 0);
+        collection.created_at_ms = 0;
+    }
     assert_eq!(disk.collections, memory.collections);
     assert_eq!(disk.members, memory.members);
 }
