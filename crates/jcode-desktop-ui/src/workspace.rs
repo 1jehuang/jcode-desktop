@@ -3952,6 +3952,11 @@ impl Workspace {
             self.focus_active(window, cx);
             return;
         }
+        if let Some(editor) = self.slots[self.active].panel.read(cx).code_editor()
+            && !editor.update(cx, |editor, cx| editor.confirm_close(cx))
+        {
+            return;
+        }
         self.learned("close_panel", cx);
         crate::sounds::play(crate::sounds::Cue::PanelClose, cx);
         let closed = self.active;
@@ -11560,8 +11565,8 @@ mod tests {
         vcx.run_until_parked();
 
         assert!(
-            vcx.debug_bounds("code-file-contents").is_some(),
-            "clicking a source file should open its read-only panel"
+            vcx.debug_bounds("code-editor-text").is_some(),
+            "clicking a source file should open it in the editor"
         );
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2);

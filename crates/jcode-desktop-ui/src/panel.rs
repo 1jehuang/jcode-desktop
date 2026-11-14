@@ -676,7 +676,7 @@ pub(crate) enum MinimapSessionState {
 
 struct CodeFile {
     path: std::path::PathBuf,
-    contents: Result<String, String>,
+    editor: Entity<crate::code_editor::CodeEditor>,
 }
 
 #[derive(Debug)]
@@ -1163,29 +1163,10 @@ impl Panel {
     }
 
     pub fn new_code_file(path: std::path::PathBuf, bridge: Bridge, cx: &mut Context<Self>) -> Self {
-        const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
         let title = path
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.display().to_string());
-        let contents = std::fs::metadata(&path)
-            .map_err(|error| error.to_string())
-            .and_then(|metadata| {
-                if metadata.len() > MAX_FILE_BYTES {
-                    Err(format!(
-                        "file is too large to preview ({} bytes)",
-                        metadata.len()
-                    ))
-                } else {
-                    std::fs::read_to_string(&path).map_err(|error| {
-                        if error.kind() == std::io::ErrorKind::InvalidData {
-                            "binary files cannot be previewed".to_string()
-                        } else {
-                            error.to_string()
-                        }
-                    })
-                }
-            });
         let working_dir = path.parent().map(|parent| parent.display().to_string());
         let mut panel = Self::new(
             format!("file://{}", path.display()),
@@ -1195,7 +1176,9 @@ impl Panel {
             cx,
         );
         panel.items.clear();
-        panel.code_file = Some(CodeFile { path, contents });
+        // Loads off the UI thread; large and binary files report an error.
+        let editor = cx.new(|cx| crate::code_editor::CodeEditor::open(path.clone(), cx));
+        panel.code_file = Some(CodeFile { path, editor });
         panel
     }
 
@@ -1227,6 +1210,11 @@ impl Panel {
 
     pub(crate) fn can_refresh_account_runtime(&self) -> bool {
         self.can_fork() && self.todoist.is_none() && self.orchestration.is_none()
+    }
+
+    /// The editor of a file panel, for unsaved-change checks.
+    pub(crate) fn code_editor(&self) -> Option<Entity<crate::code_editor::CodeEditor>> {
+        self.code_file.as_ref().map(|file| file.editor.clone())
     }
 
     pub(crate) fn is_accounts_panel(&self) -> bool {
@@ -4333,6 +4321,8 @@ impl Panel {
             self.focus_handle.clone()
         } else if let Some(terminal) = &self.terminal {
             terminal.read(cx).focus_handle(cx)
+        } else if let Some(file) = &self.code_file {
+            file.editor.read(cx).focus_handle.clone()
         } else if self.unfinished_work.is_some()
             || self.orchestration.is_some()
             || self.is_changelog()
@@ -4497,71 +4487,7 @@ impl Render for Panel {
         }
         if let Some(file) = &self.code_file {
             let path = file.path.display().to_string();
-            let mut body = div()
-                .id("code-file-contents")
-                .debug_selector(|| "code-file-contents".into())
-                .flex_1()
-                .min_h_0()
-                .overflow_scroll()
-                .font_family(Theme::global().FONT_MONO)
-                .text_size(px(12.0))
-                .py_2();
-            match &file.contents {
-                Ok(contents) => {
-                    if !contents.is_empty() {
-                        // One shaped leaf lets a drag span lines without copying
-                        // the separate, nonselectable line-number gutter.
-                        body = body.child(
-                            div()
-                                .flex()
-                                .min_w_full()
-                                .child(
-                                    div()
-                                        .w(px(52.0))
-                                        .flex_none()
-                                        .pr_3()
-                                        .text_align(gpui::TextAlign::Right)
-                                        .text_color(Theme::global().CODE_GUTTER)
-                                        .children(contents.lines().enumerate().map(
-                                            |(index, _)| div().child((index + 1).to_string()),
-                                        )),
-                                )
-                                .child(
-                                    div()
-                                        .pr_4()
-                                        .whitespace_nowrap()
-                                        .text_color(Theme::global().CODE_TEXT)
-                                        .child(text_selection::plain(
-                                            self.transcript_selection.clone(),
-                                            "code-file-text",
-                                            contents.clone(),
-                                            window,
-                                            cx,
-                                        )),
-                                ),
-                        );
-                    }
-                    if contents.is_empty() {
-                        body = body.child(
-                            div()
-                                .px_4()
-                                .text_color(Theme::global().TEXT_DIM)
-                                .child("empty file"),
-                        );
-                    }
-                }
-                Err(error) => {
-                    body = body.child(div().p_4().text_color(Theme::global().ERROR).child(
-                        text_selection::plain(
-                            self.transcript_selection.clone(),
-                            "code-file-error",
-                            error.clone(),
-                            window,
-                            cx,
-                        ),
-                    ));
-                }
-            }
+            let dirty = file.editor.read(cx).is_dirty();
             return div()
                 .size_full()
                 .flex()
@@ -4570,27 +4496,45 @@ impl Render for Panel {
                 .track_focus(&self.focus_handle)
                 .child(
                     div()
+                        .debug_selector(|| "code-file-header".into())
                         .flex_none()
                         .px_3()
                         .py_2()
+                        .flex()
+                        .items_center()
+                        .gap_2()
                         .border_b_1()
                         .border_color(Theme::global().CODE_BORDER)
                         .bg(Theme::global().CODE_HEADER_BG)
                         .font_family(Theme::global().FONT_MONO)
                         .text_size(px(11.0))
                         .text_color(Theme::global().TEXT_DIM)
-                        .overflow_hidden()
-                        .whitespace_nowrap()
-                        .text_ellipsis()
-                        .child(text_selection::plain(
-                            self.transcript_selection.clone(),
-                            "code-file-path",
-                            path,
-                            window,
-                            cx,
-                        )),
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .whitespace_nowrap()
+                                .text_ellipsis()
+                                .child(text_selection::plain(
+                                    self.transcript_selection.clone(),
+                                    "code-file-path",
+                                    path,
+                                    window,
+                                    cx,
+                                )),
+                        )
+                        .when(dirty, |el| {
+                            el.child(
+                                div()
+                                    .debug_selector(|| "code-file-unsaved".into())
+                                    .flex_none()
+                                    .text_color(Theme::global().ACCENT)
+                                    .child("Unsaved"),
+                            )
+                        }),
                 )
-                .child(body)
+                .child(div().flex_1().min_h_0().child(file.editor.clone()))
                 .into_any_element();
         }
         if self.applet.is_some() {

@@ -12,4 +12,5 @@ pub mod friendly_error;
 pub mod learning;
 pub mod pdf_render;
 pub mod platform_dirs;
+pub mod text_buffer;
 pub mod todoist;
