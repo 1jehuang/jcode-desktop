@@ -32,7 +32,7 @@ def verify(output, env, root, *, layout_mode):
     state = root / "state"
     report_path = output.with_suffix(".close-panel.json")
     frames = {stage: output.with_name(f"{output.stem}-close-{stage}.png")
-              for stage in ("survivors", "empty", "reopened")}
+              for stage in ("survivors", "lone", "empty", "reopened")}
     if any(path.exists() for path in [report_path, *frames.values()]):
         raise FileExistsError("close evidence already exists; choose a new output name")
     assert env.get("JCODE_DESKTOP_SCREENSHOT") == "1"
@@ -89,6 +89,12 @@ def verify(output, env, root, *, layout_mode):
     try:
         initial = wait_for("initial", lambda nav: len(panels(nav)) == 6)
         ids = [panel["id"] for panel in panels(initial)]
+        # The fixture packs six narrow columns onto the screen. Exercise the
+        # ordinary half-width survivor used by real multi-panel workspaces.
+        native("key", "--clearmodifiers", "super+Home")
+        wait_for("left-edge", lambda nav: nav["focused_slot"] == panels(nav)[0]["slot"])
+        native("key", "--clearmodifiers", "super+2")
+        wait_for("default-width", lambda nav: panels(nav)[0]["width"] == 0.5)
         native("key", "--clearmodifiers", "super+End")
         wait_for("right-edge", lambda nav: nav["focused_slot"] == panels(nav)[-1]["slot"]
                  and not nav["camera_motion"])
@@ -118,13 +124,20 @@ def verify(output, env, root, *, layout_mode):
                              and not nav["camera_motion"])
         assert [p["id"] for p in panels(survivors)] == ids[:3]
         capture("survivors")
-        close_burst(3, 3)
+        close_burst(2, 3)
+        lone = wait_for("lone-retired", lambda nav:
+                       len(panels(nav)) == 1 and not panels(nav)[0]["closing"]
+                       and not nav["camera_motion"])
+        capture("lone")
+        assert panels(lone)[0]["width"] == 1.0, ("lone panel left at half width", lone)
+        close_burst(1, 5)
         wait_for("all-retired", lambda nav: not panels(nav))
         capture("empty")
         native("key", "--clearmodifiers", "super+n")
         reopened = wait_for("reopened", lambda nav:
                             len(panels(nav)) == 1 and not panels(nav)[0]["closing"])
         assert panels(reopened)[0]["id"] not in ids, ("old panel resurrected", reopened)
+        assert panels(reopened)[0]["width"] == 1.0, ("reopened panel must fill canvas", reopened)
         capture("reopened")
         report.update(passed=True, initial_ids=ids, survivor_ids=ids[:3],
                       reopened_id=panels(reopened)[0]["id"],

@@ -105,6 +105,9 @@ pub(crate) mod restart;
 #[path = "closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[cfg(test)]
+#[path = "workspace_lone_panel_tests.rs"]
+mod workspace_lone_panel_tests;
+#[cfg(test)]
 #[path = "fps_header_tests.rs"]
 mod fps_header_tests;
 #[cfg(test)]
@@ -2556,7 +2559,11 @@ impl Workspace {
     /// mirroring niri's "new column opens right of the focused column".
     /// Returns the index of the new slot.
     fn open_session(&mut self, session: jcode_sdk::SessionInfo, cx: &mut Context<Self>) -> usize {
-        let width_fraction = spawned_panel_width(self.row_indices(self.active_row).count());
+        let width_fraction = spawned_panel_width(
+            self.row_indices(self.active_row)
+                .filter(|&index| !self.slots[index].closing)
+                .count(),
+        );
         let bridge = self.bridge.clone();
         let session_id = session.session_id.clone();
         let panel = cx.new(|cx| {
@@ -2605,9 +2612,13 @@ impl Workspace {
             .set(width_fraction, Instant::now());
         // The lone panel that had the whole viewport steps back to the default
         // width now that it has company, leaving two equal halves.
-        let strip_panels = self.row_indices(self.active_row).count();
+        let live_indices = self
+            .row_indices(self.active_row)
+            .filter(|&index| !self.slots[index].closing)
+            .collect::<Vec<_>>();
+        let strip_panels = live_indices.len();
         let now = Instant::now();
-        for index in self.row_indices(self.active_row).collect::<Vec<_>>() {
+        for index in live_indices {
             if index == insert_at {
                 continue;
             }
@@ -3954,6 +3965,17 @@ impl Workspace {
             // on the next key repeat.
             .filter(|&index| !self.slots[index].closing)
             .collect();
+        // A fading neighbour no longer owns canvas space. Restore the lone
+        // ordinary column now, rather than leaving half the window empty after
+        // the fade completes. Non-default widths remain the user's choice.
+        if let [index] = remaining.as_slice() {
+            let slot = &mut self.slots[*index];
+            if slot.width_fraction == DEFAULT_WIDTH {
+                slot.width_fraction = 1.0;
+                slot.animated_width.set(1.0, Instant::now());
+                slot.restore_fraction = None;
+            }
+        }
         self.active = if self.single_panel {
             0
         } else if self.slots[closed].panel.read(cx).is_changelog() {
