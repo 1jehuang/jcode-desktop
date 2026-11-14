@@ -36,7 +36,7 @@ fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn sidebar_destination_icons_choose_defaults_without_starting_sessions(
+fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
     cx: &mut gpui::TestAppContext,
 ) {
     let (bridge, commands) = harness::spawn_recording();
@@ -72,12 +72,28 @@ fn sidebar_destination_icons_choose_defaults_without_starting_sessions(
             w.remotes.default_host.as_deref(),
             Some(remotes::MANAGED_CLOUD_HOST)
         );
-        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots.len(), 2);
     });
-    assert!(
-        commands.try_recv().is_err(),
-        "selecting cloud must not wake a VM or create a session"
-    );
+    let draft = workspace.read_with(vcx, |w, cx| {
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
+            if host == remotes::MANAGED_CLOUD_HOST && id == draft
+    ));
+    assert!(commands.try_recv().is_err());
+    workspace.update(vcx, |w, cx| w.open_default_draft(None, cx));
+    let next_draft = workspace.read_with(vcx, |w, cx| {
+        assert_eq!(w.slots.len(), 3);
+        w.slots[w.active].panel.read(cx).session_id.clone()
+    });
+    assert_ne!(draft, next_draft);
+    assert!(matches!(
+        commands.try_recv(),
+        Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
+            if host == remotes::MANAGED_CLOUD_HOST && id == next_draft
+    ));
     click(vcx, "default-directory-button");
     assert!(
         vcx.debug_bounds("default-directory-panel").is_none(),
@@ -87,7 +103,7 @@ fn sidebar_destination_icons_choose_defaults_without_starting_sessions(
     click(vcx, "machine-destination-local");
     workspace.read_with(vcx, |w, _| {
         assert_eq!(w.remotes.default_host, None);
-        assert_eq!(w.slots.len(), 1);
+        assert_eq!(w.slots.len(), 3);
     });
     assert!(commands.try_recv().is_err());
     click(vcx, "machines-picker-button");

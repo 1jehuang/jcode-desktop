@@ -855,7 +855,7 @@ impl Workspace {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_md()
+                .rounded_full()
                 .cursor_pointer()
                 .when(selected, |el| el.bg(theme.ACCENT_DIM))
                 .hover(|el| el.bg(theme.TOOL_BG))
@@ -894,12 +894,13 @@ impl Workspace {
                         button(
                             "machine-destination-cloud",
                             include_bytes!("../../../assets/icons/machine-cloud.svg"),
-                            "Cloud · Use Jcode Cloud for new sessions".into(),
+                            "Cloud · Open a cloud panel and use Cloud for new sessions".into(),
                             host.is_some_and(managed_destination),
                         )
                         .on_click(cx.listener(|this, _, _, cx| {
                             cx.stop_propagation();
                             this.set_default_machine(Some(MANAGED_CLOUD_HOST.into()), cx);
+                            this.open_remote_draft(MANAGED_CLOUD_HOST.into(), cx);
                         })),
                     )
                     .child(
