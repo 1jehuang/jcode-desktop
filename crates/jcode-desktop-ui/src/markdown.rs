@@ -1212,6 +1212,7 @@ fn math_block(
 
 #[path = "markdown_syntax.rs"]
 mod syntax;
+pub(crate) use syntax::{LineHighlighter, token_color};
 
 pub(crate) fn highlight_code(
     body: &str,

@@ -9,6 +9,7 @@ mod build_info;
 mod bundled_applets;
 mod changelog;
 mod clipboard_image;
+mod code_editor;
 mod commands;
 mod diff_block;
 mod diff_review_content;
@@ -56,7 +57,7 @@ pub(crate) use jcode_desktop_harness::{
 // GPUI-free models (diff previews, learning coach, Todoist, PDF rendering).
 pub use jcode_desktop_model::todoist;
 pub(crate) use jcode_desktop_model::{
-    diff, diff_model, friendly_error, learning, pdf_render, platform_dirs,
+    diff, diff_model, file_tree, friendly_error, learning, pdf_render, platform_dirs, text_buffer,
 };
 // The shared UI foundation every view uses, in its own crate so feature view
 // crates can depend on it without the whole UI.
@@ -192,6 +193,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("super-shift-t", CycleTheme, None),
         KeyBinding::new("alt-r", workspace::OpenResume, None),
         KeyBinding::new("ctrl-shift-e", ToggleSidebar, None),
+        KeyBinding::new("super-shift-e", workspace::ToggleFileExplorer, None),
         KeyBinding::new("ctrl-b", ToggleSidebar, None),
         KeyBinding::new("super-b", ToggleSidebar, None),
         KeyBinding::new("super-shift-/", NewHelpSession, None),
@@ -239,6 +241,7 @@ pub fn bind_workspace_keys(cx: &mut App) {
         KeyBinding::new("cmd-o", ToggleOverview, None),
         KeyBinding::new("cmd-shift-o", OpenFolder, None),
         KeyBinding::new("cmd-b", ToggleSidebar, None),
+        KeyBinding::new("cmd-shift-e", workspace::ToggleFileExplorer, None),
         KeyBinding::new("cmd-/", ToggleHints, None),
         KeyBinding::new("cmd-shift-q", Quit, None),
     ]);

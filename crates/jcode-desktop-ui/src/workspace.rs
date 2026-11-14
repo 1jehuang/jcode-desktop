@@ -201,6 +201,7 @@ actions!(
         ToggleHints,
         ToggleShowcase,
         ToggleSidebar,
+        ToggleFileExplorer,
         ToggleVoice,
         BeginVoiceHold,
         EndVoiceHold,
@@ -246,6 +247,8 @@ const FOLDER_RIGHT_MARGIN: f32 = 0.0;
 #[path = "folder_surface.rs"]
 mod folder_surface;
 
+#[path = "workspace_file_explorer.rs"]
+mod file_explorer;
 #[path = "live_tabs.rs"]
 mod live_tabs;
 #[path = "workspace_version.rs"]
@@ -888,6 +891,8 @@ pub struct Workspace {
     folder_picker_error: Option<String>,
     folder_search: Option<Entity<PromptInput>>,
     rename_editor: Option<rename::Editor>,
+    /// Right-hand Files panel.
+    file_explorer: file_explorer::State,
     focus_restore: FocusSnapshot,
     performance: Option<PerformanceProfile>,
     gpui_performance: GpuiPerformanceSnapshot,
@@ -1192,6 +1197,7 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             rename_editor: None,
+            file_explorer: Default::default(),
             focus_restore: FocusSnapshot::Workspace,
             performance: performance_enabled.then(PerformanceProfile::default),
             gpui_performance: GpuiPerformanceSnapshot::default(),
@@ -1580,6 +1586,7 @@ impl Workspace {
             folder_picker_error: None,
             folder_search: None,
             rename_editor: None,
+            file_explorer: Default::default(),
             focus_restore: FocusSnapshot::Workspace,
             performance: None,
             gpui_performance: GpuiPerformanceSnapshot::default(),
@@ -3943,6 +3950,11 @@ impl Workspace {
         if self.slots[self.active].panel.read(cx).is_machines() {
             self.close_machines(cx);
             self.focus_active(window, cx);
+            return;
+        }
+        if let Some(editor) = self.slots[self.active].panel.read(cx).code_editor()
+            && !editor.update(cx, |editor, cx| editor.confirm_close(cx))
+        {
             return;
         }
         self.learned("close_panel", cx);
@@ -8497,8 +8509,17 @@ impl Render for Workspace {
         } else {
             0.
         };
-        let canvas_w =
-            (f32::from(viewport.width) - sidebar_width - connector_width - right_margin).max(0.0);
+        let explorer_width = if self.file_explorer.open && !compact {
+            file_explorer::clamp_width(self.file_explorer.width, f32::from(viewport.width))
+        } else {
+            0.0
+        };
+        let canvas_w = (f32::from(viewport.width)
+            - sidebar_width
+            - connector_width
+            - right_margin
+            - explorer_width)
+            .max(0.0);
         let viewport_w = canvas_w.max(1.0);
         if self.last_canvas_width != Some(viewport_w) {
             self.last_canvas_width = Some(viewport_w);
@@ -8769,6 +8790,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::toggle_hints))
             .on_action(cx.listener(Self::toggle_showcase))
             .on_action(cx.listener(Self::toggle_sidebar))
+            .on_action(cx.listener(Self::toggle_file_explorer))
             .on_action(cx.listener(Self::cycle_theme))
             .on_action(cx.listener(Self::new_help_session))
             .on_action(cx.listener(Self::open_changelog))
@@ -8845,7 +8867,10 @@ impl Render for Workspace {
                                         el.child(self.render_showcase_cue(cue, window))
                                     }),
                             ),
-                    ),
+                    )
+                    .when(explorer_width > 0.0, |root| {
+                        root.child(self.render_file_explorer(content_top_inset, window, cx))
+                    }),
             )
             .when(
                 compact && self.show_sidebar && self.compact_sidebar_open,
@@ -8876,6 +8901,9 @@ impl Render for Workspace {
             .children(self.render_applet_toast(cx))
             .when(self.sidebar_resizing, |root| {
                 root.child(self.render_sidebar_resize_overlay(cx))
+            })
+            .when(self.file_explorer.resizing, |root| {
+                root.child(self.render_file_explorer_resize_overlay(cx))
             });
         self.dump_state(window, cx);
         let animation_active = self.animation_active();
@@ -11537,8 +11565,8 @@ mod tests {
         vcx.run_until_parked();
 
         assert!(
-            vcx.debug_bounds("code-file-contents").is_some(),
-            "clicking a source file should open its read-only panel"
+            vcx.debug_bounds("code-editor-text").is_some(),
+            "clicking a source file should open it in the editor"
         );
         workspace.read_with(vcx, |workspace, cx| {
             assert_eq!(workspace.slots.len(), 2);
@@ -15008,6 +15036,64 @@ mod tests {
                 "the ctrl-shift-e alias should toggle the sidebar too"
             );
         });
+    }
+
+    #[gpui::test]
+    fn the_files_panel_lists_expands_and_searches_beside_the_canvas(cx: &mut gpui::TestAppContext) {
+        let (workspace, cx) = focused_workspace(cx);
+        cx.simulate_keystrokes(&format!("{MOD}-shift-e"));
+        cx.run_until_parked();
+        // Listing finishes on the background executor, then the rows render.
+        cx.run_until_parked();
+        assert!(workspace.update(cx, |workspace, _| workspace.file_explorer.open));
+        // The toggle moves into the open panel's header.
+        assert!(cx.debug_bounds("tab-files-toggle").is_none());
+        assert!(cx.debug_bounds("file-explorer-close").is_some());
+        let panel = cx
+            .debug_bounds("file-explorer")
+            .expect("files panel renders");
+        let canvas = cx.debug_bounds("workspace-canvas").expect("canvas renders");
+        assert_no_visual_overlap("file-explorer", panel, "workspace-canvas", canvas);
+        assert!(
+            cx.debug_bounds("file-explorer-row-src").is_some(),
+            "the crate directory lists its src folder"
+        );
+        assert!(cx.debug_bounds("file-explorer-row-lib.rs").is_none());
+
+        let src = cx.debug_bounds("file-explorer-row-src").unwrap().center();
+        cx.simulate_click(src, gpui::Modifiers::none());
+        cx.run_until_parked();
+        cx.run_until_parked();
+        assert!(workspace.update(cx, |workspace, _| {
+            let tree = workspace.file_explorer_tree().unwrap();
+            tree.is_expanded(&tree.root().join("src"))
+        }));
+        assert!(
+            cx.debug_bounds("file-explorer-row-updates").is_some(),
+            "expanding src shows its first child folder"
+        );
+
+        workspace.update(cx, |workspace, cx| {
+            workspace.set_file_explorer_query("workspace_file_explorer".into(), cx)
+        });
+        cx.run_until_parked();
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("file-explorer-match-0").is_some());
+
+        cx.simulate_keystrokes(&format!("{MOD}-shift-e"));
+        cx.run_until_parked();
+        assert!(!workspace.update(cx, |workspace, _| workspace.file_explorer.open));
+        assert!(cx.debug_bounds("file-explorer").is_none());
+        assert!(cx.debug_bounds("tab-files-toggle").is_some());
+    }
+
+    #[test]
+    fn the_files_panel_width_stays_usable_and_leaves_room_for_sessions() {
+        assert_eq!(file_explorer::clamp_width(50.0, 2000.0), 200.0);
+        assert_eq!(file_explorer::clamp_width(350.0, 2000.0), 350.0);
+        assert_eq!(file_explorer::clamp_width(5000.0, 2000.0), 720.0);
+        assert_eq!(file_explorer::clamp_width(900.0, 1200.0), 600.0);
+        assert_eq!(file_explorer::clamp_width(900.0, 300.0), 200.0);
     }
 
     /// Reusable rendered-geometry guard. Checks the actual GPUI layout rather
