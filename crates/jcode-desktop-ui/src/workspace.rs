@@ -21,6 +21,8 @@ mod side_panel;
 #[path = "workspace_resume.rs"]
 pub(crate) mod resume;
 
+#[path = "workspace_menu.rs"]
+mod menu;
 #[path = "workspace_single_panel.rs"]
 mod single_panel;
 
@@ -3247,6 +3249,10 @@ impl Workspace {
     }
 
     fn new_panel(&mut self, _: &NewPanel, _: &mut Window, cx: &mut Context<Self>) {
+        if self.single_panel {
+            self.open_new_session_window(cx);
+            return;
+        }
         self.tutorial_cue("Enter", "New session", "new", cx);
         self.learned("new_panel", cx);
         self.open_new_session(cx);
@@ -7456,11 +7462,13 @@ impl Workspace {
             .gap_2()
             .text_size(px(11.0))
             .child(div().text_size(px(14.0)).child("Settings"))
-            .child(
-                div()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("Current window"),
-            );
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("Current window"),
+                )
+            });
         for (id, label, enabled) in [
             ("settings-minimap", "Workspace minimap", self.show_minimap),
             (
@@ -7468,7 +7476,10 @@ impl Workspace {
                 "Show pressed shortcuts",
                 self.showcase_mode,
             ),
-        ] {
+        ]
+        .into_iter()
+        .filter(|_| !self.single_panel)
+        {
             settings = settings.child(
                 div()
                     .id(id)
@@ -7506,78 +7517,85 @@ impl Workspace {
                     ),
             );
         }
-        let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
-        settings = settings.child(
-            div()
-                .id("settings-folder-tabs")
-                .debug_selector(|| "settings-folder-tabs".into())
-                .flex_none()
-                .px_2()
-                .py_2()
-                .rounded_sm()
-                .flex()
-                .justify_between()
-                .gap_2()
-                .cursor_pointer()
-                .bg(Theme::global().PANEL_BG)
-                .hover(|el| el.bg(Theme::global().TOOL_BG))
-                .on_mouse_down(
-                    gpui::MouseButton::Left,
-                    cx.listener(|this, _, _, cx| {
-                        this.layout_mode =
-                            if this.layout_mode == crate::config::LayoutMode::FolderTabs {
-                                crate::config::LayoutMode::Normal
+        if !self.single_panel {
+            let folder_tabs = self.layout_mode == crate::config::LayoutMode::FolderTabs;
+            settings = settings.child(
+                div()
+                    .id("settings-folder-tabs")
+                    .debug_selector(|| "settings-folder-tabs".into())
+                    .flex_none()
+                    .px_2()
+                    .py_2()
+                    .rounded_sm()
+                    .flex()
+                    .justify_between()
+                    .gap_2()
+                    .cursor_pointer()
+                    .bg(Theme::global().PANEL_BG)
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, _, cx| {
+                            this.layout_mode =
+                                if this.layout_mode == crate::config::LayoutMode::FolderTabs {
+                                    crate::config::LayoutMode::Normal
+                                } else {
+                                    crate::config::LayoutMode::FolderTabs
+                                };
+                            this.camera_dirty.fill(true);
+                            if let Err(error) = crate::config::persist_layout_mode(this.layout_mode)
+                            {
+                                eprintln!("failed to persist workspace layout mode: {error}");
+                            }
+                            cx.notify();
+                        }),
+                    )
+                    .child("Workspace layout")
+                    .child(
+                        div()
+                            .text_color(if folder_tabs {
+                                Theme::global().ACCENT
                             } else {
-                                crate::config::LayoutMode::FolderTabs
-                            };
-                        this.camera_dirty.fill(true);
-                        if let Err(error) = crate::config::persist_layout_mode(this.layout_mode) {
-                            eprintln!("failed to persist workspace layout mode: {error}");
-                        }
-                        cx.notify();
-                    }),
-                )
-                .child("Workspace layout")
-                .child(
-                    div()
-                        .text_color(if folder_tabs {
-                            Theme::global().ACCENT
-                        } else {
-                            Theme::global().TEXT_DIM
-                        })
-                        .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
-                ),
-        );
+                                Theme::global().TEXT_DIM
+                            })
+                            .child(if folder_tabs { "Folder tabs" } else { "Normal" }),
+                    ),
+            );
+        }
         let applet_settings = self.render_applet_settings(cx);
         settings
             .child(self.render_account_settings(cx))
             .child(self.render_account_email_setting(cx))
             .child(self.render_sound_settings(cx))
             .children(applet_settings)
-            .child(
-                div()
-                    .id("settings-machines")
-                    .debug_selector(|| "settings-machines".into())
-                    .px_2()
-                    .py_2()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .bg(Theme::global().PANEL_BG)
-                    .hover(|el| el.bg(Theme::global().TOOL_BG))
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            this.open_machines(window, cx);
-                        }),
-                    )
-                    .child("Machines and default new-panel location →"),
-            )
-            .child(
-                div()
-                    .mt_2()
-                    .text_color(Theme::global().TEXT_DIM)
-                    .child("Color palettes are in the Theme tab."),
-            )
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .id("settings-machines")
+                        .debug_selector(|| "settings-machines".into())
+                        .px_2()
+                        .py_2()
+                        .rounded_sm()
+                        .cursor_pointer()
+                        .bg(Theme::global().PANEL_BG)
+                        .hover(|el| el.bg(Theme::global().TOOL_BG))
+                        .on_mouse_down(
+                            gpui::MouseButton::Left,
+                            cx.listener(|this, _, window, cx| {
+                                this.open_machines(window, cx);
+                            }),
+                        )
+                        .child("Machines and default new-panel location →"),
+                )
+            })
+            .when(!self.single_panel, |el| {
+                el.child(
+                    div()
+                        .mt_2()
+                        .text_color(Theme::global().TEXT_DIM)
+                        .child("Color palettes are in the Theme tab."),
+                )
+            })
             .into_any_element()
     }
 
@@ -8738,6 +8756,7 @@ impl Render for Workspace {
             .capture_action(cx.listener(Self::focus_first))
             .capture_action(cx.listener(Self::focus_last))
             .capture_action(cx.listener(Self::focus_previous))
+            .on_action(cx.listener(Self::open_settings))
             .on_action(cx.listener(Self::workspace_slash_command))
             .on_action(cx.listener(Self::move_panel_left))
             .on_action(cx.listener(Self::move_panel_right))

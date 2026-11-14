@@ -5,6 +5,7 @@ mod applet_host;
 mod applet_runtime;
 mod applet_surface;
 mod applet_view;
+mod application_menu;
 mod build_info;
 mod bundled_applets;
 mod changelog;
@@ -342,6 +343,9 @@ unsafe extern "C-unwind" fn activate(
                 }
             }
         });
+        // Workspace construction installs composer bindings. Native Edit menu
+        // key equivalents must be generated from that complete keymap.
+        application_menu::init(app);
         workspace::recovery::install(&workspace, window, app);
         workspace::restart::install(&workspace, window, app);
         workspace::applets::install(&workspace, window, app);

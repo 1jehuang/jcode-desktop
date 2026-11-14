@@ -81,7 +81,7 @@ impl Workspace {
     /// Clicking the version pill: check for a newer release right away and
     /// ask the platform updater to check, download, or install whatever is
     /// next. The pill shows the check and its result.
-    fn check_and_apply_update() {
+    pub(crate) fn check_and_apply_update() {
         updates::note_user_check();
         updates::check_release_now();
         // A source checkout only reports releases. Ctrl+R or /update rebuild it.

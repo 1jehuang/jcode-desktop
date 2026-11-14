@@ -19,11 +19,42 @@ fn fork_window_args(
 
 #[cfg(test)]
 thread_local! {
+    pub(super) static NEW_SESSION_WINDOWS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     pub(super) static FORK_WINDOWS: std::cell::RefCell<Vec<String>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
 
 impl Workspace {
+    pub(super) fn open_new_session_window(&mut self, _cx: &mut Context<Self>) {
+        #[cfg(test)]
+        NEW_SESSION_WINDOWS.with(|count| count.set(count.get() + 1));
+        #[cfg(not(test))]
+        {
+            if harness::screenshot_mode() {
+                return;
+            }
+            let result = crate::platform::self_executable().and_then(|executable| {
+                let mut command = std::process::Command::new(executable);
+                command.arg("--single-panel");
+                command.args(
+                    std::env::args_os()
+                        .filter(|arg| arg == "--hot-reload" || arg == "--no-hot-reload"),
+                );
+                if let Some(directory) = self.default_working_dir()
+                    && std::path::Path::new(&directory).is_dir()
+                {
+                    command.current_dir(directory);
+                }
+                command.spawn().map(|_| ())
+            });
+            if let Err(error) = result {
+                eprintln!("new session: could not open window: {error}");
+                self.status = format!("Could not open a new session window: {error}");
+                _cx.notify();
+            }
+        }
+    }
+
     /// A fork never replaces this window's chat. It opens in a new window.
     pub(super) fn open_fork_window(&self, session_id: &str) {
         #[cfg(test)]
@@ -68,6 +99,11 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
+        if self.sidebar_view == SidebarView::Settings {
+            return self
+                .render_single_panel_settings(cx)
+                .pt(px(content_top_inset(false, window.is_fullscreen())));
+        }
         // Layout preferences and hot-reload snapshots cannot turn this window
         // back into a workspace. No strip router is mounted, so touchpad motion
         // belongs entirely to the transcript and its controls.
@@ -137,9 +173,11 @@ impl Workspace {
                     cx.stop_propagation();
                 }
             }))
-            // Deliberately omit new/move/resize/overview/sidebar/workspace
+            // Deliberately omit move/resize/overview/sidebar/workspace
             // actions. The host still handles Ctrl+R, and the panel owns chat,
             // model, login, clipboard, image and transcript shortcuts.
+            .on_action(cx.listener(Self::open_settings))
+            .on_action(cx.listener(Self::new_panel))
             .on_action(cx.listener(Self::workspace_slash_command))
             .on_action(cx.listener(Self::close_panel))
             .on_action(cx.listener(Self::fork_panel))

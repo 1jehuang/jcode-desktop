@@ -89,6 +89,19 @@ gpui::actions!(
     ]
 );
 
+// Kept in this leaf so workspace views do not depend on native menu setup.
+gpui::actions!(
+    application_menu,
+    [
+        OpenSettings,
+        CheckForUpdates,
+        About,
+        Hide,
+        HideOthers,
+        ShowAll
+    ]
+);
+
 gpui::actions!(
     panel_shortcuts,
     [JumpToLatest, JumpToLatestIfEmpty, BackgroundRunningTool]
