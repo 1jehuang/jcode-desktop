@@ -652,10 +652,12 @@ impl Workspace {
         self.live_tabs.version_width = version_width;
         self.live_tabs.hit_targets.clear();
         let paint_order = TabLayout::hover_paint_order(entries.len(), selected, hovered);
+        let mut slots = Vec::with_capacity(entries.len());
         for &position in &paint_order {
             let (index, row, _) = entries[position];
             let focused = position == selected;
             let popped = Some(position) == hovered;
+            let hot = index.is_some() && self.live_tabs.hovered == Some(keys[position]);
             let compact = row != self.active_row && !popped;
             let key = keys[position];
             let accent = Theme::global().workspace_accent(row);
@@ -664,8 +666,14 @@ impl Workspace {
                 .blend(accent.opacity(if focused { 0.16 } else { 0.05 }));
             let current = geometry[position];
             let (exposed_left, visible) = TabLayout::exposed_in(&geometry, position, &paint_order);
+            // The pointer target is the tab's resting slot, never its popped
+            // or animating body. A popped tab is a preview only: it must not
+            // swallow the hover and clicks meant for the neighbours it covers,
+            // and a slot that never moves under the pointer cannot flicker.
+            let (slot_left, slot_width) = TabLayout::exposed(&layout, position, selected);
+            let slot_padding = (slot_width / 12.0).min(6.0);
             if let Some(index) = index {
-                let x = exposed_left + visible / 2.0;
+                let x = slot_left + slot_width / 2.0;
                 self.live_tabs.hit_targets.push((index, x));
             }
             let padding = (visible / 12.0).min(6.0);
@@ -697,7 +705,9 @@ impl Workspace {
                     gpui::linear_color_stop(bg, 1.),
                 )
             };
-            let show_actions = index.is_some() && visible >= 88.0;
+            let show_actions =
+                index.is_some() && row == self.active_row && slot_width >= 88.0;
+            let fill = if hot { hover_bg } else { tab_bg };
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
@@ -748,36 +758,12 @@ impl Workspace {
                                     .bottom_0()
                                     .right_0()
                                     .w(px(20.0))
-                                    .bg(fade(tab_bg))
-                                    .group_hover("live-session-tab", move |style| {
-                                        style.bg(fade(hover_bg))
-                                    }),
+                                    .bg(fade(fill)),
                             ),
-                    )
-                })
-                // Actions float over the faded end of the title on hover, so
-                // they never reserve width the title could be using.
-                .when(!compact && show_actions, |el| {
-                    el.child(
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .right(px(padding))
-                            .flex()
-                            .items_center()
-                            .opacity(0.0)
-                            .group_hover("live-session-tab", |style| style.opacity(1.0))
-                            .child(div().h_full().w(px(16.0)).bg(fade(hover_bg)))
-                            .child(div().h_full().flex().items_center().bg(hover_bg).children(
-                                self.render_tab_actions(index.unwrap(), focused && can_rename, cx),
-                            )),
                     )
                 });
             tabs = tabs.child(
                 div()
-                    .id(("workspace-session", index.unwrap_or(usize::MAX)))
-                    .group("live-session-tab")
                     .debug_selector(move || match index {
                         Some(index) => format!("live-session-tab-{index}"),
                         None => "live-session-empty-tab".into(),
@@ -804,17 +790,76 @@ impl Workspace {
                         None if focused => accent,
                         None => accent.opacity(0.35),
                     })
-                    .bg(tab_bg)
+                    .bg(fill)
                     .text_size(px(11.0))
                     .when(focused, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
                     .when(popped, |el| el.shadow_md())
-                    .text_color(if focused {
+                    .text_color(if focused || hot {
                         Theme::global().TEXT
                     } else {
                         Theme::global().TEXT_DIM
                     })
+                    .when(focused && index.is_some(), |el| {
+                        el.child(div().absolute().inset_0().debug_selector(move || {
+                            format!("live-session-tab-{}-focused", index.unwrap())
+                        }))
+                    })
+                    .child(text)
+                    .when_some(outline.filter(|_| ring.is_some()), |el, outline| {
+                        let index = index.unwrap();
+                        el.child(
+                            div()
+                                .debug_selector(move || format!("live-session-tab-{index}-ring"))
+                                .absolute()
+                                .inset_0()
+                                .child(outline),
+                        )
+                    }),
+            );
+            slots.push(
+                div()
+                    .id(("workspace-session", index.unwrap_or(usize::MAX)))
+                    .debug_selector(move || match index {
+                        Some(index) => format!("live-session-tab-{index}-slot"),
+                        None => "live-session-empty-tab-slot".into(),
+                    })
+                    .absolute()
+                    .left(px(slot_left))
+                    .bottom(px(TAB_FLOAT_GAP))
+                    .w(px(slot_width))
+                    .h(px(TAB_HEIGHT))
                     .occlude()
                     .cursor_pointer()
+                    // Actions float over the faded end of the title on hover,
+                    // so they never reserve width the title could be using.
+                    // They live in the slot so they are always reachable
+                    // without crossing a neighbour's slot.
+                    .when(show_actions, |el| {
+                        el.child(
+                            div()
+                                .absolute()
+                                .top(px(2.0))
+                                .bottom(px(2.0))
+                                .right(px(slot_padding + 2.0))
+                                .flex()
+                                .items_center()
+                                .opacity(if hot { 1.0 } else { 0.0 })
+                                .child(div().h_full().w(px(16.0)).bg(fade(hover_bg)))
+                                .child(
+                                    div()
+                                        .h_full()
+                                        .flex()
+                                        .items_center()
+                                        .rounded_r_full()
+                                        .bg(hover_bg)
+                                        .children(self.render_tab_actions(
+                                            index.unwrap(),
+                                            focused && can_rename,
+                                            cx,
+                                        )),
+                                ),
+                        )
+                    })
                     .when(index.is_some(), |el| {
                         el.on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
                             let next = if *hovered {
@@ -835,26 +880,6 @@ impl Workspace {
                             format!("Workspace {} · {title}", row + 1).into();
                         move |_, cx| cx.new(|_| TabTooltip(title.clone())).into()
                     })
-                    .hover(|el| {
-                        el.bg(Theme::global().PANEL_BG.blend(accent.opacity(0.20)))
-                            .text_color(Theme::global().TEXT)
-                    })
-                    .when(focused && index.is_some(), |el| {
-                        el.child(div().absolute().inset_0().debug_selector(move || {
-                            format!("live-session-tab-{}-focused", index.unwrap())
-                        }))
-                    })
-                    .child(text)
-                    .when_some(outline.filter(|_| ring.is_some()), |el, outline| {
-                        let index = index.unwrap();
-                        el.child(
-                            div()
-                                .debug_selector(move || format!("live-session-tab-{index}-ring"))
-                                .absolute()
-                                .inset_0()
-                                .child(outline),
-                        )
-                    })
                     .when_some(index, |el, index| {
                         el.on_mouse_down(
                             gpui::MouseButton::Left,
@@ -871,6 +896,7 @@ impl Workspace {
                     }),
             );
         }
+        tabs = tabs.children(slots);
         let group_count = entries
             .iter()
             .filter(|(_, _, position)| *position == 0)
@@ -1580,6 +1606,61 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A popped tab is only a preview. The pointer always addresses the tab
+    /// whose resting slot it is over, even where a popped neighbour covers it.
+    #[gpui::test]
+    fn hover_and_click_follow_resting_slots_under_a_popped_tab(cx: &mut gpui::TestAppContext) {
+        cx.update(crate::bind_workspace_keys);
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            for i in 0..8 {
+                w.push_test_panel(&format!("hover-session-{i}"), cx);
+            }
+            w
+        });
+        let handle = vcx.update(|window, cx| {
+            window.focus(&workspace.read(cx).focus_handle.clone(), cx);
+            window.window_handle()
+        });
+        vcx.simulate_window_resize(handle, gpui::size(px(700.0), px(700.0)));
+        workspace.update(vcx, |w, cx| {
+            w.set_active(3, cx);
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let slot = |vcx: &mut gpui::VisualTestContext, i: usize| {
+            vcx.debug_bounds(format!("live-session-tab-{i}-slot").leak())
+                .unwrap()
+                .center()
+        };
+        // Sweep both ways without leaving the row, so each move starts under
+        // the previous tab's popped body.
+        for i in [0, 1, 2, 3, 4, 5, 6, 7, 6, 5, 4, 3, 2, 1, 0] {
+            let point = slot(vcx, i);
+            vcx.simulate_mouse_move(point, None, gpui::Modifiers::default());
+            vcx.run_until_parked();
+            workspace.update(vcx, |w, cx| {
+                w.live_tabs.settle();
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            workspace.read_with(vcx, |w, _| {
+                let key = w.slots[i].panel.entity_id().as_u64();
+                assert_eq!(w.live_tabs.hovered, Some(key), "pointer over slot {i}");
+                assert_eq!(w.active, 3, "hover never changes focus");
+            });
+            assert_eq!(slot(vcx, i), point, "slot {i} must not move under the pointer");
+        }
+        // Tab 1 is popped over tab 2's slot. Clicking there selects tab 2.
+        let (over, under) = (slot(vcx, 1), slot(vcx, 2));
+        vcx.simulate_mouse_move(over, None, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        vcx.simulate_click(under, gpui::Modifiers::default());
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |w, _| assert_eq!(w.active, 2));
     }
 
     #[test]
