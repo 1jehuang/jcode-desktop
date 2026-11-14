@@ -9,7 +9,7 @@ def verify(output, env, root):
     ui = NativeUI(output, env, root)
     report = {"passed": False}
     try:
-        ui.native("mousemove", 132, 30)
+        ui.native("mousemove", 58, 20)
 
         def find_accounts(image):
             # The section menu opens beside the 224px sidebar.

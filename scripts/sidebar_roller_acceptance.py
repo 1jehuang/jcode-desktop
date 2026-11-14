@@ -83,7 +83,7 @@ def verify(output, env, root):
         raise AssertionError("Hover popout remained visible after pointer exit")
 
     def hover():
-        ui.native("mousemove", 132, 30)
+        ui.native("mousemove", 58, 20)
         return ui.wait_frame(stage, popup)
 
     def outside():
@@ -91,7 +91,7 @@ def verify(output, env, root):
         return ui.wait_frame(stage, collapsed)
 
     def scroll():
-        ui.native("mousemove", 132, 30, "click", 5)
+        ui.native("mousemove", 58, 20, "click", 5)
         time.sleep(.35)
         report["scroll_events"] += 1
         unchanged(stage)
@@ -103,12 +103,32 @@ def verify(output, env, root):
         assert baseline["count"] > 0 and baseline["keyboard_panel"] is not None, baseline
         unchanged(stage)
         ui.wait_frame("initial-collapsed", collapsed)
+        stage = "hamburger-hover"
+        ui.native("mousemove", 26, 20)
+        ui.wait_frame(stage, collapsed)
+        ui.native("click", 1)
+
+        def sidebar_visibility(expected):
+            def check(image):
+                state = navigation()
+                assert state["sidebar_visible"] is expected, state
+                unchanged(stage)
+            return check
+
+        stage = "hamburger-hide"
+        ui.wait_frame(stage, sidebar_visibility(False))
+        ui.native("mousemove", 18, 14, "click", 1)
+        stage = "hamburger-restore"
+        ui.wait_frame(stage, sidebar_visibility(True))
+        ui.native("mousemove", 700, 600)
+        ui.wait_frame(stage, collapsed)
+        report["hamburger_only_toggles_sidebar"] = True
         stage = "hover-open"
         hover()
         image = ui.capture("persistent-trigger")
         # The compact trigger is a menu icon, not an OCR-readable page name.
         # Verify its ink remains visible above the sidebar while the menu is open.
-        low, high = image.crop((18, 12, 34, 28)).convert("L").getextrema()
+        low, high = image.crop((50, 12, 66, 28)).convert("L").getextrema()
         assert high - low > 30, "menu trigger lost its visible ink"
         report["trigger_visible_above_menu"] = True
         shutil.copyfile(ui.artifact(stage + ".png"), output)

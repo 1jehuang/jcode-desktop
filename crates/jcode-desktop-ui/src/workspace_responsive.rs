@@ -159,7 +159,11 @@ impl Workspace {
                         this.show_sidebar = true;
                         this.compact_sidebar_open = true;
                     }
-                    window.focus(&this.focus_handle, cx);
+                    // The drawer owns Escape while open. A persistent sidebar
+                    // toggle must leave keyboard focus in the chat composer.
+                    if is_compact(f32::from(window.viewport_size().width)) {
+                        window.focus(&this.focus_handle, cx);
+                    }
                     cx.notify();
                 }),
             )

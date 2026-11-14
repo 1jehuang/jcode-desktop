@@ -206,7 +206,7 @@ def run(output, binary=None, no_build=False, size="1440x1000", jcode_binary=None
                 assert shared_config["workspace"]["account_sign_in_handled"] is True
                 ui.artifact("saved-config.toml").write_text((profile / "jcode/config.toml").read_text())
                 report["checks"]["native_skip_beta_workspace_and_private_persistence"] = True
-                ui.native("mousemove", 132, 30)
+                ui.native("mousemove", 58, 20)
                 def accounts_menu(image):
                     return phrase_bounds(ui.words(image, (0, 52, 264, 340), "accounts-menu", psm=11), "accounts")
                 ui.click(ui.wait_frame("accounts-menu", accounts_menu))

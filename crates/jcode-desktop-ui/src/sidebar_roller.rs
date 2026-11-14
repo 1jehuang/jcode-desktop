@@ -166,9 +166,39 @@ impl Workspace {
             .pl(px(sidebar_header_left_padding(fullscreen)))
             .pr(px(12.0))
             .py(px(6.0))
+            .flex()
+            .items_center()
+            .gap_1()
             .bg(Theme::global().PANEL_BG)
-            .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
-            .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
+            .child(
+                div()
+                    .id("workspace-sidebar-toggle")
+                    .debug_selector(|| "workspace-sidebar-toggle".into())
+                    .size(px(28.0))
+                    .rounded_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.0))
+                    .text_color(Theme::global().TEXT)
+                    .cursor_pointer()
+                    .occlude()
+                    .hover(|el| el.bg(Theme::global().TOOL_BG))
+                    .tooltip(|_, cx| {
+                        cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
+                            .into()
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.sidebar_roller.expanded = false;
+                            this.toggle_sidebar(&ToggleSidebar, window, cx);
+                        }),
+                    )
+                    .child("☰"),
+            )
             .child(
                 div()
                     .id("sidebar-section-trigger")
@@ -187,11 +217,8 @@ impl Workspace {
                     .text_size(px(12.0))
                     .text_color(Theme::global().TEXT)
                     .cursor_pointer()
-                    // The Windows caption drag region lies behind the header.
-                    // The pop-out bridge no longer occludes it, so the trigger
-                    // must, or Windows treats the menu button as title bar.
-                    // Occluding also hides the header's own listeners, so the
-                    // trigger repeats them.
+                    // Keep the menu interactive above the caption drag region.
+                    // Only this button owns section hover and wheel navigation.
                     .occlude()
                     .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
                     .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
@@ -216,7 +243,7 @@ impl Workspace {
                     .child(
                         div()
                             .debug_selector(move || id.into())
-                            .child("☰"),
+                            .child("⋯"),
                     ),
             );
         div()
@@ -396,6 +423,28 @@ mod tests {
     use super::*;
 
     #[gpui::test]
+    fn hamburger_only_toggles_sidebar(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) =
+            cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
+        vcx.run_until_parked();
+        let toggle = vcx.debug_bounds("workspace-sidebar-toggle").unwrap();
+        let menu = vcx.debug_bounds("sidebar-section-trigger").unwrap();
+        assert!(toggle.right() <= menu.left());
+        vcx.update(|window, cx| window.simulate_mouse_move(toggle.center(), cx));
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-roller-popout").is_none());
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(!workspace.read_with(vcx, |w, _| w.show_sidebar));
+        assert!(vcx.debug_bounds("sidebar-roller-popout").is_none());
+        let reopen = vcx.debug_bounds("compact-sidebar-toggle").unwrap();
+        vcx.simulate_click(reopen.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("workspace-sidebar-toggle").is_some());
+        assert!(vcx.debug_bounds("sidebar-roller-popout").is_none());
+    }
+
+    #[gpui::test]
     fn roller_popout_scrolls_live_and_leaves_layout_focus_and_actions_alone(
         cx: &mut gpui::TestAppContext,
     ) {
@@ -409,7 +458,7 @@ mod tests {
         vcx.run_until_parked();
         let canvas = vcx.debug_bounds("workspace-canvas").unwrap();
         let body = vcx.debug_bounds("sidebar-tab-body").unwrap();
-        let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        let header = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("sidebar-roller-popout").is_some());
@@ -588,7 +637,7 @@ mod tests {
         let (workspace, vcx) =
             cx.add_window_view(|_, cx| Workspace::for_test(learning::Coach::new(), cx));
         vcx.run_until_parked();
-        let tabs = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        let tabs = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         for (dx, dy, expected) in [
             (-48.0, 0.0, SidebarView::Learn),
             (0.0, -96.0, SidebarView::Accounts),
@@ -634,7 +683,7 @@ mod tests {
             w
         });
         vcx.run_until_parked();
-        let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
+        let header = vcx.debug_bounds("sidebar-section-trigger").unwrap();
         vcx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
         vcx.run_until_parked();
         assert!(

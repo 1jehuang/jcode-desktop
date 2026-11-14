@@ -15453,7 +15453,7 @@ mod tests {
         if workspace.read_with(cx, |w, _| {
             w.layout_mode == crate::config::LayoutMode::FolderTabs
         }) {
-            let header = cx.debug_bounds("sidebar-navigation-tabs").unwrap();
+            let header = cx.debug_bounds("sidebar-section-trigger").unwrap();
             cx.update(|window, cx| window.simulate_mouse_move(header.center(), cx));
             cx.run_until_parked();
             let expanded: &'static str = Box::leak(format!("{selector}-expanded").into_boxed_str());
