@@ -1,13 +1,14 @@
-//! Navigation is camera travel over one map, not a swap of independent pages.
+//! Row navigation is vertical camera travel over stacked strips.
+//!
+//! Each strip keeps its own horizontal camera, so the strip above is always
+//! directly above: changing rows pans straight up or down and never drags the
+//! strips sideways toward the destination's remembered scroll position.
 use super::*;
 
 impl Workspace {
-    pub(super) fn map_position(&self, progress: f32) -> (f32, f32) {
-        (
-            self.row_origin.0
-                + (self.camera_target[self.active_row] - self.row_origin.0) * progress,
-            self.row_origin.1 + (self.active_row as f32 - self.row_origin.1) * progress,
-        )
+    /// Vertical camera position, in rows, at `progress` through the trip.
+    pub(super) fn map_row_position(&self, progress: f32) -> f32 {
+        self.row_origin + (self.active_row as f32 - self.row_origin) * progress
     }
 
     /// Capture the current viewpoint before changing the logical destination.
@@ -19,46 +20,16 @@ impl Workspace {
         let now = Instant::now();
         let progress = self.row_progress.sample(now);
         self.row_origin = if self.outgoing_row.is_some() {
-            self.map_position(progress)
+            self.map_row_position(progress)
         } else {
-            let old_row = self.active_row;
-            let x = self.camera_started[old_row].map_or(self.camera_x[old_row], |started| {
-                smoothed_camera_position(
-                    self.camera_from[old_row],
-                    self.camera_target[old_row],
-                    now.saturating_duration_since(started),
-                    if self.camera_touch_pan[old_row] {
-                        TOUCH_PAN_DURATION
-                    } else {
-                        transition::policy(Transition::Focus).duration
-                    },
-                )
-            });
             // Continue from the resisted pull already on screen, rather than
             // snapping home before starting the committed row transition.
-            (x, old_row as f32 + self.workspace_pull.take(now))
+            self.active_row as f32 + self.workspace_pull.take(now)
         };
         self.gesture.pull = 0.0;
         self.outgoing_row = Some(self.active_row);
         self.row_progress = AnimatedValue::new(0.0, transition::policy(Transition::Row).duration);
         self.row_progress.set(1.0, now);
-    }
-
-    /// Pointer input takes ownership from the camera's current map position,
-    /// not from the old destination. Keep Y continuous while X follows input.
-    pub(super) fn begin_map_pan(&mut self, row: usize, smooth: bool) -> bool {
-        if self.outgoing_row.is_none() {
-            return false;
-        }
-        self.begin_map_navigation(self.active_row);
-        let x = self.row_origin.0;
-        self.camera_x[row] = x;
-        self.camera_target[row] = x;
-        if smooth {
-            self.row_progress = AnimatedValue::new(0.0, TOUCH_PAN_DURATION);
-            self.row_progress.set(1.0, Instant::now());
-        }
-        true
     }
 
     pub(super) fn render_map_trip(
@@ -69,14 +40,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        // Resolve first: both axes must share one easing curve and destination.
-        // Otherwise the incoming row pans from its remembered X while the old
-        // row sits still, breaking the illusion of a fixed two-dimensional map.
-        if self.camera_dirty[self.active_row] {
-            self.resolve_camera_target(width);
-        }
-        let (x, y) = self.map_position(progress);
-        self.map_camera_x = Some(x);
+        let y = self.map_row_position(progress);
         let mut scene = div().relative().size_full().overflow_hidden();
         for row in 0..STRIP_COUNT {
             let top = (row as f32 - y) * height;
@@ -106,13 +70,6 @@ impl Workspace {
                     .child(content),
             );
         }
-        self.map_camera_x = None;
-        // The destination's cached camera must meet the map camera exactly at
-        // arrival, rather than finish a second, independently timed pan.
-        self.camera_x[self.active_row] = x;
-        self.camera_from[self.active_row] = x;
-        self.camera_started[self.active_row] = None;
-        self.camera_touch_pan[self.active_row] = false;
         scene.into_any_element()
     }
 }
@@ -126,58 +83,75 @@ mod tests {
         workspace.row_progress.set(1.0, Instant::now());
     }
 
+    /// Leaving the left panel of a lower row for an upper row that is scrolled
+    /// to its right end must pan straight up. Neither strip moves sideways.
     #[gpui::test]
-    fn tab_click_travels_diagonally_in_shared_map_coordinates(cx: &mut gpui::TestAppContext) {
+    fn row_change_pans_vertically_with_each_strip_at_its_own_scroll(
+        cx: &mut gpui::TestAppContext,
+    ) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
-            w.push_test_panel("top", cx);
+            for name in ["top-0", "top-1", "top-2", "top-3"] {
+                w.push_test_panel(name, cx);
+            }
             w.active_row = 1;
             w.push_test_panel("bottom-left", cx);
-            w.push_test_panel("bottom-right", cx);
             w.active_row = 0;
-            w.active = 0;
+            w.active = 3;
             w
         });
         vcx.run_until_parked();
-        // Give the destination a different horizontal viewpoint. A page slide
-        // would leave the two strips at different X coordinates throughout.
-        workspace.update(vcx, |w, _| {
-            w.camera_target[1] = 300.0;
-            w.camera_x[1] = 300.0;
+        // Settle the top row scrolled to its focused right-most panel.
+        let top_camera = workspace.update(vcx, |w, cx| {
+            w.camera_x[0] = w.camera_target[0];
+            w.camera_started[0] = None;
+            w.row_focus[0] = Some(w.slots[3].panel.entity_id());
+            w.set_active(4, cx);
+            hold_trip(w, 1.0);
+            w.outgoing_row = None;
+            cx.notify();
+            w.camera_target[0]
         });
-        let tab = vcx.debug_bounds("live-session-tab-2").unwrap();
-        vcx.simulate_click(tab.center(), gpui::Modifiers::default());
+        vcx.run_until_parked();
+        assert!(top_camera > 100.0, "the top row must overflow: {top_camera}");
+        let bottom_rest = vcx.debug_bounds("panel-4").unwrap();
+
         workspace.update(vcx, |w, cx| {
-            assert_eq!((w.active_row, w.active), (1, 2));
-            assert_eq!(w.outgoing_row, Some(0));
-            assert!(w.row_progress.is_animating());
-            // Freeze an exact shared destination for the geometric assertion.
-            w.camera_target[1] = 300.0;
-            w.camera_dirty[1] = false;
+            assert_eq!((w.active_row, w.active), (1, 4));
+            w.select_row(0, 0);
+            assert_eq!((w.active_row, w.active), (0, 3));
             hold_trip(w, 0.5);
             cx.notify();
         });
         vcx.run_until_parked();
+        workspace.update(vcx, |w, _| {
+            assert_eq!(w.map_row_position(0.5), 0.5);
+            assert!(w.camera_started[0].is_none() && w.camera_started[1].is_none());
+            assert!((w.camera_x[0] - top_camera).abs() < 0.5);
+            assert!(w.camera_x[1].abs() < STRUT + 0.5);
+        });
         let outgoing = vcx.debug_bounds("row-transition-outgoing").unwrap();
         let incoming = vcx.debug_bounds("row-transition-incoming").unwrap();
         assert!(
-            (f32::from(incoming.origin.y - outgoing.origin.y - incoming.size.height)).abs() < 1.0
+            (f32::from(outgoing.origin.y - incoming.origin.y - incoming.size.height)).abs() < 1.0
         );
-        let top = vcx.debug_bounds("panel-0").unwrap();
-        let bottom = vcx.debug_bounds("panel-1").unwrap();
+        let bottom = vcx.debug_bounds("panel-4").unwrap();
         assert!(
-            (f32::from(top.origin.x - bottom.origin.x)).abs() < 1.0,
-            "rows must use the same world X, not independent remembered cameras"
+            (f32::from(bottom.origin.x - bottom_rest.origin.x)).abs() < 0.5,
+            "the row being left must not slide sideways"
         );
+        let mid = vcx.debug_bounds("panel-3").unwrap();
         workspace.update(vcx, |w, cx| {
-            let (x, y) = w.map_position(0.5);
-            assert!((x - 150.0).abs() < 1.0);
-            assert_eq!(y, 0.5);
-            // Reverse while in flight. The viewpoint must not jump to row 1.
-            w.set_active(0, cx);
-            assert!((w.row_origin.0 - x).abs() < 1.0);
-            assert!((w.row_origin.1 - y).abs() < 0.01);
+            hold_trip(w, 1.0);
+            cx.notify();
         });
+        vcx.run_until_parked();
+        let arrived = vcx.debug_bounds("panel-3").unwrap();
+        assert!(
+            (f32::from(mid.origin.x - arrived.origin.x)).abs() < 0.5,
+            "the destination panel must already sit directly above its resting place"
+        );
+        assert!(f32::from(mid.origin.y) < f32::from(arrived.origin.y));
     }
 
     #[gpui::test]
@@ -197,7 +171,7 @@ mod tests {
         vcx.run_until_parked();
         workspace.update(vcx, |w, cx| {
             w.set_active(2, cx);
-            assert_eq!(w.row_origin.1, 0.0);
+            assert_eq!(w.row_origin, 0.0);
             hold_trip(w, 0.5);
             cx.notify();
         });
@@ -209,16 +183,16 @@ mod tests {
         workspace.update(vcx, |w, cx| {
             w.set_active(0, cx);
             assert!(
-                (w.row_origin.1 - 1.0).abs() < 0.01,
+                (w.row_origin - 1.0).abs() < 0.01,
                 "reversing starts at the current intermediate row, not the previous destination"
             );
-            assert!((w.map_position(0.0).1 - 1.0).abs() < 0.01);
-            assert_eq!(w.map_position(1.0).1, 0.0);
+            assert!((w.map_row_position(0.0) - 1.0).abs() < 0.01);
+            assert_eq!(w.map_row_position(1.0), 0.0);
         });
     }
 
     #[gpui::test]
-    fn pointer_pan_rebases_an_in_flight_diagonal_trip(cx: &mut gpui::TestAppContext) {
+    fn pointer_pan_during_a_row_trip_leaves_vertical_travel_alone(cx: &mut gpui::TestAppContext) {
         let (workspace, vcx) = cx.add_window_view(|_, cx| {
             let mut w = Workspace::for_test(learning::Coach::new(), cx);
             w.push_test_panel("top", cx);
@@ -229,22 +203,19 @@ mod tests {
             w
         });
         vcx.run_until_parked();
-        for smooth in [false, true] {
-            workspace.update_in(vcx, |w, window, cx| {
-                w.active_row = 1;
-                w.active = 1;
-                w.outgoing_row = Some(0);
-                w.row_origin = (0.0, 0.0);
-                w.camera_target[1] = 1000.0;
-                w.camera_x[1] = 500.0;
-                hold_trip(w, 0.5);
-                w.pan_strip(1, -20.0, 3000.0, 1000.0, smooth, window, cx);
-                let (x, y) = w.map_position(0.0);
-                assert!((x - if smooth { 500.0 } else { 520.0 }).abs() < 1.0);
-                assert!((y - 0.5).abs() < 0.01, "pan must not teleport vertically");
-                assert!((w.map_position(1.0).0 - 520.0).abs() < 1.0);
-            });
-        }
+        workspace.update_in(vcx, |w, window, cx| {
+            w.active_row = 1;
+            w.active = 1;
+            w.outgoing_row = Some(0);
+            w.row_origin = 0.0;
+            w.camera_target[1] = 500.0;
+            w.camera_x[1] = 500.0;
+            hold_trip(w, 0.5);
+            w.pan_strip(1, -20.0, 3000.0, 1000.0, false, window, cx);
+            assert!((w.camera_x[1] - 520.0).abs() < 1.0);
+            assert_eq!(w.row_origin, 0.0);
+            assert!((w.map_row_position(0.5) - 0.5).abs() < 0.01);
+        });
     }
 
     #[gpui::test]

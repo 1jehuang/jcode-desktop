@@ -243,7 +243,7 @@ mod tests {
         workspace.update(cx, |w, cx| {
             assert_eq!(w.active_row, 0);
             assert!(
-                (w.row_origin.1 - (1.0 + preview)).abs() < 0.0001,
+                (w.row_origin - (1.0 + preview)).abs() < 0.0001,
                 "commit begins at the displayed preview, not at rest"
             );
             assert_eq!(w.workspace_pull.value, 0.0);

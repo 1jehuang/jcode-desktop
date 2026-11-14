@@ -80,15 +80,15 @@ def verify(output, env, root):
                 direction = 1 if delta > 0 else -1
                 assert all((b - a) * direction >= -tolerance for a, b in zip(values, values[1:])), (
                     "camera reversed or jumped away from its destination", axis, values)
-        if abs(end[0] - start[0]) > 50 and abs(end[1] - start[1]) > .5:
-            for sample in moving:
-                point = sample["map_camera"]
-                px = (point[0] - start[0]) / (end[0] - start[0])
-                py = (point[1] - start[1]) / (end[1] - start[1])
-                assert abs(px - py) < .03, ("axes did not travel together across the map", px, py)
+        if abs(end[1] - start[1]) > .5:
+            # Rows are stacked strips with their own scroll. A row change pans
+            # straight up or down: the destination strip is already at its
+            # own X, so it must not slide sideways during the vertical trip.
+            xs = [s["rows"][s["active_row"]]["camera"] for s in moving]
+            assert max(xs) - min(xs) <= 1.0, ("row change panned sideways", slot, xs)
         assert after["keyboard_panel"] == slot, "arrival lost composer focus"
         results.append({"slot": slot, "from": start, "to": end,
                         "samples": [{"camera": s["map_camera"], "moving": s["camera_motion"]}
                                     for s in samples]})
     output.with_suffix(".map-motion.json").write_text(json.dumps({"passed": True, "trips": results}, indent=2) + "\n")
-    print(f"Map motion PASS: {len(results)} native tab trips, continuous aligned axes and correct focus", flush=True)
+    print(f"Map motion PASS: {len(results)} native tab trips, vertical row travel and correct focus", flush=True)

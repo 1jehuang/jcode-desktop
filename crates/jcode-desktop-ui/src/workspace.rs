@@ -790,10 +790,8 @@ pub struct Workspace {
     outgoing_row: Option<usize>,
     row_progress: AnimatedValue,
     workspace_pull: workspace_pull::PullPreview,
-    /// Origin of the current trip in shared map coordinates (pixels, rows).
-    row_origin: (f32, f32),
-    /// Shared horizontal camera while rendering rows along a map trip.
-    map_camera_x: Option<f32>,
+    /// Vertical origin of the current row trip, in rows.
+    row_origin: f32,
     /// Previously focused panel, for niri's `focus-window-previous`.
     previous: Option<gpui::EntityId>,
     /// Each strip retains its own horizontal camera position.
@@ -1127,8 +1125,7 @@ impl Workspace {
             active_row: 0,
             row_focus: [None; STRIP_COUNT],
             outgoing_row: None,
-            row_origin: (0.0, 0.0),
-            map_camera_x: None,
+            row_origin: 0.0,
             row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
             workspace_pull: workspace_pull::PullPreview::default(),
             previous: None,
@@ -1516,8 +1513,7 @@ impl Workspace {
             active_row: 0,
             row_focus: [None; STRIP_COUNT],
             outgoing_row: None,
-            row_origin: (0.0, 0.0),
-            map_camera_x: None,
+            row_origin: 0.0,
             row_progress: AnimatedValue::new(1.0, transition::policy(Transition::Row).duration),
             workspace_pull: workspace_pull::PullPreview::default(),
             previous: None,
@@ -4623,7 +4619,7 @@ impl Workspace {
                     + GAP;
             order_offsets.push(progress * distance);
         }
-        let camera_x = self.map_camera_x.unwrap_or(self.camera_x[row]);
+        let camera_x = self.camera_x[row];
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_TOP))
@@ -5063,7 +5059,6 @@ impl Workspace {
         // Accumulate precise deltas onto the target, not the lagging painted
         // position. This preserves every pixel of travel while the short
         // interpolation filters event/compositor timing jitter.
-        let map_pan = self.begin_map_pan(row, smooth);
         let base = if smooth {
             self.camera_target[row]
         } else {
@@ -5074,9 +5069,6 @@ impl Workspace {
             return;
         }
         self.camera_target[row] = next;
-        if map_pan && !smooth {
-            self.row_origin.0 = next;
-        }
         if smooth {
             self.camera_from[row] = self.camera_x[row];
             self.camera_started[row] = Some(Instant::now());
@@ -7648,12 +7640,8 @@ impl Workspace {
                         .map(|index| this.slot_width(index, viewport_w) + GAP)
                         .sum::<f32>()
                         + STRUT * 2.0;
-                    let map_pan = this.begin_map_pan(row, false);
                     let next = pan_camera(this.camera_x[row], -dx / scale, total, viewport_w);
                     if (next - this.camera_x[row]).abs() >= f32::EPSILON {
-                        if map_pan {
-                            this.row_origin.0 = next;
-                        }
                         this.camera_x[row] = next;
                         this.camera_target[row] = next;
                         this.camera_from[row] = next;

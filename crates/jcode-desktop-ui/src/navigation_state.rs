@@ -55,11 +55,16 @@ impl Workspace {
             })
             .collect();
         let mut progress = self.row_progress;
-        let map_camera = if self.outgoing_row.is_some() {
-            self.map_position(progress.sample(Instant::now()))
-        } else {
-            (self.camera_x[self.active_row], self.active_row as f32)
-        };
+        // Strips scroll independently, so X is the active strip's own camera
+        // and only Y travels between rows.
+        let map_camera = (
+            self.camera_x[self.active_row],
+            if self.outgoing_row.is_some() {
+                self.map_row_position(progress.sample(Instant::now()))
+            } else {
+                self.active_row as f32
+            },
+        );
         serde_json::json!({
             "version": 1,
             "single_panel": self.single_panel,
