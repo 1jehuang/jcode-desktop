@@ -64,6 +64,12 @@ struct TabGeometry {
     height: f32,
 }
 
+/// Stacked tabs must hide labels beneath them even in translucent themes.
+fn tab_surface(mut color: gpui::Rgba) -> gpui::Rgba {
+    color.a = 1.0;
+    color
+}
+
 /// A quiet chip uses only existing air to the right of every tab.
 fn coach_chip_left(available: f32, current: &[TabGeometry], target: &[TabGeometry]) -> Option<f32> {
     let right = current
@@ -652,6 +658,7 @@ impl Workspace {
         self.live_tabs.version_width = version_width;
         self.live_tabs.hit_targets.clear();
         let paint_order = TabLayout::hover_paint_order(entries.len(), selected, hovered);
+        let mut tab_bodies = Vec::with_capacity(entries.len());
         let mut slots = Vec::with_capacity(entries.len());
         for &position in &paint_order {
             let (index, row, _) = entries[position];
@@ -705,9 +712,8 @@ impl Workspace {
                     gpui::linear_color_stop(bg, 1.),
                 )
             };
-            let show_actions =
-                index.is_some() && row == self.active_row && slot_width >= 88.0;
-            let fill = if hot { hover_bg } else { tab_bg };
+            let show_actions = index.is_some() && row == self.active_row && slot_width >= 88.0;
+            let fill = tab_surface(if hot { hover_bg } else { tab_bg });
             let text = div()
                 .absolute()
                 .left(px(exposed_left - current.left))
@@ -762,7 +768,7 @@ impl Workspace {
                             ),
                     )
                 });
-            tabs = tabs.child(
+            tab_bodies.push(
                 div()
                     .debug_selector(move || match index {
                         Some(index) => format!("live-session-tab-{index}"),
@@ -896,7 +902,9 @@ impl Workspace {
                     }),
             );
         }
-        tabs = tabs.children(slots);
+        // Workspace numbers belong behind the floating tab bodies. In
+        // particular, a hovered tab may cover another workspace's label.
+        // Keep interaction slots above both layers without repainting ink.
         let group_count = entries
             .iter()
             .filter(|(_, _, position)| *position == 0)
@@ -913,7 +921,7 @@ impl Workspace {
                     .id(("workspace-tab-group-label", row))
                     .debug_selector(move || format!("workspace-tab-group-label-{row}"))
                     .absolute()
-                    .left(px((geometry[position].left - label_width).max(0.0)))
+                    .left(px((layout[position].left - label_width).max(0.0)))
                     .bottom(px(TAB_FLOAT_GAP))
                     .w(px(label_width))
                     .h(px(TAB_HEIGHT))
@@ -953,6 +961,7 @@ impl Workspace {
                     ),
             );
         }
+        tabs = tabs.children(tab_bodies).children(slots);
         // Sample only on existing redraws, never wake an idle window for FPS.
         let fps = self
             .fps_counter
@@ -1652,7 +1661,11 @@ mod tests {
                 assert_eq!(w.live_tabs.hovered, Some(key), "pointer over slot {i}");
                 assert_eq!(w.active, 3, "hover never changes focus");
             });
-            assert_eq!(slot(vcx, i), point, "slot {i} must not move under the pointer");
+            assert_eq!(
+                slot(vcx, i),
+                point,
+                "slot {i} must not move under the pointer"
+            );
         }
         // Tab 1 is popped over tab 2's slot. Clicking there selects tab 2.
         let (over, under) = (slot(vcx, 1), slot(vcx, 2));
@@ -1661,6 +1674,62 @@ mod tests {
         vcx.simulate_click(under, gpui::Modifiers::default());
         vcx.run_until_parked();
         workspace.read_with(vcx, |w, _| assert_eq!(w.active, 2));
+    }
+
+    #[gpui::test]
+    fn workspace_number_stays_in_its_resting_slot_when_tab_pops_out(cx: &mut gpui::TestAppContext) {
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.show_sidebar = false;
+            for row in 0..3 {
+                w.active_row = row;
+                w.push_test_panel(&format!("workspace-{row}"), cx);
+            }
+            w.active_row = 0;
+            w.active = 0;
+            w
+        });
+        let handle = vcx.update(|window, _| window.window_handle());
+        vcx.simulate_window_resize(handle, gpui::size(px(480.0), px(600.0)));
+        vcx.run_until_parked();
+        let before = vcx.debug_bounds("workspace-tab-group-label-2").unwrap();
+        workspace.update(vcx, |w, cx| {
+            w.live_tabs.hovered = Some(w.slots[2].panel.entity_id().as_u64());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.update(vcx, |w, cx| {
+            w.live_tabs.settle();
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert_eq!(
+            vcx.debug_bounds("workspace-tab-group-label-2").unwrap(),
+            before
+        );
+        let tab = vcx.debug_bounds("live-session-tab-2").unwrap();
+        assert!(
+            tab.left() < before.right(),
+            "pop-out must cover the resting badge"
+        );
+    }
+
+    #[test]
+    fn stacked_tab_surfaces_occlude_underlying_titles_in_translucent_themes() {
+        for alpha in [0.0, 0.35, 0.75, 1.0] {
+            let color = gpui::Rgba {
+                r: 0.12,
+                g: 0.18,
+                b: 0.24,
+                a: alpha,
+            };
+            let surface = tab_surface(color);
+            assert_eq!(surface.a, 1.0);
+            assert_eq!(
+                (surface.r, surface.g, surface.b),
+                (color.r, color.g, color.b)
+            );
+        }
     }
 
     #[test]
