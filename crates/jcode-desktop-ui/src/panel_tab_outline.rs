@@ -27,8 +27,6 @@ use super::MinimapSessionState;
 /// 60 Hz on the shared animation grid, so every animated tab wakes in the
 /// same frame instead of each re-rendering the header on its own.
 const TICK: Duration = Duration::from_nanos(16_666_667);
-/// Matches `rounded_md` on the tab so the fill hugs the real outline.
-const RADIUS: f32 = 6.0;
 /// Seconds for the working highlight to cross the tab once.
 const SWEEP_SECONDS: f32 = 1.8;
 /// Seconds for one breath of the done glow.
@@ -203,7 +201,8 @@ fn paint(
     now: f32,
     reduce_motion: bool,
 ) {
-    let radius = RADIUS.min(f32::from(bounds.size.height) / 2.0);
+    // Match the tab's pill shape, including narrow tabs in crowded headers.
+    let radius = f32::from(bounds.size.height).min(f32::from(bounds.size.width)) / 2.0;
     let rounded = |color: Rgba| gpui::fill(bounds, color).corner_radii(px(radius));
     let outline = |color: Rgba| {
         gpui::quad(

@@ -791,7 +791,7 @@ impl Workspace {
                     .h(px(current.height))
                     .flex()
                     .items_center()
-                    .rounded_md()
+                    .rounded_full()
                     // Crowded off-screen tabs can be narrower than two pixels.
                     // Their border must not force the layout wider than its slot.
                     // Use this single outline on every edge. An extra accent
