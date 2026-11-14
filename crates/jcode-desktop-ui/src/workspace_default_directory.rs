@@ -266,6 +266,12 @@ impl Workspace {
 pub(super) fn spawn_shortcut() -> &'static str {
     if cfg!(target_os = "macos") {
         "Cmd+Enter"
+    } else if cfg!(target_os = "linux") {
+        // Super+Enter already opens a terminal on most Linux tiling WM
+        // defaults (Omarchy/Hyprland, i3, sway, bspwm), so the compositor
+        // consumes the chord before this app's window ever sees it.
+        // Ctrl+Alt+Enter is the documented non-Super alias that reaches us.
+        "Ctrl+Alt+Enter"
     } else {
         "Super+Enter"
     }

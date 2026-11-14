@@ -314,7 +314,7 @@ const HELP_SESSION_PROMPT: &str = r#"Act as the in-app Jcode guide. Use the bund
 The jcode-desktop shortcuts are:
 - Super+H/J/K/L: navigate panels
 - Super+Shift+H/J/K/L: move panels
-- Super+Enter: open a session to the right
+- Super+Enter: open a session to the right (use Ctrl+Alt+Enter instead if the window manager already reserves Super+Enter for a terminal, e.g. Omarchy/Hyprland, i3, sway, bspwm)
 - Ctrl+O: choose a folder and open a session there
 - Super+Tab: return to the previous panel
 - Super+R: cycle panel width
@@ -335,6 +335,25 @@ Composer shortcuts ported from the TUI:
 - Escape: clear the draft
 
 Start with a concise orientation, then invite me to ask how to use Jcode."#;
+
+/// [`HELP_SESSION_PROMPT`] plus a line naming Omarchy specifically when it is
+/// confirmed running, rather than the generic hedge the base prompt carries
+/// for window managers in general.
+fn help_session_prompt() -> String {
+    help_session_prompt_for(crate::omarchy::detected())
+}
+
+fn help_session_prompt_for(omarchy_detected: bool) -> String {
+    if omarchy_detected {
+        format!(
+            "{HELP_SESSION_PROMPT}\n\nThis machine is running Omarchy, which binds Super+Enter \
+             to opening a terminal, so Ctrl+Alt+Enter is the shortcut that actually opens a new \
+             session here."
+        )
+    } else {
+        HELP_SESSION_PROMPT.to_string()
+    }
+}
 const SIDEBAR_WIDTH: f32 = 224.0;
 // With no connector gap the gutter stays inside the sidebar in every layout.
 const SIDEBAR_SCROLLBAR_OUTSET: f32 = 0.0;
@@ -2290,7 +2309,7 @@ impl Workspace {
                         {
                             self.bridge.send(Command::Send {
                                 session_id,
-                                content: HELP_SESSION_PROMPT.into(),
+                                content: help_session_prompt(),
                                 images: Vec::new(),
                             });
                         }
@@ -4381,7 +4400,10 @@ impl Workspace {
                 .child(
                     div()
                         .debug_selector(|| "empty-strip-shortcut".into())
-                        .child("Press Super+Enter to start a new session here"),
+                        .child(format!(
+                            "Press {} to start a new session here",
+                            default_directory::spawn_shortcut()
+                        )),
                 )
                 .child(div().text_size(px(12.0)).child(self.status.clone()))
                 .into_any_element()
@@ -13280,6 +13302,15 @@ mod tests {
         assert!(HELP_SESSION_PROMPT.contains("Super+Shift+/"));
     }
 
+    #[test]
+    fn help_session_prompt_names_omarchy_specifically_only_when_detected() {
+        assert_eq!(help_session_prompt_for(false), HELP_SESSION_PROMPT);
+        let detected = help_session_prompt_for(true);
+        assert!(detected.starts_with(HELP_SESSION_PROMPT));
+        assert!(detected.contains("running Omarchy"));
+        assert!(detected.contains("Ctrl+Alt+Enter"));
+    }
+
     /// Drive real keystrokes through the real keymap and confirm the coach
     /// draws the right conclusions. This is the acceptance path: it exercises
     /// the bindings the user actually presses, not the handlers directly.
@@ -13465,7 +13496,15 @@ mod tests {
             ("width_presets", "super-4", Box::new(WidthPreset4)),
             (
                 "new_panel",
-                "super-enter",
+                // The catalog teaches ctrl-alt-enter on Linux instead of
+                // super-enter: most tiling WMs (Omarchy/Hyprland, i3, sway,
+                // bspwm) bind Super+Enter to a terminal at the compositor
+                // level, so this app's window never receives it there.
+                if cfg!(target_os = "linux") {
+                    "ctrl-alt-enter"
+                } else {
+                    "super-enter"
+                },
                 Box::new(NewPanelInPinnedDirectory),
             ),
             ("close_panel", CLOSE_PANEL_CHORD, Box::new(ClosePanel)),
@@ -14696,7 +14735,13 @@ mod tests {
             "super-r",
             "super-f",
             "super-1 .. super-4",
-            "super-enter",
+            // Taught as ctrl-alt-enter on Linux instead; see the keymap
+            // catalog's new_panel entry.
+            if cfg!(target_os = "linux") {
+                "ctrl-alt-enter"
+            } else {
+                "super-enter"
+            },
             CLOSE_PANEL_CHORD,
         ] {
             assert!(taught.contains(&keys), "{keys} is bound but never taught");
