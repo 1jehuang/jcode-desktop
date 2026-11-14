@@ -75,6 +75,7 @@ actions!(
         Clear,
         Submit,
         Queue,
+        Tab,
     ]
 );
 
@@ -146,10 +147,18 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-end", End, Some("PromptInput")),
         KeyBinding::new("enter", Submit, Some("PromptInput")),
         KeyBinding::new("ctrl-enter", Queue, Some("PromptInput")),
+        KeyBinding::new("tab", Tab, Some("PromptInput")),
     ]);
     // Registered after the composer keys so the effort chords outrank word
     // motion in a chat composer. See `effort::bind_keys` for the fallthrough.
     crate::effort::bind_keys(cx);
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TabOutcome {
+    Ignored,
+    Stage(String),
+    Submit,
 }
 
 pub struct PromptInput {
@@ -184,6 +193,7 @@ pub struct PromptInput {
     on_submit: Box<dyn Fn(String, Vec<(String, String)>, bool, &mut Window, &mut App)>,
     on_change: Option<Box<dyn Fn(&str, &mut App)>>,
     on_overlay_cancel: Option<Box<dyn Fn(&mut App) -> bool>>,
+    on_tab: Option<Box<dyn Fn(&str, &mut Window, &mut App) -> TabOutcome>>,
     command_models: Vec<String>,
     command_completion: bool,
     command_selection: usize,
@@ -547,6 +557,7 @@ impl PromptInput {
             on_submit: Box::new(on_submit),
             on_change: None,
             on_overlay_cancel: None,
+            on_tab: None,
             command_models: Vec::new(),
             command_completion: true,
             command_selection: 0,
@@ -709,6 +720,14 @@ impl PromptInput {
 
     pub fn with_on_overlay_cancel(mut self, cancel: impl Fn(&mut App) -> bool + 'static) -> Self {
         self.on_overlay_cancel = Some(Box::new(cancel));
+        self
+    }
+
+    pub fn with_on_tab(
+        mut self,
+        on_tab: impl Fn(&str, &mut Window, &mut App) -> TabOutcome + 'static,
+    ) -> Self {
+        self.on_tab = Some(Box::new(on_tab));
         self
     }
 
@@ -907,6 +926,43 @@ impl PromptInput {
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         self.submit_prompt(false, window, cx);
+    }
+
+    pub(crate) fn clear_after_external_submit(&mut self, submitted: &str, cx: &mut Context<Self>) {
+        self.attachment_notice = None;
+        self.attachment_preview = None;
+        self.content = "".into();
+        self.expanded_model_groups.clear();
+        self.suggestions_revision += 1;
+        self.visual_line_count = 1;
+        self.selected_range = 0..0;
+        self.marked_range = None;
+        if !submitted.trim().is_empty() {
+            self.history.push(submitted.trim().to_string());
+        }
+        self.history_index = None;
+        self.live_draft.clear();
+        self.command_selection = 0;
+        cx.notify();
+    }
+
+    fn tab(&mut self, _: &Tab, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.attachments.is_empty() {
+            return;
+        }
+        let Some(on_tab) = &self.on_tab else {
+            return;
+        };
+        let current = self.content.to_string();
+        match on_tab(&current, window, cx) {
+            TabOutcome::Ignored => {}
+            TabOutcome::Stage(text) => {
+                self.set_content(text, cx);
+            }
+            TabOutcome::Submit => {
+                self.submit_prompt(false, window, cx);
+            }
+        }
     }
 
     fn queue(&mut self, _: &Queue, window: &mut Window, cx: &mut Context<Self>) {
@@ -2442,6 +2498,7 @@ impl Render for PromptInput {
             .on_action(cx.listener(Self::clear))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::queue))
+            .on_action(cx.listener(Self::tab))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))

@@ -28,6 +28,7 @@ class RuntimeSourceTests(unittest.TestCase):
             'crates/jcode-sdk/src/collections.rs': 'pub fn create_with_id(',
             'crates/jcode-harness-api/src/runtime_commands.rs': 'pub enum RuntimeCommand {',
             'crates/jcode-voice/src/lib.rs': 'pub mod dictation;\npub mod global;\npub use streaming_capture::',
+            'crates/jcode-base/src/suggested_replies.rs': 'pub struct SuggestedRepliesContext {}\npub struct SuggestedRepliesResponse {}',
         })
         return sources
 
