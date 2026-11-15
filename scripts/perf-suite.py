@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """Workspace performance suite: FPS, draw time and CPU under real workspace use.
 
-Drives the real app in the multi-panel workspace on a private Xvfb software
-renderer with offline fixture data, through native keyboard shortcuts only:
+Drives the real app on private Xvfb (software) or headless Sway (GPU)
+with offline fixture data, through native keyboard shortcuts only:
 open panels, move focus left/right/up/down, move panels between strips, cycle
 widths, toggle overview and close panels. Each scenario runs with GPUI view
 retention on and off, repeated, and reports medians.
 
-This is CPU/software-renderer evidence for comparing builds and settings on
-one machine, not a claim about GPU presentation on the user's display. No
-daemon, credentials, compositor commands or input to the user's display.
+Results compare builds and settings on one machine, not presentation on the
+user's physical display. No daemon, credentials or input to the user's display.
 
     python3 scripts/perf-suite.py target/perf/run1
     python3 scripts/perf-suite.py target/perf/run2 --baseline target/perf/run1/summary.json
@@ -18,6 +17,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import random
@@ -26,6 +26,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -156,12 +157,26 @@ def median_of(runs, key):
 class App:
     """The real app on a private Xvfb with an isolated home and fixture data."""
 
-    def __init__(self, root, binary, retention, panels, rows, transcript):
+    def __init__(self, root, binary, retention, panels, rows, transcript, display='xvfb', sway_prefix=None,
+                 panel_width=None, layout_mode='normal'):
         self.root = root
+        self.display = display
+        self.runtime_alias = None
+        self.expect_camera = rows and panel_width is not None and panel_width * (panels - 1) > 1
         for name in ('home', 'runtime', 'config', 'cache', 'data', 'jcode'):
             (root / name).mkdir(mode=0o700, parents=True, exist_ok=True)
         env = isolated_env(root)
-        env['VK_DRIVER_FILES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
+        if display == 'xvfb':
+            env['VK_DRIVER_FILES'] = str(next(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json')))
+        else:
+            # The real GPU through its render node, on a private compositor:
+            # the user's own compositor is never contacted.
+            env.pop('LIBGL_ALWAYS_SOFTWARE', None)
+            env.update(WLR_BACKENDS='headless', WLR_LIBINPUT_NO_DEVICES='1', XDG_SESSION_TYPE='wayland',
+                       WLR_RENDERER=os.environ.get('WLR_RENDERER', 'gles2'))
+            if sway_prefix:
+                env['PATH'] = str(sway_prefix / 'usr/bin') + ':' + env['PATH']
+                env['LD_LIBRARY_PATH'] = str(sway_prefix / 'usr/lib')
         env['JCODE_DESKTOP_SCREENSHOT_PANELS'] = str(panels)
         env['JCODE_DESKTOP_SCREENSHOT_TRANSCRIPT'] = transcript
         env['GPUI_VIEW_RETENTION'] = '1' if retention else '0'
@@ -170,11 +185,104 @@ class App:
             if name in os.environ:
                 env[name] = os.environ[name]
         env['JCODE_DESKTOP_CONFIG'] = str(root / 'desktop.toml')
-        (root / 'desktop.toml').write_text('[appearance]\nlayout_mode = "normal"\n'
+        (root / 'desktop.toml').write_text(f'[appearance]\nlayout_mode = "{layout_mode}"\n'
                                            '[workspace]\ncoaching_hints = false\n')
         self.env = env
         self.rows = rows
         self.processes, self.logs = [], []
+        try:
+            if display == 'wayland':
+                # Unix socket names are limited to 108 bytes. Keep their names
+                # short even when the requested capture directory is deeply nested.
+                self.runtime_alias = tempfile.TemporaryDirectory(prefix='jdperf-')
+                runtime_alias = Path(self.runtime_alias.name) / 'runtime'
+                runtime_alias.symlink_to(root / 'runtime', target_is_directory=True)
+                self.env['XDG_RUNTIME_DIR'] = str(runtime_alias)
+                self._start_sway()
+            else:
+                self._start_xvfb()
+            self.app = self._launch('app', [str(binary), '--no-hot-reload'])
+            self._wait_rendered(panels)
+            self._prepare(rows, panels, panel_width)
+        except BaseException:
+            self.close()
+            raise
+
+    def _prepare(self, rows, panels, panel_width):
+        # Dismiss the launch overlay, then give the first frames time to settle.
+        self.keys('Escape')
+        time.sleep(2)
+        if panel_width is not None:
+            self.keys(*([FOCUS['left']] * panels))
+            time.sleep(0.5)
+            for panel_index in range(panels):
+                for attempt in range(4):
+                    time.sleep(0.1)
+                    nav = self.navigation()
+                    focused = next((p for row in nav['rows'] for p in row['panels'] if p['focused']), None) if nav else None
+                    if focused and abs(focused['width'] - panel_width) < 0.001:
+                        break
+                    if attempt == 3:
+                        raise RuntimeError('Could not set panel width through native shortcuts')
+                    self.keys(WIDTH)
+                    old_width = focused['width'] if focused else None
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        nav = self.navigation()
+                        updated = next((p for row in nav['rows'] for p in row['panels'] if p['focused']), None) if nav else None
+                        if updated and updated['width'] != old_width:
+                            break
+                        time.sleep(0.05)
+                    else:
+                        raise RuntimeError('Native width shortcut did not update fixture state')
+                self.keys(FOCUS['right'])
+                if panel_index < panels - 1:
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        nav = self.navigation()
+                        if nav and nav['focused_slot'] != focused['slot']:
+                            break
+                        time.sleep(0.05)
+                    else:
+                        raise RuntimeError('Native focus shortcut did not advance fixture panel')
+            self.keys(*([FOCUS['left']] * panels))
+            time.sleep(0.5)
+            nav = self.navigation()
+            if not nav or any(abs(p['width'] - panel_width) > 0.001 for row in nav['rows'] for p in row['panels']):
+                raise RuntimeError('Native width setup did not produce the requested fixture')
+        if rows:
+            # A second strip to move up and down between.
+            self.keys(MOVE['down'])
+            time.sleep(0.6)
+            self.keys(FOCUS['up'])
+            time.sleep(1)
+
+    def _start_sway(self):
+        config = self.root / 'sway.config'
+        config.write_text('xwayland disable\noutput HEADLESS-1 mode ' + os.environ.get('PERF_SUITE_MODE', '2880x1800@120Hz')
+                          + ' scale ' + os.environ.get('PERF_SUITE_SCALE', '1.6') + '\n'
+                          'default_border none\nfocus_follows_mouse no\n')
+        for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'SWAYSOCK', 'I3SOCK'):
+            self.env.pop(key, None)
+        sway = self._launch('sway', ['sway', '--config', str(config)])
+        runtime = self.root / 'runtime'
+        deadline = time.monotonic() + 20
+        while True:
+            names = [p.name for p in runtime.glob('wayland-*') if p.is_socket()]
+            sockets = [p for p in runtime.glob('sway-ipc.*.sock') if p.is_socket()]
+            if names and sockets:
+                break
+            if sway.poll() is not None or time.monotonic() > deadline:
+                raise RuntimeError(f'Sway did not start, see {self.root / "sway.log"}')
+            time.sleep(0.05)
+        self.env['WAYLAND_DISPLAY'] = names[0]
+        self.env['SWAYSOCK'] = str(Path(self.env['XDG_RUNTIME_DIR']) / sockets[0].name)
+        outputs = subprocess.run(['swaymsg', '-t', 'get_outputs', '-r'], env=self.env,
+                                 capture_output=True, text=True, check=True, timeout=10)
+        (self.root / 'outputs.json').write_text(outputs.stdout)
+
+    def _start_xvfb(self):
+        env = self.env
         read_fd, write_fd = os.pipe()
         try:
             self._launch('xvfb', ['Xvfb', '-displayfd', str(write_fd), '-screen', '0', '1440x1000x24',
@@ -188,23 +296,12 @@ class App:
             os.close(read_fd)
             if write_fd is not None:
                 os.close(write_fd)
-        config = root / 'openbox.xml'
+        config = self.root / 'openbox.xml'
         config.write_text('<openbox_config xmlns="http://openbox.org/3.4/rc"><applications>'
                           '<application class="*"><decor>no</decor><maximized>yes</maximized>'
                           '</application></applications></openbox_config>')
         self._launch('wm', ['openbox', '--sm-disable', '--config-file', str(config)])
         time.sleep(0.5)
-        self.app = self._launch('app', [str(binary), '--no-hot-reload'])
-        self._wait_rendered(panels)
-        # Dismiss the launch overlay, then give the first frames time to settle.
-        self.keys('Escape')
-        time.sleep(2)
-        if rows:
-            # A second strip to move up and down between.
-            self.keys(MOVE['down'])
-            time.sleep(0.6)
-            self.keys(FOCUS['up'])
-            time.sleep(1)
 
     def _launch(self, name, command, **kwargs):
         log = (self.root / (name + '.log')).open('w')
@@ -222,7 +319,33 @@ class App:
                 raise RuntimeError(f'App failed to render, see {self.root / "app.log"}')
             time.sleep(0.1)
 
+    @staticmethod
+    def _wtype(keys):
+        """One wtype command for `keys`, as (chord, pause_seconds).
+
+        Each wtype process attaches its own virtual keyboard, and the window
+        loses keyboard focus when that keyboard goes away. An inactive window
+        is throttled to 30 fps, so a measured run must be a single process.
+        """
+        names = {'super': 'logo'}
+        # Let wl_keyboard.enter reach the window before the first shortcut.
+        command = ['wtype', '-s', '150']
+        for chord, pause in keys:
+            *mods, key = chord.split('+')
+            mods = [names.get(m, m) for m in mods]
+            for mod in mods:
+                command += ['-M', mod]
+            command += ['-k', key]
+            for mod in reversed(mods):
+                command += ['-m', mod]
+            if pause:
+                command += ['-s', str(round(pause * 1000))]
+        return command
+
     def keys(self, *chords):
+        if self.display == 'wayland':
+            subprocess.run(self._wtype([(chord, 0) for chord in chords]), env=self.env, check=True, timeout=10)
+            return
         subprocess.run(['xdotool', 'key', '--clearmodifiers', '--delay', '0', *chords],
                        env=self.env, check=True, timeout=10)
 
@@ -234,67 +357,136 @@ class App:
         except (OSError, StopIteration, json.JSONDecodeError):
             return None
 
+    @staticmethod
+    def _schedule(keys, seconds):
+        """Bounded input sequence, without an action on the end boundary."""
+        if not keys:
+            return []
+        if any(pause <= 0 for _, pause in keys):
+            raise ValueError('scenario pauses must be positive')
+        result, elapsed = [], 0.0
+        while elapsed < seconds - 0.05:
+            chord, pause = keys[len(result) % len(keys)]
+            pause = min(pause, seconds - elapsed)
+            result.append((chord, pause))
+            elapsed += pause
+        return result
+
+    @staticmethod
+    def _stop(process, sig=signal.SIGTERM, timeout=10):
+        if process is None:
+            return
+        if process.poll() is None:
+            try:
+                process.send_signal(sig)
+            except ProcessLookupError:
+                pass
+        try:
+            process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=10)
+
     def measure(self, capture, keys, seconds, profile_to=None):
         """Plays `keys` in a loop for `seconds` while sampling frame timing."""
+        input_lead = 0.25 if self.display == 'wayland' else 0
+        schedule = self._schedule(keys, max(0, seconds - input_lead))
         control = self.root / 'runtime/jcode-desktop-profile.json'
         control.write_text(json.dumps(dict(capture_id=capture,
                                            until_unix_ms=int((time.time() + seconds + 4) * 1000))))
-        time.sleep(1.2)
-        sampler = None
-        if profile_to:
-            # A CPU profile of the app over exactly the measured window.
-            sampler = subprocess.Popen(
-                ['samply', 'record', '--save-only', '--no-open', '--rate', '2000',
-                 '-o', str(profile_to), '-p', str(self.app.pid)],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.3)
-        before = process_sample(self.app.pid)
-        started = time.monotonic()
-        actions, states = 0, set()
-        while time.monotonic() - started < seconds:
-            if self.app.poll() is not None:
-                raise RuntimeError(f'App exited, see {self.root / "app.log"}')
-            if not keys:
-                time.sleep(0.25)
-                continue
-            for chord, pause in keys:
-                if time.monotonic() - started >= seconds:
-                    break
-                self.keys(chord)
-                actions += 1
-                time.sleep(pause)
+        sampler = typing = sampler_log = None
+        actions, states, cameras = 0, set(), set()
+        try:
+            time.sleep(1.2)
+            if profile_to:
+                sampler_log = (self.root / f'samply-{capture}.log').open('w')
+                sampler = subprocess.Popen(
+                    ['samply', 'record', '--save-only', '--unstable-presymbolicate', '--no-open', '--rate', '2000',
+                     '-o', str(profile_to), '-p', str(self.app.pid)],
+                    stdout=sampler_log, stderr=sampler_log)
+                time.sleep(0.3)
+                if sampler.poll() is not None:
+                    raise RuntimeError(f'samply failed to attach, see {self.root / f"samply-{capture}.log"}')
+            if self.display == 'wayland':
+                # A single virtual keyboard spans warmup, idle and active runs,
+                # and remains attached until AFTER the final process sample.
+                command = self._wtype(schedule)
+                command[1:3] = ['-s', '1000']
+                command += ['-s', str(round((seconds - sum(p for _, p in schedule) + 2) * 1000))]
+                typing = subprocess.Popen(command, env=self.env)
+                time.sleep(1 - input_lead)
+            before = process_sample(self.app.pid)
+            started = time.monotonic()
+            deadline = started + seconds
+            next_key = 0
+            next_at = started
+            while time.monotonic() < deadline:
+                if self.app.poll() is not None:
+                    raise RuntimeError(f'App exited, see {self.root / "app.log"}')
+                if typing is not None and typing.poll() is not None:
+                    raise RuntimeError('wtype exited before the measurement boundary')
+                if self.display != 'wayland' and schedule and next_key < len(schedule) and time.monotonic() >= next_at:
+                    chord, pause = schedule[next_key]
+                    self.keys(chord)
+                    next_key += 1
+                    actions += 1
+                    next_at = time.monotonic() + pause
                 nav = self.navigation()
                 if nav:
                     states.add((nav['active_row'], nav['focused_slot'], nav['overview'],
                                 sum(len(row['panels']) for row in nav['rows'])))
-        after = process_sample(self.app.pid)
-        control.unlink(missing_ok=True)
-        if sampler:
-            # samply ignores --duration when attached; it stops and saves on SIGINT.
-            sampler.send_signal(signal.SIGINT)
-            sampler.wait(timeout=120)
+                    cameras.add(tuple(round(row.get('camera_target', row.get('camera', 0)), 2)
+                                      for row in nav['rows']))
+                time.sleep(min(0.03, max(0, deadline - time.monotonic())))
+            after = process_sample(self.app.pid)
+            elapsed = time.monotonic() - started
+            if self.display == 'wayland':
+                actions = len(schedule)
+        finally:
+            control.unlink(missing_ok=True)
+            try:
+                self._stop(typing)
+            finally:
+                # Attached samply saves on SIGINT, even on input/app failures.
+                try:
+                    self._stop(sampler, signal.SIGINT, timeout=120)
+                finally:
+                    if sampler_log:
+                        sampler_log.close()
+        if profile_to and (not profile_to.exists() or not profile_to.stat().st_size):
+            raise RuntimeError(f'samply did not save a profile, see {self.root / f"samply-{capture}.log"}')
         time.sleep(0.3)
         source = self.root / f'runtime/jcode-desktop-profile-{self.app.pid}-{capture}.jsonl'
         if not source.exists():
             raise RuntimeError('No profile samples; build with live profiling')
         frames = [json.loads(line) for line in source.read_text().splitlines() if line.endswith('}')]
-        frames = [f for f in frames if before['unix_ms'] <= f['unix_ms'] <= after['unix_ms']]
+        frames = [f for f in frames if before['unix_ms'] <= f['unix_ms'] - f['interval_ms']
+                  and f['unix_ms'] <= after['unix_ms']]
+        if not frames:
+            raise RuntimeError('No complete profile intervals inside the measurement window')
         result = summarize(frames, before, after)
-        result.update(actions=actions, distinct_states=len(states))
+        result.update(actions=actions, distinct_states=len(states), distinct_camera_targets=len(cameras),
+                      camera_target_range=max((max(c) - min(c) for c in zip(*cameras)), default=0), requested_seconds=seconds,
+                      elapsed_seconds=elapsed, measurement_start_unix_ms=before['unix_ms'],
+                      measurement_end_unix_ms=after['unix_ms'], display=self.display,
+                      action_count_kind='scheduled' if self.display == 'wayland' else 'dispatched',
+                      input_start_delay_seconds=input_lead,
+                      profile_includes_warmup=bool(profile_to))
         if keys and len(states) < 2:
             raise RuntimeError(f'{capture}: shortcuts did not change the workspace; see {self.root}')
+        if capture == 'navigate' and getattr(self, 'expect_camera', False) and len(cameras) < 2:
+            raise RuntimeError(f'{capture}: wide panels did not exercise camera pans; see {self.root}')
         return result
 
     def close(self):
-        for process in reversed(self.processes):
-            process.terminate()
-            try:
-                process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait()
-        for log in self.logs:
-            log.close()
+        try:
+            for process in reversed(self.processes):
+                self._stop(process)
+        finally:
+            for log in self.logs:
+                log.close()
+            if self.runtime_alias:
+                self.runtime_alias.cleanup()
 
 
 def compare(current, baseline, tolerance):
@@ -325,15 +517,23 @@ def main():
     parser.add_argument('--repeats', type=int, default=3)
     parser.add_argument('--seconds', type=float, default=8)
     parser.add_argument('--panels', type=int, choices=range(2, 7), default=3)
+    parser.add_argument('--panel-width', type=float, choices=(0.25, 0.5, 0.75),
+                        help='set each panel to a real preset through shortcuts before measuring')
+    parser.add_argument('--layout-mode', choices=('normal', 'folder_tabs'), default='normal')
     parser.add_argument('--transcript', choices=('all', 'long-history', 'streaming', 'empty'), default='all')
     parser.add_argument('--seed', type=int, default=7)
     parser.add_argument('--baseline', type=Path, help='summary.json of an earlier run to compare against')
     parser.add_argument('--tolerance', type=float, default=0.15,
                         help='fraction a metric may worsen against the baseline before failing')
+    parser.add_argument('--display', choices=('xvfb', 'wayland'), default='xvfb',
+                        help='xvfb: software rasterizer (CPU cost only). wayland: the real GPU on a '
+                             'private headless Sway at 120 Hz, for true frame pacing')
+    parser.add_argument('--sway-prefix', type=Path, default=Path('target/headless-sway-tools'),
+                        help='extracted Sway prefix containing usr/bin and usr/lib, if Sway is not installed')
     parser.add_argument('--profile', action='store_true',
                         help='record a samply CPU profile of each measured scenario (needs samply)')
     args = parser.parse_args()
-    if args.seconds < 3 or args.repeats < 1:
+    if not math.isfinite(args.seconds) or args.seconds < 3 or args.repeats < 1:
         parser.error('need at least 3 seconds and one repeat')
     binary = args.binary.resolve(strict=True)
     root = args.output.resolve()
@@ -343,7 +543,12 @@ def main():
     with binary.open('rb') as file:
         digest = hashlib.file_digest(file, 'sha256').hexdigest()
     meta = dict(binary=str(binary), sha256=digest, scenarios=scenarios, repeats=args.repeats,
-                seconds=args.seconds, panels=args.panels, transcript=args.transcript, seed=args.seed,
+                seconds=args.seconds, panels=args.panels, panel_width=args.panel_width, layout_mode=args.layout_mode,
+                transcript=args.transcript, seed=args.seed,
+                display=args.display, private_compositor=True, measurement_version=2,
+                mode=os.environ.get('PERF_SUITE_MODE', '2880x1800@120Hz') if args.display == 'wayland' else '1440x1000',
+                scale=os.environ.get('PERF_SUITE_SCALE', '1.6') if args.display == 'wayland' else '1',
+                renderer=os.environ.get('WLR_RENDERER', 'gles2') if args.display == 'wayland' else 'lavapipe',
                 loadavg=Path('/proc/loadavg').read_text().strip())
     (root / 'capture.json').write_text(json.dumps(meta, indent=2) + '\n')
 
@@ -357,7 +562,8 @@ def main():
                 if not group:
                     continue
                 tag = f'{"on" if retention else "off"}-{"rows" if rows else "flat"}-{repeat}'
-                app = App(root / tag, binary, retention, args.panels, rows, args.transcript)
+                app = App(root / tag, binary, retention, args.panels, rows, args.transcript, args.display,
+                          args.sway_prefix.resolve() if args.sway_prefix.exists() else None, args.panel_width, args.layout_mode)
                 try:
                     for scenario in group:
                         keys = scenario_keys(scenario, random.Random(args.seed))
@@ -400,6 +606,14 @@ def main():
         profile.print_cause_totals(first.get('causes') or {}, first['seconds'] or 1)
 
     if args.baseline:
+        baseline_meta = args.baseline.parent / 'capture.json'
+        if baseline_meta.exists():
+            previous = json.loads(baseline_meta.read_text())
+            mismatch = [name for name in ('panels', 'panel_width', 'layout_mode', 'transcript', 'display', 'mode', 'scale')
+                        if name in previous and previous[name] != meta[name]]
+            if mismatch:
+                print('\nWarning: baseline workload differs in ' + ', '.join(mismatch)
+                      + '. This comparison is exploratory, not like-for-like.')
         worse = compare(summary, json.loads(args.baseline.read_text()), args.tolerance)
         if worse:
             print('\nRegressions against baseline:')

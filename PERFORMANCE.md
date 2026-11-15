@@ -1,5 +1,72 @@
 # Interaction latency profile
 
+## Panel camera navigation, 2026-11-15
+
+Camera frames previously rebuilt the stationary sidebar along with Workspace.
+The sidebar now has its own retained view. A camera-only notification can replay
+that view, while changes to workspace selection, panel metadata, globals and
+hover state still invalidate it. A regression test checks both replay and model
+invalidation, and the live render attribution names this boundary `SidebarChrome`.
+
+The release CPU-only navigation test uses six half-width panels, each with 120
+conversation items, and delivers every animation frame rather than measuring
+only the first frame after a keypress:
+
+```sh
+justrust test --release -p jcode-desktop-ui --lib navigation_frame_profile -- --ignored --nocapture
+```
+
+On the warmed horizontal-pan workload, baseline p50/p95/max were
+2.11/3.50/6.07 ms over 264 frames. With sidebar isolation they were
+1.96/2.73/5.70 ms over 264 frames, with zero CPU-only samples above 8.33 ms in
+either run. These are separate hosted runs, not proof of live 120 FPS or GPU
+presentation latency. An explicit cached-panel layout boundary was also tried
+and reverted: its small difference did not justify losing the ordinary view's
+fine-grained nested invalidation.
+
+The performance suite can now use a private headless Wayland compositor and the
+real GPU, without driving the user's desktop:
+
+```sh
+python3 scripts/perf-suite.py target/perf/navigation-gpu \
+  --display wayland --sway-prefix target/headless-sway-tools \
+  --scenario navigate --retention on --panels 6 --panel-width 0.5 \
+  --seconds 12 --repeats 3
+```
+
+The default private output is 2880x1800 at 120 Hz, scale 1.6. Metadata records
+the output, scale, renderer and binary hash. Use `PERF_SUITE_MODE` and
+`PERF_SUITE_SCALE` to choose another setup. Hardware rendering is distinct from
+the default Xvfb/lavapipe CPU fixture. A private headless compositor is still not
+the user's physical display and does not prove physical scanout cadence.
+
+Two measurement pitfalls were found and corrected: repeated short-lived virtual
+keyboards made the native window inactive between keys, triggering GPUI's
+inactive-window throttle, and fixture widths of `1 / panel_count` did not
+necessarily produce horizontal camera motion. The Wayland measurement now keeps
+one keyboard attached throughout the sampling interval. `--panel-width` applies
+native width presets, and wide-panel navigation must record changing camera
+targets. Do not compare the earlier narrow-panel focus-only numbers as if they
+were sustained camera-pan results. Samply capture failures now fail visibly with
+a diagnostic log rather than silently producing a timing-only run.
+
+The earlier live capture at `target/live-profile/nav-before-1114` recorded 984
+animation intervals averaging 15.00 ms, or 66.65 FPS, with 5.57 ms average CPU
+draw time. CPU draw timing excludes renderer submission/present and does not
+explain the entire presentation interval. No claim that all navigation frames
+meet the 8.33 ms budget is made from these measurements.
+
+Three alternating eight-second private-GPU runs per binary, with six half-width
+panels in FolderTabs mode, verified four distinct camera targets spanning
+2362.26 logical pixels. Median animation FPS was 72.13 before versus 84.90
+after, and median mean-draw time was 9.06 versus 8.02 ms. UI-thread utilization
+was 57.63% versus 61.95%, consistent with drawing more frames, not an idle-CPU
+saving claim. Results varied substantially: concurrent work drove the 16-core
+machine's load average above 48 and CPU pressure to 46% during comparison.
+These results support further investigation but do not isolate the sidebar's
+effect from scheduling contention and do not meet the 120 FPS goal. Artifacts:
+`target/perf/camera-gpu-compare-{baseline,candidate}-{1,2,3}`.
+
 ## Refresh-rate investigation, 2026-09-21
 
 The production scheduler does **not** have a blanket 120 FPS cap. The current
