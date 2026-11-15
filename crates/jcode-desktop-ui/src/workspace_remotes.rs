@@ -838,7 +838,13 @@ impl Workspace {
         cx.notify();
     }
 
-    pub(super) fn render_machine_switcher(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+    /// The destination row. Folder mode passes the sidebar's section menu and
+    /// toggle as `trailing`, making this the sidebar's only header line.
+    pub(super) fn render_machine_switcher(
+        &self,
+        trailing: Option<gpui::AnyElement>,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let theme = Theme::global();
         let host = self.remotes.default_host.as_deref();
         let button = |id: &'static str, icon: &'static [u8], title: String, selected: bool| {
@@ -875,6 +881,9 @@ impl Workspace {
             .text_size(px(10.5))
             .child(
                 div()
+                    .when(trailing.is_some(), |el| {
+                        el.debug_selector(|| "sidebar-navigation-tabs".into())
+                    })
                     .flex()
                     .items_center()
                     .gap_1()
@@ -921,7 +930,8 @@ impl Workspace {
                             }),
                         ),
                     )
-                    .child(self.render_default_directory_button(cx)),
+                    .child(self.render_default_directory_button(cx))
+                    .children(trailing),
             )
             .when(self.remotes.failed, |el| {
                 el.child(

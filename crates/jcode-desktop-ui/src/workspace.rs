@@ -122,6 +122,9 @@ mod map_motion;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
+#[cfg(test)]
+#[path = "workspace_nav_profile_tests.rs"]
+mod nav_profile_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 #[cfg(test)]
@@ -6810,7 +6813,8 @@ impl Workspace {
                     .items_center()
                     .child(div().flex_1().min_w_0().child(navigation))
             })
-            .child(self.render_machine_switcher(cx))
+            // Folder mode's header already is the destination row.
+            .children((!folders).then(|| self.render_machine_switcher(None, cx)))
             .child(
                 div()
                     .flex_1()
@@ -11723,12 +11727,14 @@ mod tests {
             let header = vcx.debug_bounds("sidebar-navigation-tabs").unwrap();
             let trigger = vcx.debug_bounds("sidebar-section-trigger").unwrap();
             let destinations = vcx.debug_bounds("machine-destination-switcher").unwrap();
+            let sidebar = vcx.debug_bounds("sidebar").unwrap();
             assert_eq!(
-                header.bottom(),
                 destinations.top(),
-                "header must touch the combined destination and directory row"
+                sidebar.top(),
+                "the destination and directory row is the only header line"
             );
-            assert_eq!(header.size.height, px(TITLEBAR_HEIGHT));
+            assert!(header.top() >= destinations.top());
+            assert!(header.bottom() <= destinations.bottom());
             assert!(trigger.left() >= header.left() && trigger.right() <= header.right());
             assert!(vcx.debug_bounds("sidebar-roller-next").is_none());
         }

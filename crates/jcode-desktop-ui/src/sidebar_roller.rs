@@ -157,100 +157,104 @@ impl Workspace {
             .copied()
             .find(|tab| tab.2 == Some(self.sidebar_view))
             .unwrap_or(TABS[0]);
-        let menu = div()
-            .id("sidebar-navigation-tabs")
-            .debug_selector(|| "sidebar-navigation-tabs".into())
-            .w_full()
-            .h(px(TITLEBAR_HEIGHT))
+        let trigger = div()
+            .id("sidebar-section-trigger")
+            .debug_selector(|| "sidebar-section-trigger".into())
             .flex_none()
-            .pl(px(sidebar_header_left_padding(fullscreen)))
-            .pr(px(12.0))
-            .py(px(6.0))
+            .size(px(28.0))
+            .rounded_full()
+            .when(self.sidebar_roller.expanded, |el| {
+                el.bg(Theme::global().TOOL_BG)
+            })
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            // Only this button owns section hover and wheel navigation.
+            .occlude()
+            .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
+            .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
+            .hover(|el| el.bg(Theme::global().TOOL_BG))
+            .tooltip(move |_, cx| {
+                cx.new(|_| {
+                    remotes::HeaderTooltip(
+                        format!(
+                            "Sidebar sections · {label}. Click to open or scroll to switch sections."
+                        )
+                        .into(),
+                    )
+                })
+                .into()
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.sidebar_roller.expanded = true;
+                    cx.notify();
+                }),
+            )
+            .child(
+                div().debug_selector(move || id.into()).child(
+                    gpui::svg()
+                        .data(include_bytes!("../../../assets/icons/sections.svg").as_slice())
+                        .size(px(16.0))
+                        .text_color(Theme::global().TEXT_DIM),
+                ),
+            );
+        let toggle = div()
+            .id("workspace-sidebar-toggle")
+            .debug_selector(|| "workspace-sidebar-toggle".into())
+            .flex_none()
+            .size(px(28.0))
+            .rounded_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .occlude()
+            .hover(|el| el.bg(Theme::global().TOOL_BG))
+            .tooltip(|_, cx| {
+                cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
+                    .into()
+            })
+            .on_mouse_down(
+                gpui::MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    this.sidebar_roller.expanded = false;
+                    this.toggle_sidebar(&ToggleSidebar, window, cx);
+                }),
+            )
+            .child(
+                gpui::svg()
+                    .data(include_bytes!("../../../assets/icons/menu.svg").as_slice())
+                    .size(px(16.0))
+                    .text_color(Theme::global().TEXT_DIM),
+            );
+        // The section menu and the sidebar toggle share the destination row,
+        // so the sidebar has no separate header line. The toggle sits rightmost.
+        let controls = div()
+            .flex_none()
             .flex()
             .items_center()
             .gap_1()
-            .bg(Theme::global().PANEL_BG)
-            .child(
-                div()
-                    .id("workspace-sidebar-toggle")
-                    .debug_selector(|| "workspace-sidebar-toggle".into())
-                    .size(px(28.0))
-                    .rounded_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_size(px(12.0))
-                    .text_color(Theme::global().TEXT)
-                    .cursor_pointer()
-                    .occlude()
-                    .hover(|el| el.bg(Theme::global().TOOL_BG))
-                    .tooltip(|_, cx| {
-                        cx.new(|_| remotes::HeaderTooltip("Hide sidebar (Ctrl+B)".into()))
-                            .into()
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.sidebar_roller.expanded = false;
-                            this.toggle_sidebar(&ToggleSidebar, window, cx);
-                        }),
-                    )
-                    .child("☰"),
-            )
-            .child(
-                div()
-                    .id("sidebar-section-trigger")
-                    .debug_selector(|| "sidebar-section-trigger".into())
-                    .size(px(28.0))
-                    .rounded_full()
-                    .bg(if self.sidebar_roller.expanded {
-                        Theme::global().TOOL_BG
-                    } else {
-                        Theme::global().PANEL_BG
-                    })
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .relative()
-                    .text_size(px(12.0))
-                    .text_color(Theme::global().TEXT)
-                    .cursor_pointer()
-                    // Keep the menu interactive above the caption drag region.
-                    // Only this button owns section hover and wheel navigation.
-                    .occlude()
-                    .on_mouse_move(cx.listener(Self::hover_sidebar_roller))
-                    .on_scroll_wheel(cx.listener(Self::scroll_sidebar_roller))
-                    .hover(|el| el.bg(Theme::global().PANEL_BG))
-                    .tooltip(move |_, cx| {
-                        cx.new(|_| {
-                            remotes::HeaderTooltip(format!(
-                                "Sidebar menu · {label}. Click to open or scroll to switch sections."
-                            ).into())
-                        })
-                        .into()
-                    })
-                    .on_mouse_down(
-                        gpui::MouseButton::Left,
-                        cx.listener(|this, _, window, cx| {
-                            window.prevent_default();
-                            cx.stop_propagation();
-                            this.sidebar_roller.expanded = true;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .debug_selector(move || id.into())
-                            .child("⋯"),
-                    ),
-            );
+            .child(trigger)
+            .child(toggle)
+            .into_any_element();
+        // macOS traffic lights float over the top of the sidebar unless fullscreen.
+        let top = if cfg!(target_os = "macos") && !fullscreen {
+            28.0
+        } else {
+            0.0
+        };
         div()
             .relative()
-            .h(px(TITLEBAR_HEIGHT))
             .flex_none()
-            .child(menu)
+            .pt(px(top))
+            .child(self.render_machine_switcher(Some(controls), cx))
             .when(self.sidebar_roller.expanded, |el| {
                 // Deferred paint keeps the pop-out above the sidebar body
                 // without moving it or changing the workspace's geometry.
@@ -429,7 +433,13 @@ mod tests {
         vcx.run_until_parked();
         let toggle = vcx.debug_bounds("workspace-sidebar-toggle").unwrap();
         let menu = vcx.debug_bounds("sidebar-section-trigger").unwrap();
-        assert!(toggle.right() <= menu.left());
+        assert!(menu.right() <= toggle.left(), "hamburger sits rightmost");
+        let row = vcx.debug_bounds("machine-destination-switcher").unwrap();
+        let sidebar = vcx.debug_bounds("sidebar").unwrap();
+        assert_eq!(row.top(), sidebar.top(), "no separate header line");
+        assert!(toggle.top() >= row.top() && toggle.bottom() <= row.bottom());
+        let directory = vcx.debug_bounds("default-directory-button").unwrap();
+        assert!(directory.right() <= menu.left());
         vcx.update(|window, cx| window.simulate_mouse_move(toggle.center(), cx));
         vcx.run_until_parked();
         assert!(vcx.debug_bounds("sidebar-roller-popout").is_none());
