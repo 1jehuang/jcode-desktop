@@ -16,30 +16,21 @@ const OVERLAY_WIDTH: f32 = 320.0;
 const OVERLAY_BOTTOM: f32 = 120.0;
 
 impl Workspace {
-    fn applet_scope(&self, cx: &App) -> (Option<String>, Option<String>) {
-        let active = self.slots.get(self.active).map(|slot| slot.panel.read(cx));
-        (
-            active.and_then(|panel| panel.working_dir.clone()),
-            active.map(|panel| panel.session_id.clone()),
-        )
-    }
-
     fn visible_applets(&self, filter: impl Fn(&Placement) -> bool, cx: &App) -> Vec<String> {
-        let (dir, session) = self.applet_scope(cx);
         let Some(runtime) = cx.try_global::<crate::applet_runtime::Runtime>() else {
             return Vec::new();
         };
+        // Scope strings are only read synchronously. Borrow them instead of
+        // copying both on every sidebar/overlay/settings render, including
+        // frames where there are no matching applets.
+        let active = self.slots.get(self.active).map(|slot| slot.panel.read(cx));
+        let dir = active.and_then(|panel| panel.working_dir.as_deref());
+        let session = active.map(|panel| panel.session_id.as_str());
         runtime
             .host
             .borrow()
             .at(filter)
-            .filter(|mounted| {
-                crate::applet_host::AppletHost::in_scope(
-                    mounted,
-                    dir.as_deref(),
-                    session.as_deref(),
-                )
-            })
+            .filter(|mounted| crate::applet_host::AppletHost::in_scope(mounted, dir, session))
             .map(|mounted| mounted.instance.id.clone())
             .collect()
     }

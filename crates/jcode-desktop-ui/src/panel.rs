@@ -306,8 +306,22 @@ enum TranscriptRowSource {
 struct TranscriptDerived {
     key: TranscriptDerivedKey,
     rows: Arc<Vec<TranscriptRenderRow>>,
-    prompt_rows: Vec<(usize, usize)>,
-    latest_todo: Option<TodoCardPayload>,
+    prompt_rows: Arc<Vec<(usize, usize)>>,
+    latest_todo: Option<Arc<TodoCardPayload>>,
+    /// Ordinary and publish-tracker header fingerprints, computed on rebuild.
+    tail_headers: [u64; 2],
+}
+
+fn transcript_tail_headers(payload: Option<&TodoCardPayload>) -> [u64; 2] {
+    use std::hash::{Hash, Hasher};
+    [false, true].map(|publish_tracker| {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        publish_tracker.hash(&mut hasher);
+        if !publish_tracker && let Some(payload) = payload.filter(|p| !p.todos.is_empty()) {
+            format!("{payload:?}").hash(&mut hasher);
+        }
+        hasher.finish()
+    })
 }
 
 #[derive(Clone, PartialEq)]
@@ -3456,23 +3470,51 @@ impl Panel {
                 self.transcript_selection
                     .update(cx, |selection, _| selection.set_document(document));
             }
-            let prompt_rows = rows
-                .iter()
-                .enumerate()
-                .filter_map(|(row, entry)| match entry.source {
-                    TranscriptRowSource::Settled(index)
-                        if prompt::is_pinnable_prompt(&self.items[index]) =>
-                    {
-                        Some((row, index))
-                    }
-                    _ => None,
+            // Live rows are appended after settled rows. Their growth and
+            // disclosure changes cannot move a settled prompt's row index.
+            let prompt_rows = self
+                .transcript_derived
+                .as_ref()
+                .filter(|derived| {
+                    derived.key.items_revision == key.items_revision
+                        && derived.key.applet_rows_version == key.applet_rows_version
+                        && derived.key.display == key.display
                 })
-                .collect();
+                .map(|derived| derived.prompt_rows.clone())
+                .unwrap_or_else(|| {
+                    Arc::new(
+                        rows.iter()
+                            .enumerate()
+                            .filter_map(|(row, entry)| match entry.source {
+                                TranscriptRowSource::Settled(index)
+                                    if prompt::is_pinnable_prompt(&self.items[index]) =>
+                                {
+                                    Some((row, index))
+                                }
+                                _ => None,
+                            })
+                            .collect(),
+                    )
+                });
+            // Live text and disclosure changes rebuild rows, not settled todo
+            // state. Do not rescan history, clone the payload or format its
+            // fingerprint for every streaming chunk.
+            let (latest_todo, tail_headers) = self
+                .transcript_derived
+                .as_ref()
+                .filter(|derived| derived.key.items_revision == key.items_revision)
+                .map(|derived| (derived.latest_todo.clone(), derived.tail_headers))
+                .unwrap_or_else(|| {
+                    let latest_todo = self.latest_todo_payload().map(Arc::new);
+                    let tail_headers = transcript_tail_headers(latest_todo.as_deref());
+                    (latest_todo, tail_headers)
+                });
             self.transcript_derived = Some(TranscriptDerived {
                 key,
                 rows,
                 prompt_rows,
-                latest_todo: self.latest_todo_payload(),
+                latest_todo,
+                tail_headers,
             });
         }
         self.transcript_derived.as_ref().unwrap()
@@ -4744,22 +4786,15 @@ impl Render for Panel {
         let rows = derived.rows.clone();
         let prompt_rows = derived.prompt_rows.clone();
         let latest_todo = derived.latest_todo.clone();
+        let tail_headers = derived.tail_headers;
         // The publish tracker replaces the collapsible todo summary with
         // fixed, always-visible pipeline stages fed by the same snapshot.
-        let publish_tracker = self.render_publish_tracker(latest_todo.as_ref());
+        let publish_tracker = self.render_publish_tracker(latest_todo.as_deref());
         let pinned_todo =
             latest_todo.filter(|payload| !payload.todos.is_empty() && publish_tracker.is_none());
         let has_pinned_todo = pinned_todo.is_some() || publish_tracker.is_some();
         // Pinned chrome resizes the transcript viewport when it changes.
-        let tail_header = {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            publish_tracker.is_some().hash(&mut hasher);
-            if let Some(payload) = &pinned_todo {
-                format!("{payload:?}").hash(&mut hasher);
-            }
-            hasher.finish()
-        };
+        let tail_header = tail_headers[usize::from(publish_tracker.is_some())];
         // A separate virtual row keeps activity below text, reasoning, and tools.
         // Only the small Spinner entity ticks, never the transcript itself.
         let row_count = rows.len() + usize::from(self.activity_active());
@@ -10081,6 +10116,10 @@ fn demo_item_fixtures() -> Vec<Item> {
 #[cfg(test)]
 #[path = "panel_responsive_tests.rs"]
 mod responsive_tests;
+
+#[cfg(test)]
+#[path = "panel_derived_chrome_tests.rs"]
+mod derived_chrome_tests;
 
 #[cfg(test)]
 #[path = "panel_todoist_tests.rs"]

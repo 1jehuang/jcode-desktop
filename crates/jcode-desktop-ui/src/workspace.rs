@@ -4607,38 +4607,37 @@ impl Workspace {
         }
 
         let panel_h = (viewport_h - STRIP_PADDING_TOP - STRIP_PADDING_Y).max(1.0);
-        let indices = self.row_indices(row).collect::<Vec<_>>();
-        let mut animated_widths = Vec::with_capacity(indices.len());
-        let mut order_offsets = Vec::with_capacity(indices.len());
-        let mut close_progresses = Vec::with_capacity(indices.len());
-        for &index in &indices {
-            let fraction = self.slots[index].animated_width.sample(now);
-            if self.slots[index].animated_width.is_animating() {
+        let mut panels = Vec::with_capacity(self.row_indices(row).count());
+        let mut strip_width = 0.0;
+        // Sample each slot once and keep its geometry together. Four parallel
+        // heap buffers used to be allocated and zipped on every pan frame.
+        for (index, slot) in self.slots.iter_mut().enumerate() {
+            if slot.row != row {
+                continue;
+            }
+            let fraction = slot.animated_width.sample(now);
+            if slot.animated_width.is_animating() {
                 window.request_animation_frame();
             }
-            let close_progress = self.slots[index].close_progress.sample(now);
-            if self.slots[index].close_progress.is_animating() {
+            let close_progress = slot.close_progress.sample(now);
+            if slot.close_progress.is_animating() {
                 window.request_animation_frame();
             }
-            close_progresses.push(close_progress);
-            animated_widths.push(Self::width_for_fraction(fraction, viewport_w) * close_progress);
-            let progress = self.slots[index].order_offset.sample(now);
-            if self.slots[index].order_offset.is_animating() {
+            let width = Self::width_for_fraction(fraction, viewport_w) * close_progress;
+            strip_width += width;
+            let progress = slot.order_offset.sample(now);
+            if slot.order_offset.is_animating() {
                 window.request_animation_frame();
             }
-            let distance =
-                Self::width_for_fraction(self.slots[index].order_distance_fraction, viewport_w)
-                    + GAP;
-            order_offsets.push(progress * distance);
+            let distance = Self::width_for_fraction(slot.order_distance_fraction, viewport_w) + GAP;
+            panels.push((index, width, progress * distance, close_progress));
         }
         let camera_x = self.camera_x[row];
         let mut strip = div()
             .absolute()
             .top(px(STRIP_PADDING_TOP))
             .left(px(-camera_x))
-            .w(px(
-                animated_widths.iter().sum::<f32>() + GAP * indices.len().saturating_sub(1) as f32
-            ))
+            .w(px(strip_width + GAP * panels.len().saturating_sub(1) as f32))
             .h(px(panel_h));
 
         let folders = self.layout_mode == crate::config::LayoutMode::FolderTabs;
@@ -4647,12 +4646,7 @@ impl Workspace {
         // Capture actual painted bounds, including camera/width/order animation
         // and clipping. Keyboard focus is not a wheel hit-test target.
         let panel_hitboxes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        for (((index, width), order_offset), close_progress) in indices
-            .into_iter()
-            .zip(animated_widths)
-            .zip(order_offsets)
-            .zip(close_progresses)
-        {
+        for (index, width, order_offset, close_progress) in panels {
             let slot = &self.slots[index];
             let focused = index == self.active;
             // Match the selected pane, even when a menu temporarily owns keyboard focus.

@@ -420,7 +420,7 @@ impl Panel {
     /// still describe the previous scroll position, width, or transcript.
     pub(super) fn prompt_visibility_observer(
         &self,
-        prompt_rows: Vec<(usize, usize)>,
+        prompt_rows: Arc<Vec<(usize, usize)>>,
         first_visible: Rc<Cell<Option<VisibleRows>>>,
         cx: &Context<Self>,
     ) -> gpui::AnyElement {
