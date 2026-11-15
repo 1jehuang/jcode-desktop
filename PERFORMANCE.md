@@ -50,13 +50,28 @@ not an FPS gain. Sample-window p95 maxima did not improve (2.86 to 3.32 ms),
 and one baseline run had a 42.9 ms outlier. Shared system load remains a
 confounder. The first unpaired baseline was much slower and is deliberately
 excluded from these comparisons. The remaining roughly 30 sidebar builds/s
-coincide with real workspace bridge updates, which also advance catalog
-recency. That state must not be frozen just to improve a benchmark.
+are consistent with the fixture's real workspace bridge-update cadence, which
+also advances catalog recency. That state must not be frozen just to improve
+a benchmark.
 
 Offline visual review: `target/sidebar-stream-review.png` shows three live
 panels, activity marks and todo progress. The measured visible-sidebar path
 is unchanged by the final guard that skips metadata preparation when the
 sidebar is hidden.
+
+A separate six-panel camera-pan check is saved under
+`target/perf/sidebar-nav-{baseline,candidate}-{1,2}/`. All runs traversed four
+camera targets over 2,362 px, confirming actual camera movement. Candidate
+runs reached 122.35/122.27 animation fps with 2.71/3.30 ms mean draw time;
+baselines were 122.17/107.39 fps and 2.89/5.40 ms. The loaded second baseline
+makes a pooled speedup claim inappropriate. Candidate maxima were still
+10.45/10.49 ms, above the 8.33 ms budget, so this does not prove every frame
+meets 120 Hz.
+
+The final running host activated UI generation 8 without a restart. Passive
+verification at `target/live-profile/sidebar-projection-gen8/` captured only
+14 draws and no input or animation intervals. It verifies the updated app
+is running, not sustained performance of the user's full live workspace.
 
 ## Rendering allocation and synchronization cleanup, 2026-11-15
 
