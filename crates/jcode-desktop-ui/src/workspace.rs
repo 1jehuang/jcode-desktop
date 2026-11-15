@@ -73,6 +73,9 @@ mod sidebar_swarm;
 mod sidebar_worktrees;
 #[path = "workspace_stream_fixture.rs"]
 mod workspace_stream_fixture;
+#[path = "workspace_sidebar_metadata.rs"]
+mod sidebar_metadata;
+use sidebar_metadata::SidebarPanelMetadata;
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -754,6 +757,7 @@ pub struct Workspace {
     /// Sidebar applet section, rendered with window access before the sidebar.
     sidebar_applets: Option<gpui::AnyElement>,
     sidebar_chrome: Option<Entity<SidebarChrome>>,
+    sidebar_panel_metadata: Option<Entity<HashMap<gpui::EntityId, SidebarPanelMetadata>>>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -1103,6 +1107,7 @@ impl Workspace {
             applet_text_selection: None,
             sidebar_applets: None,
             sidebar_chrome: None,
+            sidebar_panel_metadata: None,
             bridge,
             host,
             single_panel,
@@ -1492,6 +1497,7 @@ impl Workspace {
             applet_text_selection: None,
             sidebar_applets: None,
             sidebar_chrome: None,
+            sidebar_panel_metadata: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -5527,16 +5533,21 @@ impl Workspace {
     }
 
     fn render_sidebar(&mut self, fullscreen: bool, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let sidebar_panels = self
+            .sidebar_panel_metadata
+            .as_ref()
+            .expect("sidebar metadata prepared before render")
+            .read(cx);
         let active_id = self
             .slots
             .get(self.active)
-            .map(|slot| slot.panel.read(cx).session_id.clone());
+            .map(|slot| sidebar_panels[&slot.panel.entity_id()].session_id.clone());
         let open_marks = self
             .slots
             .iter()
             .filter(|slot| !slot.closing)
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.sidebar_activity())
             })
             .collect::<HashMap<_, _>>();
@@ -5544,7 +5555,7 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.latest_todo_progress())
             })
             .collect::<HashMap<_, _>>();
@@ -5564,7 +5575,7 @@ impl Workspace {
             .slots
             .iter()
             .map(|slot| {
-                let panel = slot.panel.read(cx);
+                let panel = &sidebar_panels[&slot.panel.entity_id()];
                 (panel.session_id.clone(), panel.title.to_string())
             })
             .collect::<HashMap<_, _>>();
@@ -5580,8 +5591,10 @@ impl Workspace {
             .iter()
             .map(|session| session.session_id.clone())
             .collect::<HashSet<_>>();
+        // Keep legacy first-record lookup semantics even for duplicate catalog ids.
+        let duplicate_catalog_ids = known.len() != catalog.len();
         for slot in self.slots.iter().filter(|slot| !slot.closing) {
-            let panel = slot.panel.read(cx);
+            let panel = &sidebar_panels[&slot.panel.entity_id()];
             if (panel.supports_voice() || panel.session_id.starts_with("ssh://"))
                 && known.insert(panel.session_id.clone())
             {
@@ -5612,7 +5625,10 @@ impl Workspace {
                 || session.user_connected
                 || self.sidebar_closed_sessions.contains(&session.session_id)
         });
-        let ordered_sessions = sidebar_session_order(&catalog);
+        let original_catalog = duplicate_catalog_ids.then(|| catalog.clone());
+        // Sort the owned render catalog in place, avoiding a second session clone.
+        sort_sidebar_sessions(&mut catalog);
+        let ordered_sessions = catalog;
         let swarm = sidebar_swarm::groups(&ordered_sessions);
         // Swarms and worktrees are one concept here: an agent is a thread. It
         // nests under its coordinator while it shares that checkout, and
@@ -5620,7 +5636,9 @@ impl Workspace {
         let mut agents: HashMap<String, (usize, usize)> = HashMap::new();
         let mut nested = HashSet::new();
         for (root, children) in &swarm.children {
-            let root_checkout = catalog
+            let root_checkout = original_catalog
+                .as_ref()
+                .unwrap_or(&ordered_sessions)
                 .iter()
                 .find(|session| &session.session_id == root)
                 .and_then(|session| self.sidebar_projects.checkout(session))
@@ -5650,7 +5668,7 @@ impl Workspace {
             .slots
             .iter()
             .filter(|slot| slot.closing)
-            .map(|slot| slot.panel.read(cx).session_id.clone())
+            .map(|slot| sidebar_panels[&slot.panel.entity_id()].session_id.clone())
             .collect::<HashSet<_>>();
         let (mut open_sessions, other_sessions): (Vec<_>, Vec<_>) = ordered_sessions
             .into_iter()
@@ -5666,7 +5684,9 @@ impl Workspace {
         let panel_positions = panel_positions
             .into_iter()
             .enumerate()
-            .map(|(position, (_, slot))| (slot.panel.read(cx).session_id.clone(), position))
+            .map(|(position, (_, slot))| {
+                (sidebar_panels[&slot.panel.entity_id()].session_id.clone(), position)
+            })
             .collect::<HashMap<_, _>>();
         open_sessions.sort_by_key(|session| {
             panel_positions
@@ -5685,6 +5705,7 @@ impl Workspace {
         // User-created collections come first, in their own order, and take
         // their sessions out of the directory groups below.
         let mut groups: Vec<(sidebar_projects::Project, usize, usize)> = Vec::new();
+        let mut group_indices: HashMap<String, usize> = HashMap::new();
         let mut members: Vec<Vec<SidebarRow>> = Vec::new();
         let mut project_checkouts: Vec<Vec<sidebar_projects::Checkout>> = Vec::new();
         let collection_order = self
@@ -5708,10 +5729,8 @@ impl Workspace {
         // Stable: open-before-history and recency survive inside each group.
         grouped.sort_by_key(|(_, session)| rank_collection(session));
         for (live, session) in grouped {
-            let open = self
-                .slots
-                .iter()
-                .any(|slot| !slot.closing && slot.panel.read(cx).session_id == session.session_id);
+            // open_marks contains exactly the non-closing local panel ids.
+            let open = open_marks.contains_key(&session.session_id);
             let collection = self
                 .collections
                 .collection_of(&session.session_id)
@@ -5734,9 +5753,10 @@ impl Workspace {
             } else {
                 self.sidebar_projects.checkout(&session)
             };
-            let index = match groups.iter().position(|(p, _, _)| p.key == project.key) {
+            let index = match group_indices.get(&project.key).copied() {
                 Some(index) => index,
                 None => {
+                    group_indices.insert(project.key.clone(), groups.len());
                     groups.push((project, 0, 0));
                     members.push(Vec::new());
                     project_checkouts.push(Vec::new());
@@ -8448,6 +8468,9 @@ impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Workspace");
         Theme::sync_window_background(window, &mut self.window_background);
+        if self.show_sidebar {
+            self.refresh_sidebar_panel_metadata(cx);
+        }
         if let Some(slot) = self.slots.get(self.active)
             && !slot.closing
             && slot.panel.read(cx).supports_voice()
@@ -9306,14 +9329,19 @@ fn sidebar_session_title_with_open_title(
     )
 }
 
+#[cfg(test)]
 fn sidebar_session_order(sessions: &[jcode_sdk::SessionInfo]) -> Vec<jcode_sdk::SessionInfo> {
     let mut ordered = sessions.to_vec();
+    sort_sidebar_sessions(&mut ordered);
+    ordered
+}
+
+fn sort_sidebar_sessions(ordered: &mut [jcode_sdk::SessionInfo]) {
     ordered.sort_by(|a, b| {
         b.saved
             .cmp(&a.saved)
             .then_with(|| sidebar_session_recency_ms(b).cmp(&sidebar_session_recency_ms(a)))
     });
-    ordered
 }
 
 fn sidebar_session_recency_ms(session: &jcode_sdk::SessionInfo) -> i64 {
@@ -10095,6 +10123,31 @@ mod tests {
             swarm_status: None,
             edit_stats: None,
         }
+    }
+
+    #[test]
+    fn sidebar_in_place_sort_keeps_equal_recency_catalog_order() {
+        let mut sessions = vec![
+            session_info("first", Some("first")),
+            session_info("second", Some("second")),
+            session_info("saved-first", None),
+            session_info("saved-second", None),
+        ];
+        for session in &mut sessions {
+            session.updated_at_ms = Some(42);
+            session.saved = session.session_id.starts_with("saved");
+        }
+        let allocation = sessions.as_ptr();
+        sort_sidebar_sessions(&mut sessions);
+        assert_eq!(sessions.as_ptr(), allocation, "reuse the owned catalog");
+        assert_eq!(
+            sessions
+                .iter()
+                .map(|session| session.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["saved-first", "saved-second", "first", "second"],
+        );
+        assert_eq!(sessions[2].title.as_deref(), Some("first"));
     }
 
     #[test]

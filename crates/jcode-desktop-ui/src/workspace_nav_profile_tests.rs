@@ -77,7 +77,11 @@ fn sidebar_retention_tracks_models_not_camera_notifications(cx: &mut gpui::TestA
         vcx.update(|_, cx| cx.notify(workspace.entity_id()));
         vcx.run_until_parked();
     }
-    assert_eq!(sidebar_renders(), before, "camera-only frames rebuilt the sidebar");
+    assert_eq!(
+        sidebar_renders(),
+        before,
+        "camera-only frames rebuilt the sidebar"
+    );
 
     workspace.update(vcx, |workspace, cx| {
         workspace.active = 1;
@@ -85,7 +89,10 @@ fn sidebar_retention_tracks_models_not_camera_notifications(cx: &mut gpui::TestA
     });
     vcx.run_until_parked();
     let after_focus = sidebar_renders();
-    assert!(after_focus > before, "focus changes must refresh sidebar selection");
+    assert!(
+        after_focus > before,
+        "focus changes must refresh sidebar selection"
+    );
 
     let panel = workspace.read_with(vcx, |workspace, _| workspace.slots[1].panel.clone());
     panel.update(vcx, |panel, cx| {
@@ -93,7 +100,113 @@ fn sidebar_retention_tracks_models_not_camera_notifications(cx: &mut gpui::TestA
         cx.notify();
     });
     vcx.run_until_parked();
-    assert!(sidebar_renders() > after_focus, "panel model changes must refresh sidebar metadata");
+    assert!(
+        sidebar_renders() > after_focus,
+        "panel model changes must refresh sidebar metadata"
+    );
+}
+
+#[gpui::test]
+fn sidebar_retains_list_for_streaming_text_but_refreshes_metadata(cx: &mut gpui::TestAppContext) {
+    let (workspace, vcx) = loaded_workspace(cx);
+    let panel = workspace.read_with(vcx, |workspace, _| workspace.slots[0].panel.clone());
+    panel.update(vcx, |panel, cx| {
+        panel.status = "running".into();
+        panel.apply(
+            &jcode_sdk::ApiEvent::TextDelta {
+                session_id: panel.session_id.clone(),
+                text: "first chunk".into(),
+                message_id: None,
+            },
+            cx,
+        );
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let before = sidebar_renders();
+    let metadata_identity = workspace.read_with(vcx, |workspace, cx| {
+        workspace.sidebar_panel_metadata.as_ref().unwrap().read(cx)[&panel.entity_id()]
+            .session_id
+            .as_ptr() as usize
+    });
+    for _ in 0..5 {
+        panel.update(vcx, |panel, cx| {
+            panel.apply(
+                &jcode_sdk::ApiEvent::TextDelta {
+                    session_id: panel.session_id.clone(),
+                    text: " more text".into(),
+                    message_id: None,
+                },
+                cx,
+            );
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        workspace.read_with(vcx, |workspace, cx| {
+            assert_eq!(
+                workspace.sidebar_panel_metadata.as_ref().unwrap().read(cx)[&panel.entity_id()]
+                    .session_id
+                    .as_ptr() as usize,
+                metadata_identity,
+                "unchanged metadata was replaced"
+            );
+        });
+    }
+    assert_eq!(
+        sidebar_renders(),
+        before,
+        "text-only deltas rebuilt the session list"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.title = "Updated live title".into();
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let after_title = sidebar_renders();
+    assert!(
+        after_title > before,
+        "live title changes must invalidate sidebar metadata"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.items.push(crate::panel::Item::Todos(
+            serde_json::from_value(
+                serde_json::json!({"todos": [{"content": "test task", "status": "pending"}]}),
+            )
+            .expect("valid sidebar todo fixture"),
+        ));
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let after_todo = sidebar_renders();
+    assert!(
+        after_todo > after_title,
+        "todo progress must refresh sidebar metadata"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.working_dir = Some("/tmp/sidebar-metadata-test".into());
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    let after_directory = sidebar_renders();
+    assert!(
+        after_directory > after_todo,
+        "working directory must refresh sidebar grouping"
+    );
+    panel.update(vcx, |panel, cx| {
+        panel.apply(
+            &jcode_sdk::ApiEvent::TurnDone {
+                session_id: panel.session_id.clone(),
+                pending_soft_interrupts: None,
+            },
+            cx,
+        );
+        cx.notify();
+    });
+    vcx.run_until_parked();
+    assert!(
+        sidebar_renders() > after_directory,
+        "activity completion must refresh the sidebar"
+    );
 }
 
 /// Press `key`, then deliver one animation frame every `step` until the pan

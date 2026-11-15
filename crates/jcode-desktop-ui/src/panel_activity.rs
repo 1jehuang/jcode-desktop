@@ -99,7 +99,23 @@ impl Spinner {
     }
 
     pub(super) fn for_sidebar(panel: gpui::Entity<super::Panel>, cx: &mut Context<Self>) -> Self {
-        let mut spinner = Self::for_panel(panel, cx);
+        // Context::observe leases (writes) this spinner on every panel notify,
+        // even if set_activity is a no-op. Read before leasing instead so text
+        // deltas do not dirty the retained sidebar through this leaf. The panel
+        // owns the spinner, so this detached observer ends with the same panel.
+        let owner = cx.weak_entity();
+        gpui::App::observe(cx, &panel, move |panel, cx| {
+            let activity = panel.read(cx).orb_activity();
+            if owner
+                .read_with(cx, |spinner, _| spinner.activity != activity)
+                .unwrap_or(false)
+            {
+                let _ = owner.update(cx, |spinner, cx| spinner.set_activity(activity, cx));
+            }
+        })
+        .detach();
+        let mut spinner = Self::new(cx);
+        spinner.panel = Some(panel.downgrade());
         spinner.sidebar_mark = true;
         spinner
     }
@@ -333,7 +349,14 @@ impl Render for Spinner {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Spinner");
         let mut label = None;
-        if let Some(panel) = self.panel.as_ref().and_then(|panel| panel.upgrade()) {
+        // Sidebar marks already observe activity changes. Once initialized,
+        // do not read the full panel during render: that makes the retained
+        // sidebar depend on every text delta, even when activity is unchanged.
+        // The first draw still samples the owner for restored/fixture panels
+        // which have not emitted a notification yet.
+        if (!self.sidebar_mark || self.reduced_motion.is_none())
+            && let Some(panel) = self.panel.as_ref().and_then(|panel| panel.upgrade())
+        {
             let activity = panel.read(cx).orb_activity();
             if !self.sidebar_mark {
                 label = Some(panel.read(cx).status_line());

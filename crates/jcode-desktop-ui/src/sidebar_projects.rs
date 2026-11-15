@@ -85,10 +85,14 @@ impl State {
     }
 
     fn root(&mut self, directory: &str) -> Option<PathBuf> {
-        self.roots
-            .entry(directory.to_owned())
-            .or_insert_with(|| git_root(Path::new(directory)))
-            .clone()
+        // Borrow the key on cache hits rather than allocating it for entry().
+        // A cached negative result is authoritative too.
+        if let Some(root) = self.roots.get(directory) {
+            return root.clone();
+        }
+        let root = git_root(Path::new(directory));
+        self.roots.insert(directory.to_owned(), root.clone());
+        root
     }
 
     /// The session's project and, when it differs, its directory inside it.
@@ -474,6 +478,18 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cached_missing_repository_is_not_probed_again() {
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().to_str().unwrap();
+        let mut state = State::default();
+        assert_eq!(state.root(directory), None);
+        std::fs::create_dir(temp.path().join(".git")).unwrap();
+        assert_eq!(git_root(temp.path()), Some(temp.path().to_path_buf()));
+        assert_eq!(state.root(directory), None);
+        assert_eq!(state.roots.len(), 1);
+    }
 
     #[test]
     fn repositories_group_subdirectories_and_linked_worktrees() {

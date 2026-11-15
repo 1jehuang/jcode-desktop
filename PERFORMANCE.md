@@ -1,5 +1,63 @@
 # Interaction latency profile
 
+## Sidebar invalidation follow-up, 2026-11-15
+
+A passive generation-6 capture (`target/live-profile/render-cleanup-gen6/`)
+showed 221 sidebar renders across 243 draws. Its 18 animation intervals are
+not enough to establish sustained frame rate. This was a reason to keep
+investigating after the first allocation cleanup, not evidence of 120 fps.
+
+Two independent dependencies made text-only panel updates rebuild the list:
+
+- The sidebar read full panel entities for identity, title, activity and todo
+  progress. Workspace now publishes a small metadata entity bounded to its
+  current slots, only when those visible fields change. It does not retain
+  transcripts, panels, or old generations of metadata.
+- The sidebar spinner's `Context::observe` callback leased its spinner entity
+  on every panel notification, even if activity had not changed. GPUI records
+  that lease as a write. Its observer now compares before updating, and the
+  initialized sidebar spinner uses the observed activity rather than reading
+  the entire panel again during every render.
+
+The integrated regression sends five real text-delta events to a working
+panel and checks that both the session-list render count and metadata
+allocation stay unchanged. Title, todo progress, working directory, session
+identity, focus, and turn completion still invalidate the relevant sidebar
+state. The full workspace suite passes 1,949 tests, with 17 ignored.
+
+Sidebar construction also sorts its already-owned session catalog in place,
+reuses the non-closing-panel lookup for membership, indexes project groups,
+and borrows existing repository-cache keys on hits. Stable ordering and
+cached negative repository results have dedicated regressions. Duplicate
+session IDs keep the original first-record lookup behavior.
+
+Three alternating 10-second steady-stream runs per frozen binary are saved
+under `target/perf/sidebar-stream-{baseline,candidate}-{1,2,3}/`. They use
+three half-width panels on the private 2880×1800, scale-1.6, 120 Hz GPU output.
+Medians across all three runs:
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Sidebar list builds/s | 82.05 | 30.06 |
+| Sidebar render CPU ms/s | 5.06 | 2.00 |
+| Mean draw time | 1.286 ms | 1.092 ms |
+| UI-thread CPU | 28.80% | 25.50% |
+| RSS | 135.58 MiB | 135.83 MiB |
+| Animation FPS | 122.22 | 121.90 |
+
+This establishes less sidebar reconstruction (63%) and lower median work,
+not an FPS gain. Sample-window p95 maxima did not improve (2.86 to 3.32 ms),
+and one baseline run had a 42.9 ms outlier. Shared system load remains a
+confounder. The first unpaired baseline was much slower and is deliberately
+excluded from these comparisons. The remaining roughly 30 sidebar builds/s
+coincide with real workspace bridge updates, which also advance catalog
+recency. That state must not be frozen just to improve a benchmark.
+
+Offline visual review: `target/sidebar-stream-review.png` shows three live
+panels, activity marks and todo progress. The measured visible-sidebar path
+is unchanged by the final guard that skips metadata preparation when the
+sidebar is hidden.
+
 ## Rendering allocation and synchronization cleanup, 2026-11-15
 
 A fresh real-GPU half-width camera-pan profile is saved at
