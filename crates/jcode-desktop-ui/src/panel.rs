@@ -3238,7 +3238,7 @@ impl Panel {
     /// The transcript remains the source of truth, so todo progress keeps
     /// working across live updates without duplicating state in `Workspace`.
     pub(crate) fn minimap_state(&self) -> MinimapSessionState {
-        let status = self.status.to_ascii_lowercase();
+        let status = self.lowercase_status();
         if status.contains("error")
             || status.contains("crash")
             || matches!(self.items.last(), Some(Item::Error(_)))
@@ -3327,8 +3327,18 @@ impl Panel {
         }
     }
 
+    fn lowercase_status(&self) -> std::borrow::Cow<'_, str> {
+        // Chrome and transcript paths query this repeatedly each frame. Most
+        // status snapshots are already lowercase and need no allocated copy.
+        if self.status.bytes().any(|byte| byte.is_ascii_uppercase()) {
+            std::borrow::Cow::Owned(self.status.to_ascii_lowercase())
+        } else {
+            std::borrow::Cow::Borrowed(self.status.as_str())
+        }
+    }
+
     fn activity_active(&self) -> bool {
-        let status = self.status.to_ascii_lowercase();
+        let status = self.lowercase_status();
         if status.contains("error") || status.contains("crash") || status.starts_with("lost:") {
             return false;
         }
@@ -3339,7 +3349,7 @@ impl Panel {
             || self.connection_phase.trim() == "streaming"
             || activity_state::is_request_phase(&self.connection_phase)
             || matches!(
-                status.as_str(),
+                status.as_ref(),
                 "generating"
                     | "running"
                     | "busy"

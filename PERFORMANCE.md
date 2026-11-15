@@ -1,5 +1,83 @@
 # Interaction latency profile
 
+## Rendering allocation and synchronization cleanup, 2026-11-15
+
+A fresh real-GPU half-width camera-pan profile is saved at
+`target/perf/render-next-profile/`. Under panel-render stacks, markdown document
+construction accounted for roughly half the inclusive samples. The large
+`libc.so.6!fun_176380` bucket is `__memcpy_avx_unaligned_erms` (confirmed by
+local objdump), not an event-loop timer hotspot. GPUI style/layout and scene
+replay are substantial remaining costs.
+
+This pass removes work rather than adding a larger render cache:
+
+- Stable theme lookups read the existing palette/status atomic instead of
+  taking the transition mutex. Animated transitions still use the lock and
+  preserve their interpolated palettes. Concurrent selection publishes the
+  target and transition flag together.
+- Prompt-row indices and the existing latest-todo snapshot are shared with
+  `Arc` rather than deep-cloned per panel frame. Their chrome fingerprint is
+  computed only when settled items change. Streaming/disclosure changes reuse
+  these snapshots; replacement drops old snapshots, covered by a weak-reference
+  regression. This is bounded sharing, not an accumulating cache.
+- Strip geometry uses one buffer instead of four parallel buffers per frame.
+  Applet scope strings are borrowed instead of copied.
+- Ordered, disjoint highlight ranges use a linear pass instead of endpoint
+  sorting and a quadratic range scan. Nested/overlapping ranges keep the
+  original merge algorithm. Exhaustive small-range equivalence checks cover
+  empty, reversed, adjacent, overlapping and nested inputs.
+- Markdown transfers paragraph/highlight/link buffers rather than discarding
+  copies, skips inactive fade-vector allocation, and avoids dozens of no-op
+  string replacement allocations in inline math.
+- Panel activity and minimap queries borrow already-lowercase status strings
+  rather than allocating a fresh lowercase copy several times per frame.
+  Mixed-case errors, lost sessions and live activity keep the same behavior.
+- Inline math skips command substitutions entirely when no backslash remains,
+  and copies ordinary formula text in runs instead of testing six command
+  prefixes for every character.
+- Non-avatar markdown leaves no longer have a redundant outer div. An exact
+  glyph-position and wrapping regression compares the old and new structure at
+  three widths, including Unicode, inline code, bold text and links.
+
+Same-process release highlight benchmark, 10,000 iterations:
+
+| Disjoint spans | Previous | Linear path |
+| --- | ---: | ---: |
+| 8 | 1.881 ms | 0.265 ms |
+| 64 | 33.750 ms | 1.659 ms |
+| 256 | 449.984 ms | 6.750 ms |
+
+The theme benchmark uses nine alternating rounds of one million calls in the
+**default dev/test profile**, not release: median 31.21 ns/call for the previous
+mutex path and 14.27 ns/call for stable lookup. These are isolated operation
+benchmarks, not whole-frame speedup claims.
+
+Three alternating 10-second real-GPU comparisons of the first cleanup build
+(before the final wrapper removal) versus the saved baseline produced median
+animation FPS **112.78 versus 113.08**, and mean draw time **4.519 versus
+4.556 ms**. Median RSS was 144.76 versus 143.09 MiB. There is **no established
+whole-frame improvement** in those samples. Binary baseline is
+`target/nav120/render-next-baseline`; data is
+`target/perf/render-efficiency-{baseline,candidate}-{1,2,3}/`.
+A separate CPU pan run recorded 265 frames, p50/p95/max 1.93/3.25/8.84 ms,
+including one frame above 8.33 ms. Separate hosted runs under changing load
+cannot establish a regression or gain against earlier CPU profiles.
+
+The final wrapper-removal profile at `target/perf/render-efficiency-final-profile/`
+recorded 111.5 animation FPS, 4.68 ms mean draw and 142 MiB RSS. It still shows
+GPUI style/layout memory movement, bounds-tree insertion and scene sprite
+sorting as prominent costs. These engine costs are not proof of a safe generic
+translated-subtree cache: moving views also need correct clipping, mouse
+geometry and live-child invalidation. Such a cache was not introduced.
+
+Validation includes 45 markdown tests (selection/link/geometry included),
+79 UI-core tests, panel snapshot/cache/status regressions and a final full
+workspace run with **1,946 passed, zero failed, 17 ignored**. The earlier two
+failures were assertions in concurrent destination-picker changes; that owner
+subsequently fixed and committed them independently. Offline screenshots and
+live generation activation are checked separately from build success. The
+sustained physical-display 120 FPS target remains unproven.
+
 ## Panel camera navigation, 2026-11-15
 
 Camera frames previously rebuilt the stationary sidebar along with Workspace.

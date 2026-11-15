@@ -761,17 +761,19 @@ fn latex_to_text(source: &str) -> String {
     // Most commands are absent in any one formula. String::replace still
     // allocates and copies the entire expression on a miss, so avoid dozens
     // of discarded buffers while preserving the ordered substitution rules.
-    for (from, to) in [
-        ("\\displaystyle", ""),
-        ("\\textstyle", ""),
-        ("\\scriptstyle", ""),
-    ]
-    .into_iter()
-    .chain(REPLACEMENTS.iter().copied())
-    .chain([("\\left", ""), ("\\right", "")])
-    {
-        if text.contains(from) {
-            text = text.replace(from, to);
+    if text.contains('\\') {
+        for (from, to) in [
+            ("\\displaystyle", ""),
+            ("\\textstyle", ""),
+            ("\\scriptstyle", ""),
+        ]
+        .into_iter()
+        .chain(REPLACEMENTS.iter().copied())
+        .chain([("\\left", ""), ("\\right", "")])
+        {
+            if text.contains(from) {
+                text = text.replace(from, to);
+            }
         }
     }
     if text.contains('^') {
@@ -797,6 +799,14 @@ fn expand_latex_groups(source: &str) -> String {
     let mut i = 0;
     while i < source.len() {
         let rest = &source[i..];
+        // Group syntax can only start with an ASCII backslash. Copy ordinary
+        // formula text in one run instead of probing six commands per glyph.
+        if !rest.starts_with('\\') {
+            let end = rest.find('\\').unwrap_or(rest.len());
+            output.push_str(&rest[..end]);
+            i += end;
+            continue;
+        }
         if let Some(after_command) = rest.strip_prefix("\\frac") {
             let offset = i + rest.len() - after_command.len();
             if let Some((numerator, after_numerator)) = braced_group(source, offset)

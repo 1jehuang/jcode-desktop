@@ -77,6 +77,47 @@ fn derived_chrome_shares_snapshots_and_releases_replaced_payload(cx: &mut gpui::
     });
 }
 
+#[gpui::test]
+fn lowercase_activity_status_borrows_normal_snapshots(cx: &mut gpui::TestAppContext) {
+    let panel = cx.update(|cx| {
+        cx.new(|cx| {
+            Panel::new(
+                "status-normalization".into(),
+                None,
+                None,
+                crate::harness::spawn_inert(),
+                cx,
+            )
+        })
+    });
+    panel.update(cx, |panel, _| {
+        panel.connection_phase.clear();
+        for (status, active) in [
+            ("idle", false),
+            ("streaming", true),
+            ("RUNNING_TOOLS", true),
+            ("Error: disconnected", false),
+            ("CRASHED", false),
+            ("Lost: session", false),
+            ("café idle", false),
+        ] {
+            panel.status = status.into();
+            let normalized = panel.lowercase_status();
+            assert_eq!(normalized, status.to_ascii_lowercase());
+            assert_eq!(
+                matches!(normalized, std::borrow::Cow::Borrowed(_)),
+                !status.bytes().any(|byte| byte.is_ascii_uppercase())
+            );
+            assert_eq!(panel.activity_active(), active, "{status}");
+        }
+        panel.status = "idle".into();
+        panel.streaming_text = "new live response".into();
+        assert!(panel.activity_active());
+        panel.status = "ERROR".into();
+        assert!(!panel.activity_active());
+    });
+}
+
 #[test]
 fn cached_tail_headers_match_existing_chrome_fingerprints() {
     use std::hash::{Hash, Hasher};
