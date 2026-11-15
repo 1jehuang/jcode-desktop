@@ -36,9 +36,7 @@ fn click(cx: &mut gpui::VisualTestContext, selector: &'static str) {
 }
 
 #[gpui::test]
-fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
-    cx: &mut gpui::TestAppContext,
-) {
+fn destination_picker_cloud_changes_default_without_spawning(cx: &mut gpui::TestAppContext) {
     let (bridge, commands) = harness::spawn_recording();
     let (workspace, vcx) = cx.add_window_view(|_, cx| {
         let mut w = Workspace::for_test(learning::Coach::new(), cx);
@@ -48,24 +46,20 @@ fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
         w
     });
     vcx.run_until_parked();
-    let local = vcx.debug_bounds("machine-destination-local").unwrap();
-    let cloud = vcx.debug_bounds("machine-destination-cloud").unwrap();
-    let ssh = vcx.debug_bounds("machines-picker-button").unwrap();
-    assert_eq!(local.origin.y, cloud.origin.y);
-    assert_eq!(cloud.origin.y, ssh.origin.y);
-    assert!(local.right() < cloud.left());
-    assert!(cloud.right() < ssh.left());
-    assert!((local.size.width - cloud.size.width).abs() <= px(1.0));
-    assert!((cloud.size.width - ssh.size.width).abs() <= px(1.0));
-    assert_eq!(local.size.height, cloud.size.height);
-    assert_eq!(cloud.size.height, ssh.size.height);
+    let destination = vcx.debug_bounds("machines-picker-button").unwrap();
+    assert!(destination.size.width > px(100.0));
+    assert!(vcx.debug_bounds("machine-destination-local").is_none());
+    assert!(vcx.debug_bounds("machine-destination-cloud").is_none());
     // Swarms and worktrees share one sidebar. There is no mode switch.
     assert!(vcx.debug_bounds("sidebar-mode-swarm").is_none());
     assert!(vcx.debug_bounds("sidebar-mode-worktrees").is_none());
     let directory = vcx.debug_bounds("default-directory-button").unwrap();
-    assert_eq!(directory.origin.y, local.origin.y);
-    assert!(ssh.right() < directory.left());
+    assert!(directory.left() >= destination.left());
+    assert!(directory.right() <= destination.right());
+    assert_eq!(directory.size.height, destination.size.height);
 
+    click(vcx, "machines-picker-button");
+    assert!(vcx.debug_bounds("machines-picker").is_some());
     click(vcx, "machine-destination-cloud");
     workspace.read_with(vcx, |w, _| {
         assert_eq!(
@@ -74,30 +68,32 @@ fn sidebar_cloud_opens_panel_and_defaults_subsequent_panels_to_cloud(
         );
         assert_eq!(w.slots.len(), 2);
     });
-    let draft = workspace.read_with(vcx, |w, cx| {
-        w.slots[w.active].panel.read(cx).session_id.clone()
+    assert!(
+        commands.try_recv().is_err(),
+        "changing mode must not spawn a session"
+    );
+    workspace.read_with(vcx, |w, cx| {
+        assert!(
+            w.slots
+                .iter()
+                .all(|slot| !Panel::is_pending_session_id(&slot.panel.read(cx).session_id))
+        );
     });
-    assert!(matches!(
-        commands.try_recv(),
-        Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
-            if host == remotes::MANAGED_CLOUD_HOST && id == draft
-    ));
-    assert!(commands.try_recv().is_err());
     workspace.update(vcx, |w, cx| w.open_default_draft(None, cx));
     let next_draft = workspace.read_with(vcx, |w, cx| {
         assert_eq!(w.slots.len(), 3);
         w.slots[w.active].panel.read(cx).session_id.clone()
     });
-    assert_ne!(draft, next_draft);
     assert!(matches!(
         commands.try_recv(),
         Ok(Command::CreateRemoteSession { host, working_dir: None, request_id: Some(id) })
             if host == remotes::MANAGED_CLOUD_HOST && id == next_draft
     ));
     click(vcx, "default-directory-button");
+    assert!(vcx.debug_bounds("machines-picker").is_some());
     assert!(
         vcx.debug_bounds("default-directory-panel").is_none(),
-        "remote paths must not open a local folder picker"
+        "the sidebar destination pill opens the destination picker, not a folder picker"
     );
     assert!(vcx.debug_bounds("sidebar-session-list").is_some());
     click(vcx, "machine-destination-local");

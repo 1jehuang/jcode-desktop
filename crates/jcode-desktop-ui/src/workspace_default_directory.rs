@@ -207,57 +207,86 @@ impl Workspace {
             .clone()
             .or_else(|| self.default_working_dir())
             .unwrap_or_else(|| "Not set".into());
-        let display = match &self.remotes.default_host {
-            Some(_) => "~".into(),
-            None => compact_path_in(&path, self.default_working_dir()),
-        };
-        let tooltip = match &self.remotes.default_host {
-            Some(host) => format!(
-                "Default directory on {host}: ~ (remote home)\nCustom remote directories are not configurable yet."
+        let host = self.remotes.default_host.as_deref();
+        let (icon, display, description): (&'static [u8], String, String) = match host {
+            None => (
+                include_bytes!("../../../assets/icons/computer.svg"),
+                compact_path_in(&path, self.default_working_dir()),
+                format!("Local · {path}"),
             ),
-            None => format!(
-                "Default directory on this computer: {path}\n{} opens a new session. Click to change the directory.",
-                spawn_shortcut()
+            Some(host) if remotes::managed_destination(host) => (
+                include_bytes!("../../../assets/icons/machine-cloud.svg"),
+                "Cloud · ~".into(),
+                "Cloud · ~ (remote home)".into(),
+            ),
+            Some(host) => (
+                include_bytes!("../../../assets/icons/ssh.svg"),
+                format!("{host} · ~"),
+                format!("SSH · {host} · ~ (remote home)"),
             ),
         };
+        let tooltip = format!(
+            "New session destination: {description}\nClick to choose a machine and directory. {} opens a new session.",
+            spawn_shortcut()
+        );
         div()
-            .id("default-directory-button")
-            .debug_selector(|| "default-directory-button".into())
+            .id("machines-picker-button")
+            .debug_selector(|| "machines-picker-button".into())
             .flex_1()
             .min_w_0()
-            .ml_1()
+            .gap_1()
             .px_2()
             .h(px(28.0))
             .flex()
             .items_center()
-            .rounded_md()
-            .when(self.remotes.default_host.is_none(), |el| {
-                el.cursor_pointer()
-                    .hover(|el| el.bg(Theme::global().TOOL_BG))
-            })
+            .rounded_full()
+            .bg(Theme::global().TOOL_BG)
+            .cursor_pointer()
+            .occlude()
+            .hover(|el| el.bg(Theme::global().ACCENT_DIM))
             .tooltip(move |_, cx| {
                 cx.new(|_| remotes::HeaderTooltip(tooltip.clone().into()))
                     .into()
             })
             .on_click(cx.listener(|this, _, window, cx| {
                 cx.stop_propagation();
-                if this.remotes.default_host.is_none() {
-                    this.open_default_directory_picker(window, cx);
-                }
+                this.open_machines(window, cx);
             }))
             .child(
+                gpui::svg()
+                    .data(icon)
+                    .size(px(14.0))
+                    .flex_none()
+                    .text_color(Theme::global().TEXT_DIM),
+            )
+            .child(
                 div()
-                    .debug_selector(|| "default-directory-path".into())
+                    .debug_selector(|| "default-directory-button".into())
                     .flex_1()
                     .min_w_0()
-                    // Small enough to fit typical full paths. Anything longer
-                    // drops its start, since the leaf folder is what matters.
-                    .text_size(px(9.0))
-                    .text_color(Theme::global().ACCENT)
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_ellipsis_start()
-                    .child(display),
+                    .h_full()
+                    .flex()
+                    .items_center()
+                    .child(
+                        div()
+                            .debug_selector(|| "default-directory-path".into())
+                            .flex_1()
+                            .min_w_0()
+                            // Keep the leaf directory readable when the path overflows.
+                            .text_size(px(11.0))
+                            .text_color(Theme::global().ACCENT)
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_ellipsis_start()
+                            .child(display),
+                    ),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .text_size(px(10.0))
+                    .text_color(Theme::global().TEXT_DIM)
+                    .child("⌄"),
             )
             .into_any_element()
     }

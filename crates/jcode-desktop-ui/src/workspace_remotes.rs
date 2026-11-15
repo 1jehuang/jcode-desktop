@@ -5,7 +5,7 @@ use super::*;
 pub(super) const MANAGED_CLOUD_HOST: &str = "jcode-cloud";
 pub(super) const MANAGED_CLOUD_STARTING: &str = "Checking your Jcode Cloud machine…";
 
-fn managed_destination(host: &str) -> bool {
+pub(super) fn managed_destination(host: &str) -> bool {
     matches!(host, MANAGED_CLOUD_HOST | cloud_alpha::HOST)
 }
 
@@ -659,7 +659,7 @@ impl Workspace {
             let panel = cx.new(|cx| {
                 let mut panel = Panel::new(
                     Panel::MACHINES_SESSION_ID.into(),
-                    Some("Machines".into()),
+                    Some("New session destination".into()),
                     None,
                     self.bridge.clone(),
                     cx,
@@ -846,28 +846,6 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::global();
-        let host = self.remotes.default_host.as_deref();
-        let button = |id: &'static str, icon: &'static [u8], title: String, selected: bool| {
-            let ink = if selected {
-                theme.ACCENT
-            } else {
-                theme.TEXT_DIM
-            };
-            div()
-                .id(id)
-                .debug_selector(move || id.into())
-                .flex_none()
-                .size(px(28.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .cursor_pointer()
-                .when(selected, |el| el.bg(theme.ACCENT_DIM))
-                .hover(|el| el.bg(theme.TOOL_BG))
-                .tooltip(move |_, cx| cx.new(|_| HeaderTooltip(title.clone().into())).into())
-                .child(gpui::svg().data(icon).size(px(16.0)).text_color(ink))
-        };
         div()
             .debug_selector(|| "machine-destination-switcher".into())
             .flex_none()
@@ -887,49 +865,6 @@ impl Workspace {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(
-                        button(
-                            "machine-destination-local",
-                            include_bytes!("../../../assets/icons/computer.svg"),
-                            "This computer · Use locally for new sessions".into(),
-                            host.is_none(),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.set_default_machine(None, cx);
-                        })),
-                    )
-                    .child(
-                        button(
-                            "machine-destination-cloud",
-                            include_bytes!("../../../assets/icons/machine-cloud.svg"),
-                            "Cloud · Open a cloud panel and use Cloud for new sessions".into(),
-                            host.is_some_and(managed_destination),
-                        )
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            cx.stop_propagation();
-                            this.set_default_machine(Some(MANAGED_CLOUD_HOST.into()), cx);
-                            this.open_remote_draft(MANAGED_CLOUD_HOST.into(), cx);
-                        })),
-                    )
-                    .child(
-                        button(
-                            "machines-picker-button",
-                            include_bytes!("../../../assets/icons/ssh.svg"),
-                            match host.filter(|host| !managed_destination(host)) {
-                                Some(host) => format!("SSH · {host} · Choose a remote host"),
-                                None => "SSH · Choose a remote host".into(),
-                            },
-                            host.is_some_and(|host| !managed_destination(host)),
-                        )
-                        .on_mouse_down(
-                            gpui::MouseButton::Left,
-                            cx.listener(|this, _, window, cx| {
-                                cx.stop_propagation();
-                                this.open_machines(window, cx);
-                            }),
-                        ),
-                    )
                     .child(self.render_default_directory_button(cx))
                     .children(trailing),
             )
@@ -955,17 +890,80 @@ impl Workspace {
             .into_any_element()
     }
 
+    /// Machine and directory preferences live together, without starting a session.
+    fn render_destination_preferences(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let host = self.remotes.default_host.as_deref();
+        let mode = |id: &'static str, label: &'static str, selected: bool| {
+            div()
+                .id(id)
+                .debug_selector(move || id.into())
+                .px_3()
+                .py_1()
+                .rounded_full()
+                .cursor_pointer()
+                .bg(if selected {
+                    theme.ACCENT_DIM
+                } else {
+                    theme.TOOL_BG
+                })
+                .text_color(if selected { theme.ACCENT } else { theme.TEXT })
+                .hover(|el| el.bg(theme.ACCENT_DIM))
+                .child(label)
+        };
+        let path = self
+            .pinned_working_dir
+            .clone()
+            .or_else(|| self.default_working_dir())
+            .unwrap_or_else(|| "Not set".into());
+        div().flex().flex_col().gap_2()
+            .child(div().flex().flex_wrap().gap_2()
+                .child(mode("machine-destination-local", "This computer", host.is_none())
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_default_machine(None, cx);
+                    })))
+                .child(mode("machine-destination-cloud", "Cloud", host.is_some_and(managed_destination))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_default_machine(Some(MANAGED_CLOUD_HOST.into()), cx);
+                    }))))
+            .child(div().text_color(theme.TEXT_DIM).child(match host {
+                None => "Default directory on this computer".to_owned(),
+                Some(host) if managed_destination(host) => "Cloud directory: ~ (remote home)".into(),
+                Some(host) => format!("SSH · {host} · ~ (remote home)"),
+            }))
+            .when(host.is_some(), |el| el.child(
+                div().text_color(theme.TEXT_DIM)
+                    .child("Remote sessions start in the remote home. Custom remote directories are not configurable yet.")))
+            .child(div().id("destination-change-directory")
+                .debug_selector(|| "destination-change-directory".into())
+                .px_3().py_2().rounded_full().bg(theme.TOOL_BG)
+                .cursor_pointer().hover(|el| el.bg(theme.ACCENT_DIM))
+                .child(if host.is_none() {
+                    format!("{path} · Change directory…")
+                } else {
+                    format!("Local directory: {path} · Change…")
+                })
+                .on_click(cx.listener(|this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.open_default_directory_picker(window, cx);
+                })))
+            .into_any_element()
+    }
+
     pub(super) fn render_machines(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::global();
         let mut picker = div().id("machines-picker").debug_selector(|| "machines-picker".into())
             .size_full().p_3().flex().flex_col().gap_2().overflow_y_scroll().text_size(px(11.0))
             .child(div().flex().justify_between()
-                .child(div().text_size(px(14.0)).child("Machines"))
+                .child(div().text_size(px(14.0)).child("New session destination"))
                 .child(div().id("machines-panel-close").debug_selector(|| "machines-panel-close".into())
-                    .cursor_pointer().child("close")
+                    .cursor_pointer().px_2().py_1().rounded_full().bg(theme.TOOL_BG).child("close")
                     .on_click(cx.listener(|this, _, _, cx| { cx.stop_propagation(); this.close_machines(cx); }))))
             .child(div().text_color(theme.TEXT_DIM)
-                .child("Connect opens a new panel. Default applies to new session panels, including after restart."))
+                .child("Choose where new sessions start. Changing the default leaves existing sessions alone."))
+            .child(self.render_destination_preferences(cx))
             .child(div().debug_selector(|| "machine-connection-status".into())
                 .text_color(if self.remotes.failed { theme.ERROR } else { theme.ACCENT })
                 .child(self.remotes.status.clone().unwrap_or_default()))
@@ -1011,7 +1009,7 @@ impl Workspace {
                         .debug_selector(|| "machine-connect-input".into())
                         .px_2()
                         .py_2()
-                        .rounded_sm()
+                        .rounded_full()
                         .cursor_pointer()
                         .bg(theme.ACCENT_DIM)
                         .hover(|el| el.bg(theme.TOOL_BG))
@@ -1072,7 +1070,7 @@ impl Workspace {
         div()
             .px_2()
             .py_2()
-            .rounded_sm()
+            .rounded_full()
             .bg(Theme::global().PANEL_BG)
             .flex()
             .flex_col()
@@ -1102,7 +1100,7 @@ impl Workspace {
                             .debug_selector(move || format!("machine-connect-{index}").into())
                             .px_2()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
                             .bg(Theme::global().ACCENT_DIM)
                             .hover(|el| el.bg(Theme::global().TOOL_BG))
@@ -1128,7 +1126,7 @@ impl Workspace {
                             .debug_selector(move || format!("machine-default-{index}").into())
                             .px_2()
                             .py_1()
-                            .rounded_sm()
+                            .rounded_full()
                             .cursor_pointer()
                             .text_color(if is_default {
                                 Theme::global().ACCENT
