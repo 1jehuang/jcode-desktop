@@ -67,12 +67,12 @@ fn parse_with_line_breaks(source: &str, preserve_line_breaks: bool) -> Vec<Block
     let mut hard_break = false;
 
     let flush = |paragraph: &mut String, blocks: &mut Vec<Block>| {
-        if !paragraph.trim().is_empty() {
-            blocks.push(Block::Paragraph(
-                std::mem::take(paragraph).trim().to_string(),
-            ));
-        } else {
-            paragraph.clear();
+        // Each line was trim_start'ed before insertion, so only the end
+        // needs trimming. Transfer its buffer instead of allocating and
+        // copying every paragraph again during every visible-row render.
+        paragraph.truncate(paragraph.trim_end().len());
+        if !paragraph.is_empty() {
+            blocks.push(Block::Paragraph(std::mem::take(paragraph)));
         }
     };
 
@@ -645,6 +645,36 @@ fn link_style() -> HighlightStyle {
 pub(crate) fn flatten_highlights(
     highlights: &[(std::ops::Range<usize>, HighlightStyle)],
 ) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
+    // Most inline emphasis and syntax tokens are already ordered and disjoint.
+    // Avoid sorting endpoints and rescanning every range for every segment.
+    if highlights.iter().all(|(range, _)| range.start <= range.end)
+        && highlights
+            .windows(2)
+            .all(|pair| pair[0].0.end <= pair[1].0.start)
+    {
+        let mut flattened: Vec<(std::ops::Range<usize>, HighlightStyle)> =
+            Vec::with_capacity(highlights.len());
+        for (range, style) in highlights {
+            if range.is_empty() {
+                continue;
+            }
+            if let Some((last_range, last_style)) = flattened.last_mut()
+                && last_range.end == range.start
+                && last_style == style
+            {
+                last_range.end = range.end;
+            } else {
+                flattened.push((range.clone(), *style));
+            }
+        }
+        return flattened;
+    }
+    flatten_overlapping_highlights(highlights)
+}
+
+fn flatten_overlapping_highlights(
+    highlights: &[(std::ops::Range<usize>, HighlightStyle)],
+) -> Vec<(std::ops::Range<usize>, HighlightStyle)> {
     let mut bounds: Vec<usize> = highlights
         .iter()
         .flat_map(|(range, _)| [range.start, range.end])
@@ -728,16 +758,35 @@ fn latex_to_text(source: &str) -> String {
     // Layout-only commands have no useful textual representation. Models
     // commonly put `\displaystyle` at the start of inline formulas, and
     // leaving it intact is especially distracting in transcript output.
-    for command in ["\\displaystyle", "\\textstyle", "\\scriptstyle"] {
-        text = text.replace(command, "");
+    // Most commands are absent in any one formula. String::replace still
+    // allocates and copies the entire expression on a miss, so avoid dozens
+    // of discarded buffers while preserving the ordered substitution rules.
+    for (from, to) in [
+        ("\\displaystyle", ""),
+        ("\\textstyle", ""),
+        ("\\scriptstyle", ""),
+    ]
+    .into_iter()
+    .chain(REPLACEMENTS.iter().copied())
+    .chain([("\\left", ""), ("\\right", "")])
+    {
+        if text.contains(from) {
+            text = text.replace(from, to);
+        }
     }
-    for (from, to) in REPLACEMENTS {
-        text = text.replace(from, to);
+    if text.contains('^') {
+        text = convert_scripts(&text, '^');
     }
-    text = text.replace("\\left", "").replace("\\right", "");
-    text = convert_scripts(&text, '^');
-    text = convert_scripts(&text, '_');
-    text.replace(['{', '}'], "").trim().to_string()
+    if text.contains('_') {
+        text = convert_scripts(&text, '_');
+    }
+    text.retain(|ch| ch != '{' && ch != '}');
+    text.truncate(text.trim_end().len());
+    let leading = text.len() - text.trim_start().len();
+    if leading > 0 {
+        text.drain(..leading);
+    }
+    text
 }
 
 /// Expand the small set of braced TeX commands that affect how an expression
@@ -1020,8 +1069,8 @@ fn styled_line_layout(
     cx: &gpui::App,
     avatar: bool,
 ) -> (gpui::AnyElement, gpui::TextLayout) {
-    let inline = inline_spans(source);
-    let mut highlights = inline.highlights.clone();
+    let mut inline = inline_spans(source);
+    let mut highlights = std::mem::take(&mut inline.highlights);
     highlights.extend(fade_tail_highlights(&inline.plain, LEAF_FADE.take()));
     if let Some(highlight) = selection.read(cx).highlight(&key, inline.plain.len()) {
         highlights.push(highlight);
@@ -1058,13 +1107,12 @@ fn styled_line_layout(
     let child = if inline.links.is_empty() {
         text.into_any_element()
     } else {
-        let ranges: Vec<_> = inline
-            .links
-            .iter()
-            .map(|(range, _)| shift(range.clone()))
-            .collect();
-        let urls: Vec<String> = inline.links.iter().map(|(_, url)| url.clone()).collect();
         let id: SharedString = format!("md-link-{:x}", hash(&inline.plain)).into();
+        let (ranges, urls): (Vec<_>, Vec<_>) = inline
+            .links
+            .into_iter()
+            .map(|(range, url)| (shift(range), url))
+            .unzip();
         InteractiveText::new(id, text)
             .on_click(ranges, move |index, _window, cx| {
                 if let Some(url) = urls.get(index) {
@@ -1087,13 +1135,19 @@ fn styled_line_layout(
         prefix.len(),
         cx,
     );
-    let element = div()
-        .relative()
-        .child(selectable)
-        .when(avatar, |el| {
-            el.child(div().absolute().top_0().left_0().child(assistant_avatar()))
-        })
-        .into_any_element();
+    // The selectable leaf already establishes a relative containing block.
+    // Only an avatar needs another one for its absolutely positioned overlay.
+    // Ordinary paragraphs, list items and table cells avoid a redundant div's
+    // style refinement, layout node, prepaint and paint on every frame.
+    let element = if avatar {
+        div()
+            .relative()
+            .child(selectable)
+            .child(div().absolute().top_0().left_0().child(assistant_avatar()))
+            .into_any_element()
+    } else {
+        selectable
+    };
     (element, layout)
 }
 
@@ -1840,11 +1894,16 @@ fn render_document_with_prompt_background(
     };
     let mut children: Vec<gpui::AnyElement> = Vec::with_capacity(blocks.len());
     let mut previous_was_list = false;
-    let fades = block_fades(&blocks, STREAM_FADE.take());
+    let fade = STREAM_FADE.take();
+    let fades = if fade.active() {
+        block_fades(&blocks, fade)
+    } else {
+        Vec::new()
+    };
 
     for (block_index, block) in blocks.into_iter().enumerate() {
         // Only prose leaves fade. Table cells and code keep full contrast.
-        LEAF_FADE.set(fades[block_index]);
+        LEAF_FADE.set(fades.get(block_index).copied().unwrap_or_default());
         let block = match block {
             Block::Paragraph(ref text) if reasoning => reasoning_section_title(text)
                 .map(|title| Block::Heading(3, title.to_owned()))
@@ -2753,6 +2812,71 @@ mod tests {
     }
 
     #[gpui::test]
+    fn markdown_leaf_without_extra_wrapper_preserves_geometry(cx: &mut gpui::TestAppContext) {
+        struct Fixture {
+            selection: gpui::Entity<TextSelection>,
+            width: f32,
+            layouts: Vec<gpui::TextLayout>,
+        }
+        impl gpui::Render for Fixture {
+            fn render(
+                &mut self,
+                window: &mut gpui::Window,
+                cx: &mut gpui::Context<Self>,
+            ) -> impl IntoElement {
+                let source = "Unicode café🙂 **bold** with `inline code` and [a link](https://example.com), wrapping across several lines.";
+                let (direct, a) =
+                    styled_line_layout(source, &self.selection, "direct".into(), window, cx, false);
+                let (wrapped, b) = styled_line_layout(
+                    source,
+                    &self.selection,
+                    "wrapped".into(),
+                    window,
+                    cx,
+                    false,
+                );
+                self.layouts = vec![a, b];
+                div()
+                    .w(px(self.width))
+                    .flex()
+                    .flex_col()
+                    .text_size(px(14.))
+                    .line_height(px(22.))
+                    .child(direct)
+                    .child(div().relative().child(wrapped))
+            }
+        }
+        let (view, vcx) = cx.add_window_view(|_, cx| Fixture {
+            selection: cx.new(TextSelection::new),
+            width: 150.,
+            layouts: Vec::new(),
+        });
+        for width in [150., 280., 520.] {
+            view.update(vcx, |view, cx| {
+                view.width = width;
+                cx.notify();
+            });
+            vcx.run_until_parked();
+            view.read_with(vcx, |view, _| {
+                let a = &view.layouts[0];
+                let b = &view.layouts[1];
+                assert_eq!(a.bounds().size, b.bounds().size);
+                for index in 0..a.len() {
+                    if let (Some(a_pos), Some(b_pos)) =
+                        (a.position_for_index(index), b.position_for_index(index))
+                    {
+                        assert_eq!(a_pos - a.bounds().origin, b_pos - b.bounds().origin);
+                    }
+                }
+            });
+            assert_eq!(
+                vcx.debug_bounds("selectable-text-direct").unwrap().size,
+                vcx.debug_bounds("selectable-text-wrapped").unwrap().size
+            );
+        }
+    }
+
+    #[gpui::test]
     fn avatar_markdown_blocks_keep_their_normal_left_margin(cx: &mut gpui::TestAppContext) {
         struct Document {
             selection: gpui::Entity<TextSelection>,
@@ -3152,6 +3276,60 @@ mod tests {
                 .code_ranges
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn highlight_fast_path_matches_overlap_algorithm() {
+        let styles = [
+            HighlightStyle::default(),
+            HighlightStyle {
+                font_weight: Some(FontWeight::BOLD),
+                ..Default::default()
+            },
+        ];
+        // Empty, reversed, nested, disjoint and adjacent ranges in either order.
+        let ranges: Vec<_> = (0..=4)
+            .flat_map(|start| (0..=4).map(move |end| start..end))
+            .collect();
+        for first in &ranges {
+            for second in &ranges {
+                for style in styles {
+                    let input = [(first.clone(), styles[0]), (second.clone(), style)];
+                    assert_eq!(
+                        flatten_highlights(&input),
+                        flatten_overlapping_highlights(&input),
+                        "{input:?}"
+                    );
+                }
+            }
+        }
+        let input = [(0..2, styles[0]), (2..2, styles[1]), (2..4, styles[0])];
+        assert_eq!(flatten_highlights(&input), vec![(0..4, styles[0])]);
+        assert!(flatten_highlights(&[]).is_empty());
+    }
+
+    #[test]
+    #[ignore = "manual highlight throughput benchmark"]
+    fn highlight_flatten_profile() {
+        use std::hint::black_box;
+        let style = HighlightStyle::default();
+        for count in [8, 64, 256] {
+            let input: Vec<_> = (0..count).map(|i| (i * 4..i * 4 + 2, style)).collect();
+            let iterations = 10_000;
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                black_box(flatten_overlapping_highlights(black_box(&input)));
+            }
+            let original = started.elapsed();
+            let started = std::time::Instant::now();
+            for _ in 0..iterations {
+                black_box(flatten_highlights(black_box(&input)));
+            }
+            println!(
+                "HIGHLIGHTS spans={count} iterations={iterations} original={original:?} fast={:?}",
+                started.elapsed()
+            );
+        }
     }
 
     #[test]

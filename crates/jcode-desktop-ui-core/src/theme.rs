@@ -120,8 +120,15 @@ impl Theme {
     }
 
     pub fn global() -> &'static Self {
-        let target = ACTIVE_THEME.load(Ordering::Relaxed);
+        let palettes = themes();
+        let active = ACTIVE_THEME.load(Ordering::Acquire);
+        if active & TRANSITIONING == 0 {
+            return &palettes[active];
+        }
         let mut transition = transition_state().lock().unwrap();
+        // Reload under the selection lock, never pairing an old target with a
+        // concurrently selected source palette.
+        let target = ACTIVE_THEME.load(Ordering::Relaxed) & !TRANSITIONING;
         if let Some((from, started)) = *transition {
             let progress = started.elapsed().as_secs_f32() / 0.18;
             if progress < 1.0 {
@@ -129,37 +136,31 @@ impl Theme {
                 return &transition_frames(from, target)[step];
             }
             *transition = None;
+            ACTIVE_THEME.store(target, Ordering::Release);
         }
-        &themes()[target]
+        &palettes[target]
     }
 
     /// Final palette for expensive cached artwork. Transition frames should not
     /// trigger repeated diagram layout and path tessellation while fading UI.
     pub fn selected() -> &'static Self {
         let _ = themes();
-        &themes()[ACTIVE_THEME.load(Ordering::Relaxed)]
+        &themes()[ACTIVE_THEME.load(Ordering::Acquire) & !TRANSITIONING]
     }
 
     pub fn active_preset() -> ThemePreset {
         let _ = themes();
-        ThemePreset::ALL[ACTIVE_THEME.load(Ordering::Relaxed)]
+        ThemePreset::ALL[ACTIVE_THEME.load(Ordering::Acquire) & !TRANSITIONING]
     }
 
     pub fn select(preset: ThemePreset) {
-        let _ = themes();
-        let from = ACTIVE_THEME.load(Ordering::Relaxed);
-        ACTIVE_THEME.store(preset.index(), Ordering::Relaxed);
         // The fade runs on wall-clock time, which GPUI's test executor cannot
         // advance, so each switch kept redrawing for its full 180 ms. The
         // palette is also process-global, so a fade started by one test leaked
         // in-between colours into tests running in parallel. Switch instantly.
-        *transition_state().lock().unwrap() = if cfg!(any(test, feature = "test-support"))
-            || crate::config::get().appearance.reduce_motion
-        {
-            None
-        } else {
-            Some((from, std::time::Instant::now()))
-        };
+        let animate = !(cfg!(any(test, feature = "test-support"))
+            || crate::config::get().appearance.reduce_motion);
+        select_theme(preset.index(), animate);
     }
 
     /// Settled palette for a preset, for swatch previews that should not
@@ -198,7 +199,7 @@ impl Theme {
     }
 
     pub fn is_transitioning() -> bool {
-        transition_state().lock().unwrap().is_some()
+        ACTIVE_THEME.load(Ordering::Acquire) & TRANSITIONING != 0
     }
 
     fn configured(mut theme: Self) -> Self {
@@ -485,7 +486,21 @@ impl ThemePreset {
     }
 }
 
+// Publish palette and transition status together, so stable readers cannot
+// observe a new target before its fade is installed. No extra cache is needed.
+const TRANSITIONING: usize = 1 << (usize::BITS - 1);
 static ACTIVE_THEME: AtomicUsize = AtomicUsize::new(ThemePreset::PureBlack.index());
+
+fn select_theme(target: usize, animate: bool) {
+    let _ = themes();
+    let mut transition = transition_state().lock().unwrap();
+    let from = ACTIVE_THEME.load(Ordering::Relaxed) & !TRANSITIONING;
+    *transition = animate.then(|| (from, std::time::Instant::now()));
+    ACTIVE_THEME.store(
+        target | if animate { TRANSITIONING } else { 0 },
+        Ordering::Release,
+    );
+}
 
 /// The active theme is process-global. Every unit test that selects a theme
 /// must hold this for its whole body, or parallel tests observe its palette.
@@ -755,6 +770,150 @@ pub fn _unused() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// Same-process microbenchmark, not a render/frame-time measurement.
+    /// Run with `justrust test -p jcode-desktop-ui-core --lib
+    /// stable_lookup_benchmark -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "manual timing comparison, not a performance assertion"]
+    fn stable_lookup_benchmark() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        // Keep the original implementation here, including its transition
+        // branch, so both paths are measured with the same compiler/profile.
+        #[inline(never)]
+        fn original_global() -> &'static Theme {
+            let target = ACTIVE_THEME.load(Ordering::Relaxed);
+            let mut transition = transition_state().lock().unwrap();
+            if let Some((from, started)) = *transition {
+                let progress = started.elapsed().as_secs_f32() / 0.18;
+                if progress < 1.0 {
+                    let step = (progress * 16.0).round().clamp(0.0, 16.0) as usize;
+                    return &transition_frames(from, target)[step];
+                }
+                *transition = None;
+            }
+            &themes()[target]
+        }
+
+        #[inline(never)]
+        fn stable_global() -> &'static Theme {
+            Theme::global()
+        }
+
+        fn measure(lookup: fn() -> &'static Theme, count: usize) -> f64 {
+            let started = Instant::now();
+            for _ in 0..count {
+                black_box(black_box(lookup)());
+            }
+            started.elapsed().as_nanos() as f64 / count as f64
+        }
+
+        let _guard = test_theme_lock();
+        let original = Theme::active_preset();
+        Theme::select(ThemePreset::ALL[0]);
+        assert!(std::ptr::eq(original_global(), stable_global()));
+        const COUNT: usize = 1_000_000;
+        const ROUNDS: usize = 9;
+        measure(original_global, 10_000);
+        measure(stable_global, 10_000);
+        let mut old = [0.0; ROUNDS];
+        let mut new = [0.0; ROUNDS];
+        for round in 0..ROUNDS {
+            // Alternate order to reduce warmup/thermal/order bias.
+            if round % 2 == 0 {
+                old[round] = measure(original_global, COUNT);
+                new[round] = measure(stable_global, COUNT);
+            } else {
+                new[round] = measure(stable_global, COUNT);
+                old[round] = measure(original_global, COUNT);
+            }
+        }
+        eprintln!("theme lookup ns/call original={old:?} stable={new:?}");
+        old.sort_by(f64::total_cmp);
+        new.sort_by(f64::total_cmp);
+        let before = old[ROUNDS / 2];
+        let after = new[ROUNDS / 2];
+        eprintln!(
+            "theme lookup median: original={before:.2} ns/call stable={after:.2} ns/call speedup={:.2}x reduction={:.1}% ({ROUNDS} alternating rounds x {COUNT} lookups)",
+            before / after,
+            (1.0 - after / before) * 100.0,
+        );
+        Theme::select(original);
+    }
+
+    #[test]
+    fn stable_lookup_does_not_take_transition_lock() {
+        let _guard = test_theme_lock();
+        let original = Theme::active_preset();
+        Theme::select(ThemePreset::ALL[0]);
+        {
+            let _transition = transition_state().lock().unwrap();
+            assert!(std::ptr::eq(
+                Theme::global(),
+                Theme::preview(ThemePreset::ALL[0])
+            ));
+            assert!(!Theme::is_transitioning());
+        }
+        Theme::select(original);
+    }
+
+    #[test]
+    fn animated_selection_preserves_frames_and_returns_to_fast_path() {
+        let _guard = test_theme_lock();
+        let original = Theme::active_preset();
+        select_theme(0, false);
+        select_theme(1, true);
+        assert!(Theme::is_transitioning());
+        assert_eq!(Theme::active_preset(), ThemePreset::ALL[1]);
+        assert!(std::ptr::eq(Theme::selected(), &themes()[1]));
+        let frames = transition_frames(0, 1);
+        {
+            let mut transition = transition_state().lock().unwrap();
+            assert_eq!(transition.as_ref().unwrap().0, 0);
+            // Place the fade safely in its interior without sleeping.
+            transition.as_mut().unwrap().1 =
+                std::time::Instant::now() - std::time::Duration::from_millis(90);
+        }
+        let frame = Theme::global();
+        assert!(
+            frames
+                .iter()
+                .any(|candidate| std::ptr::eq(candidate, frame))
+        );
+        {
+            let mut transition = transition_state().lock().unwrap();
+            transition.as_mut().unwrap().1 =
+                std::time::Instant::now() - std::time::Duration::from_secs(1);
+        }
+        assert!(std::ptr::eq(Theme::global(), &themes()[1]));
+        assert!(!Theme::is_transitioning());
+        assert!(transition_state().lock().unwrap().is_none());
+        Theme::select(original);
+    }
+
+    #[test]
+    fn concurrent_selection_publishes_matching_target_and_transition() {
+        let _guard = test_theme_lock();
+        let original = Theme::active_preset();
+        std::thread::scope(|scope| {
+            for target in 0..4 {
+                scope.spawn(move || {
+                    for iteration in 0..100 {
+                        select_theme(target, iteration % 2 == 0);
+                        let transition = transition_state().lock().unwrap();
+                        let active = ACTIVE_THEME.load(Ordering::Acquire);
+                        assert_eq!(active & TRANSITIONING != 0, transition.is_some());
+                        assert!((active & !TRANSITIONING) < ThemePreset::ALL.len());
+                        drop(transition);
+                        let _ = Theme::global();
+                    }
+                });
+            }
+        });
+        Theme::select(original);
+    }
+
     fn syntax_colors(theme: &Theme) -> [Rgba; 13] {
         [
             theme.CODE_TEXT,
