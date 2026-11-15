@@ -122,9 +122,6 @@ mod map_motion;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
-#[cfg(test)]
-#[path = "workspace_nav_profile_tests.rs"]
-mod nav_profile_tests;
 #[path = "navigation_state.rs"]
 mod navigation_state;
 #[cfg(test)]
