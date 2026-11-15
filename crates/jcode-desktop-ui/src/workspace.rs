@@ -107,9 +107,6 @@ pub(crate) mod restart;
 #[path = "closing_navigation_tests.rs"]
 mod closing_navigation_tests;
 #[cfg(test)]
-#[path = "workspace_lone_panel_tests.rs"]
-mod workspace_lone_panel_tests;
-#[cfg(test)]
 #[path = "fps_header_tests.rs"]
 mod fps_header_tests;
 #[cfg(test)]
@@ -119,6 +116,9 @@ mod hidden_animation_tests;
 mod map_gesture;
 #[path = "workspace_map_motion.rs"]
 mod map_motion;
+#[cfg(test)]
+#[path = "workspace_nav_profile_tests.rs"]
+mod nav_profile_tests;
 #[cfg(test)]
 #[path = "navigation_map_tests.rs"]
 mod navigation_map_tests;
@@ -144,6 +144,9 @@ mod window_navigation;
 #[cfg(test)]
 #[path = "window_navigation_tests.rs"]
 mod window_navigation_tests;
+#[cfg(test)]
+#[path = "workspace_lone_panel_tests.rs"]
+mod workspace_lone_panel_tests;
 
 #[path = "workspace_usage_reset.rs"]
 mod usage_reset;
@@ -750,6 +753,7 @@ pub struct Workspace {
     applet_text_selection: Option<Entity<crate::text_selection::TextSelection>>,
     /// Sidebar applet section, rendered with window access before the sidebar.
     sidebar_applets: Option<gpui::AnyElement>,
+    sidebar_chrome: Option<Entity<SidebarChrome>>,
     bridge: Bridge,
     remotes: remotes::Machines,
     host: HostHandle,
@@ -1098,6 +1102,7 @@ impl Workspace {
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
+            sidebar_chrome: None,
             bridge,
             host,
             single_panel,
@@ -1486,6 +1491,7 @@ impl Workspace {
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
+            sidebar_chrome: None,
             bridge: harness::spawn_inert(),
             host: HostHandle::inert(),
             single_panel: false,
@@ -8426,6 +8432,24 @@ impl Workspace {
     }
 }
 
+/// A stable retained boundary for the sidebar. Camera ticks notify Workspace
+/// without changing its model, so the sidebar can replay its last frame while
+/// the canvas moves. Real workspace, panel, global and hover changes remain
+/// dependencies of this view and rebuild it normally.
+struct SidebarChrome {
+    workspace: gpui::WeakEntity<Workspace>,
+}
+
+impl Render for SidebarChrome {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let _render_scope = crate::render_stats::scope("SidebarChrome");
+        let fullscreen = window.is_fullscreen();
+        self.workspace
+            .update(cx, |workspace, cx| workspace.render_sidebar(fullscreen, cx))
+            .unwrap_or_else(|_| div().into_any_element())
+    }
+}
+
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let _render_scope = crate::render_stats::scope("Workspace");
@@ -8498,6 +8522,13 @@ impl Render for Workspace {
         if self.compact_sidebar_motion.is_animating() {
             window.request_animation_frame();
         }
+        let sidebar_chrome = self
+            .sidebar_chrome
+            .get_or_insert_with(|| {
+                let workspace = cx.entity().downgrade();
+                cx.new(|_| SidebarChrome { workspace })
+            })
+            .clone();
         let sidebar_width = if self.show_sidebar && !compact {
             self.sidebar_custom_width
         } else {
@@ -8810,7 +8841,7 @@ impl Render for Workspace {
                     .flex()
                     .flex_row()
                     .when(self.show_sidebar && !compact, |root| {
-                        root.child(self.render_sidebar(fullscreen, cx))
+                        root.child(sidebar_chrome)
                             .child(self.render_sidebar_resize_handle(cx))
                     })
                     .child(
