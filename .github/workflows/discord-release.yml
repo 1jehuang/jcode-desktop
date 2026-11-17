@@ -30,6 +30,8 @@ jobs:
           # previous tag as the fallback, which needs tags and full history.
           fetch-depth: 0
           persist-credentials: false
+      - name: Test release announcement guards offline
+        run: python3 -m unittest discover -s tests -p 'test_post_discord_release.py' -v
       - name: Announce only verified live public downloads
         env:
           GH_TOKEN: ${{ github.token }}

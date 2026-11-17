@@ -74,6 +74,27 @@ in their signed bundle. Hosting a new feed cannot rewrite that URL in an already
 installed app. Those users must download and install the new DMG once from
 `https://jcode.sh/desktop`. Subsequent releases use the public update feed.
 
+## Discord release announcements
+
+After public website verification, the publisher dispatches `discord-release.yml`
+on trusted `main`. The announcement workflow runs offline guard tests, verifies
+public release identity and every versioned download's size and SHA-256 hash,
+then posts release notes through the Desktop-specific Discord webhook.
+
+The stable download feed intentionally remains stable when a newer beta ships.
+A beta newer than the live stable version is verified against its immutable
+public `latest.json` and versioned website downloads, without promoting the
+stable channel. Beta announcements link directly to that beta's public binaries
+and label the stable download separately. A stable version at least as new as
+the requested beta supersedes it, so stale beta announcements are skipped.
+Channel changes during verification fail closed.
+
+To recover a missing announcement, dispatch `discord-release.yml` with the exact
+published tag. A hidden receipt in the source release body prevents duplicate
+posts. If a post succeeds but receipt persistence fails, reconcile the receipt
+manually before rerunning. Verification progress identifies the failing stage
+without logging webhook credentials or transport exception text.
+
 ## Local validation
 
 ```sh
