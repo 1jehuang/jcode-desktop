@@ -10,12 +10,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import sys
+import time
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -133,6 +136,21 @@ def validate_manifest(manifest, tag):
 
 
 def verify_website_asset(asset):
+    # Retry only idempotent public reads, never Discord posts or integrity failures.
+    for attempt in range(3):
+        try:
+            return _verify_website_asset_once(asset)
+        except urllib.error.HTTPError as error:
+            if error.code not in {408, 429, 500, 502, 503, 504} or attempt == 2:
+                raise
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead):
+            if attempt == 2:
+                raise
+        print("Transient public download error; retrying verification", flush=True)
+        time.sleep(2 ** attempt)
+
+
+def _verify_website_asset_once(asset):
     digest, size = hashlib.sha256(), 0
     request = urllib.request.Request(asset["browser_download_url"], headers={"User-Agent": "JcodeReleaseVerifier/1.0"})
     with urllib.request.urlopen(request, timeout=120) as response:
@@ -255,7 +273,12 @@ def main():
             else:
                 print(f"Posted {args.tag} to Discord as message {message_id}")
         return 0
-    except Exception:
+    except Exception as error:
+        # Type and numeric HTTP status are useful diagnostics without exception
+        # messages, URLs, headers, or response bodies that could expose secrets.
+        if isinstance(error, urllib.error.HTTPError):
+            print(f"::error::Verification HTTP status: {error.code}", file=sys.stderr)
+        print(f"::error::Failure category: {type(error).__name__}", file=sys.stderr)
         print("::error::Desktop announcement failed. Check release identity, public/live metadata, hashes, and configured credentials. Error details suppressed to protect secrets.", file=sys.stderr)
         return 1
 

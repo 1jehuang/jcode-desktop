@@ -34,6 +34,38 @@ def release(repository=D.SOURCE_REPOSITORY, tag=TAG):
                        + [dict(name="latest.json", state="uploaded")])
 
 
+class DownloadRetryTests(unittest.TestCase):
+    def test_transient_errors_retry_from_scratch(self):
+        for error in (D.urllib.error.HTTPError("https://public", 502, "bad gateway", {}, None),
+                      D.urllib.error.URLError("connection reset"),
+                      D.http.client.IncompleteRead(b"partial"), TimeoutError()):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(D, "_verify_website_asset_once", side_effect=[error, None]) as read, \
+                    patch.object(D.time, "sleep") as sleep:
+                D.verify_website_asset({})
+                self.assertEqual(read.call_count, 2)
+                sleep.assert_called_once_with(1)
+
+    def test_nontransient_and_integrity_errors_never_retry(self):
+        for error in (ValueError("Website asset integrity mismatch"),
+                      D.urllib.error.HTTPError("https://public", 404, "missing", {}, None)):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(D, "_verify_website_asset_once", side_effect=error) as read, \
+                    patch.object(D.time, "sleep") as sleep:
+                with self.assertRaises(type(error)):
+                    D.verify_website_asset({})
+                self.assertEqual(read.call_count, 1)
+                sleep.assert_not_called()
+
+    def test_retry_exhaustion_fails_closed(self):
+        with patch.object(D, "_verify_website_asset_once", side_effect=TimeoutError) as read, \
+                patch.object(D.time, "sleep") as sleep:
+            with self.assertRaises(TimeoutError):
+                D.verify_website_asset({})
+            self.assertEqual(read.call_count, 3)
+            self.assertEqual(sleep.call_count, 2)
+
+
 class AnnouncementTests(unittest.TestCase):
     def setUp(self):
         self.fetch = self.enterContext(patch.object(D, "fetch_release", return_value=release()))

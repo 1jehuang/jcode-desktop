@@ -87,7 +87,10 @@ public `latest.json` and versioned website downloads, without promoting the
 stable channel. Beta announcements link directly to that beta's public binaries
 and label the stable download separately. A stable version at least as new as
 the requested beta supersedes it, so stale beta announcements are skipped.
-Channel changes during verification fail closed.
+Channel changes during verification fail closed. Transient public download
+transport errors receive at most three attempts, restarting the size and hash
+check each time. Missing files and integrity failures are not retried, and
+Discord posts are never automatically retried.
 
 To recover a missing announcement, dispatch `discord-release.yml` with the exact
 published tag. A hidden receipt in the source release body prevents duplicate
