@@ -159,6 +159,11 @@ pub enum Update {
         saved: bool,
         label: Option<String>,
     },
+    /// A session was archived (hidden from the list) or restored.
+    SessionArchived {
+        session_id: String,
+        archived: bool,
+    },
     /// The daemon rejected a bookmark change for a live session.
     SessionSaveFailed {
         session_id: String,
@@ -256,6 +261,11 @@ pub enum Command {
     SetSessionSaved {
         session_id: String,
         saved: bool,
+    },
+    /// Archive (reversibly hide) or restore a session. The transcript is kept.
+    SetSessionArchived {
+        session_id: String,
+        archived: bool,
     },
     /// Retain a fork child connection and queue its first prompt after adoption.
     ForkedInternal {
@@ -1021,6 +1031,21 @@ fn run_with_transports(
                         .spawn(move || set_saved_detached(session_id, saved, updates, transports))
                         .expect("spawn pin worker");
                 }
+            }
+            Command::SetSessionArchived {
+                session_id,
+                archived,
+            } => {
+                let updates = updates.clone();
+                let transports = transports.clone();
+                let refresh = session_refresh_in_flight.clone();
+                std::thread::Builder::new()
+                    .name("jcode-bridge-archive".into())
+                    .spawn(move || {
+                        set_archived_detached(session_id, archived, &updates, transports);
+                        refresh_sessions(updates, false, refresh);
+                    })
+                    .expect("spawn archive worker");
             }
             Command::TodoState { session_id } => {
                 send_to_session_worker(
@@ -1908,6 +1933,39 @@ fn set_saved_detached(
             let _ = updates.send(Update::Status(format!("Could not {verb} session: {error}")));
         }
     }
+}
+
+fn set_archived_detached(
+    session_id: String,
+    archived: bool,
+    updates: &UpdateSender,
+    transports: transport::RemoteTransports,
+) {
+    let result = (|| -> Result<(), String> {
+        let address = remote::SessionAddress::parse(&session_id)?;
+        let client = match &address.host {
+            Some(host) => transports.connect(host),
+            None => connect("archive"),
+        }
+        .map_err(|error| error.to_string())?;
+        let real_id = address.session_id.as_str();
+        if archived {
+            client.archive_session(real_id)
+        } else {
+            client.restore_session(real_id)
+        }
+        .map_err(|error| error.to_string())
+    })();
+    let _ = updates.send(match result {
+        Ok(()) => Update::SessionArchived {
+            session_id,
+            archived,
+        },
+        Err(error) => {
+            let verb = if archived { "archive" } else { "restore" };
+            Update::Status(format!("Could not {verb} session: {error}"))
+        }
+    });
 }
 
 /// One session's dedicated API connection, including an adopted client's reconnect.
