@@ -3195,7 +3195,6 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/1jehuang/gpui?rev=be875c56343dcbd45127a9805781a9e128057dd7#be875c56343dcbd45127a9805781a9e128057dd7"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
