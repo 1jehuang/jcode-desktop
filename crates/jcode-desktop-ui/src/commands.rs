@@ -54,6 +54,10 @@ pub(crate) const REGISTERED_COMMANDS: &[RegisteredCommand] = &[
     RegisteredCommand::public("/observe", "Show the latest tool context in the side panel"),
     RegisteredCommand::public("/todos", "Show the session todo list as a card in the chat"),
     RegisteredCommand::hidden("/todo", "Alias for /todos"),
+    RegisteredCommand::public(
+        "/suggestions",
+        "Show, refresh, or toggle contextual Suggested Replies",
+    ),
     RegisteredCommand::public("/splitview", "Mirror the current chat in the side panel"),
     RegisteredCommand::public("/split-view", "Alias for /splitview"),
     RegisteredCommand::public("/btw", "Ask a side question in the side panel"),
