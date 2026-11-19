@@ -87,6 +87,7 @@ impl Panel {
                         fenced(output)
                     )),
                     Item::Error(text) => content.push_str(&format!("## Error\n\n{text}\n\n")),
+                    Item::Warning(text) => content.push_str(&format!("> ⚠ {text}\n\n")),
                     Item::Image(_) => content.push_str("*[Image in source conversation]*\n\n"),
                     Item::Todos(payload) => content.push_str(&format!(
                         "## Todos\n\n{}\n\n",

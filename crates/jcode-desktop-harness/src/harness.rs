@@ -65,6 +65,8 @@ mod transport {
     }
 }
 
+#[path = "harness_compact.rs"]
+mod compact;
 #[path = "harness_disconnect.rs"]
 mod disconnect;
 #[path = "harness_history.rs"]
@@ -131,6 +133,12 @@ pub enum Update {
     CommandFailed {
         session_id: String,
         reason: String,
+    },
+    /// A command was declined for an expected reason (for example `/compact`
+    /// with nothing to summarize). Shown as a warning, not a failure.
+    CommandWarning {
+        session_id: String,
+        message: String,
     },
     /// A reasoning effort request finished. `error` is the provider's refusal.
     EffortSettled {
@@ -2380,9 +2388,25 @@ fn session_worker_with_connector(
                             }
                             continue;
                         }
+                        if matches!(operation, SessionOperation::Compact) {
+                            if let Err(error) = client.compact(real_id) {
+                                let update = match compact::refusal_warning(&error) {
+                                    Some(message) => Update::CommandWarning {
+                                        session_id: session_id.clone(),
+                                        message,
+                                    },
+                                    None => Update::CommandFailed {
+                                        session_id: session_id.clone(),
+                                        reason: format!("Compaction failed: {error}"),
+                                    },
+                                };
+                                let _ = updates.send(update);
+                            }
+                            continue;
+                        }
                         let result = match operation {
                             SessionOperation::Clear => client.clear(real_id),
-                            SessionOperation::Compact => client.compact(real_id).map(|_| ()),
+                            SessionOperation::Compact => Ok(()),
                             SessionOperation::SetEffort(_) | SessionOperation::SetSaved(..) => {
                                 Ok(())
                             }

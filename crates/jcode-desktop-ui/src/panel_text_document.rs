@@ -98,9 +98,11 @@ fn fingerprint(item: &Item, prompt_expanded: bool, tool_expanded: bool) -> u64 {
     prompt_expanded.hash(&mut state);
     tool_expanded.hash(&mut state);
     match item {
-        Item::User(text) | Item::Assistant(text) | Item::Reasoning(text) | Item::Error(text) => {
-            text.hash(&mut state)
-        }
+        Item::User(text)
+        | Item::Assistant(text)
+        | Item::Reasoning(text)
+        | Item::Error(text)
+        | Item::Warning(text) => text.hash(&mut state),
         Item::Tool {
             call_id,
             name,
@@ -255,6 +257,7 @@ pub(super) fn segments_with_display(
             push(format!("background-summary-{index}"), summary.clone());
         }
         Item::CacheMiss(notice) => push(format!("{index}-kv-cache-miss"), notice.text()),
+        Item::Warning(message) => push(format!("{index}-warning"), message.clone()),
         // Pinned todos and non-text chrome are outside the transcript document.
         Item::Todos(_) | Item::Image(_) | Item::ResponseStats(_) | Item::Applet(_) => {}
     }
