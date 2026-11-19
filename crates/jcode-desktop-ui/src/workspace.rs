@@ -8269,8 +8269,11 @@ impl Workspace {
             )
             .when(inline, |el| el.size_full())
             .when(!inline, |el| {
+                // Occlude so the strip's capture-phase scroll router beneath
+                // does not treat upward scrolls as workspace row switches.
                 el.absolute()
                     .inset_0()
+                    .occlude()
                     .items_center()
                     .justify_center()
                     .bg(gpui::rgba(0x000000cc))
@@ -11129,6 +11132,49 @@ mod tests {
                     .collapsed,
                 "explicit manual collapse must survive connected presence"
             );
+        });
+    }
+
+    #[gpui::test]
+    fn folder_picker_list_scrolls_back_up(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..60 {
+            std::fs::create_dir(root.path().join(format!("dir_{index:02}"))).unwrap();
+        }
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update_in(vcx, |workspace, window, cx| {
+            // An empty panel beneath the overlay is what turned upward wheel
+            // input into workspace row navigation.
+            workspace.new_panel(&NewPanel, window, cx);
+            workspace.open_folder(&OpenFolder, window, cx);
+            workspace.folder_picker_dir = Some(root.path().to_path_buf());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let list = vcx.debug_bounds("folder-picker-list").unwrap();
+        let top = |vcx: &mut gpui::VisualTestContext| {
+            vcx.debug_bounds("folder-picker-parent").unwrap().top()
+        };
+        let start = top(vcx);
+        let wheel = |vcx: &mut gpui::VisualTestContext, lines: f32| {
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: list.center(),
+                delta: gpui::ScrollDelta::Lines(gpui::point(0.0, lines)),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+        };
+        wheel(vcx, -6.0);
+        let scrolled = top(vcx);
+        assert!(scrolled < start, "scrolling down moves the list");
+        wheel(vcx, 3.0);
+        let back = top(vcx);
+        assert!(back > scrolled, "scrolling up must move the list back");
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.active_row, 0, "the overlay must not switch rows")
         });
     }
 
