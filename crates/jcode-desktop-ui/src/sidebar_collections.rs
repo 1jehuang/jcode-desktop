@@ -884,6 +884,28 @@ impl Workspace {
                 ),
             );
         }
+        // Archiving is reversible: the notice offers Undo, and the transcript
+        // stays on disk.
+        let session = session_id.to_owned();
+        menu = menu
+            .child(div().mx_2().my(px(2.0)).h(px(1.0)).bg(theme.PANEL_BORDER))
+            .child(
+                row(
+                    "sidebar-session-archive".into(),
+                    "sidebar-session-archive".into(),
+                )
+                .text_color(theme.TEXT_DIM)
+                .child(div().w(px(11.0)).flex_none().child("⌫"))
+                .child("Archive session")
+                .on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(move |this, _, window, cx| {
+                        window.prevent_default();
+                        cx.stop_propagation();
+                        this.set_session_archived(&session, true, window, cx);
+                    }),
+                ),
+            );
         menu.into_any_element()
     }
 

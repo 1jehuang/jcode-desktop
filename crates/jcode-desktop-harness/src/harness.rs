@@ -159,6 +159,11 @@ pub enum Update {
         saved: bool,
         label: Option<String>,
     },
+    /// A session was archived (hidden from the list) or restored.
+    SessionArchived {
+        session_id: String,
+        archived: bool,
+    },
     /// The daemon rejected a bookmark change for a live session.
     SessionSaveFailed {
         session_id: String,
@@ -256,6 +261,11 @@ pub enum Command {
     SetSessionSaved {
         session_id: String,
         saved: bool,
+    },
+    /// Archive (reversibly hide) or restore a session. The transcript is kept.
+    SetSessionArchived {
+        session_id: String,
+        archived: bool,
     },
     /// Retain a fork child connection and queue its first prompt after adoption.
     ForkedInternal {
@@ -1022,6 +1032,21 @@ fn run_with_transports(
                         .expect("spawn pin worker");
                 }
             }
+            Command::SetSessionArchived {
+                session_id,
+                archived,
+            } => {
+                let updates = updates.clone();
+                let transports = transports.clone();
+                let refresh = session_refresh_in_flight.clone();
+                std::thread::Builder::new()
+                    .name("jcode-bridge-archive".into())
+                    .spawn(move || {
+                        set_archived_detached(session_id, archived, &updates, transports);
+                        refresh_sessions(updates, false, refresh);
+                    })
+                    .expect("spawn archive worker");
+            }
             Command::TodoState { session_id } => {
                 send_to_session_worker(
                     &mut workers,
@@ -1604,6 +1629,55 @@ fn file_recency_ms(entry: &std::fs::DirEntry) -> u128 {
         .unwrap_or_default()
 }
 
+/// Archived sessions from the local archive state, newest archive first, with
+/// title and directory read from their records. Remote archives are not listed.
+pub fn load_archived_sessions(home: &Path) -> Vec<SessionInfo> {
+    let entries = std::fs::read_to_string(home.join("sdk-archive.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.get("sessions").and_then(|v| v.as_object()).cloned())
+        .unwrap_or_default();
+    let mut sessions = entries
+        .into_iter()
+        .filter_map(|(id, at)| {
+            let path = home.join("sessions").join(format!("{id}.json"));
+            let bytes = std::fs::metadata(&path).ok()?.len();
+            let record = read_persisted_session(&path, bytes);
+            let (working_dir, title, saved) = match record {
+                Some(record) => (
+                    record.working_dir,
+                    record
+                        .custom_title
+                        .filter(|title| !title.trim().is_empty())
+                        .or_else(|| record.title.filter(|title| !title.trim().is_empty())),
+                    record.saved,
+                ),
+                None => (None, None, false),
+            };
+            Some(SessionInfo {
+                user_connected: false,
+                title: title.or_else(|| persisted_todo_title(home, &id)),
+                session_id: id,
+                working_dir,
+                status: Default::default(),
+                transcript_bytes: Some(bytes),
+                saved,
+                updated_at_ms: None,
+                last_active_at_ms: None,
+                archived: true,
+                archived_at_ms: at.as_u64(),
+                save_label: None,
+                parent_session_id: None,
+                agent_label: None,
+                swarm_status: None,
+                edit_stats: None,
+            })
+        })
+        .collect::<Vec<_>>();
+    sessions.sort_by_key(|session| std::cmp::Reverse(session.archived_at_ms));
+    sessions
+}
+
 /// Merge the API's live view with records on disk. This deliberately makes the
 /// desktop resilient to an older already-running bridge that only reports
 /// sessions created during its lifetime.
@@ -1908,6 +1982,39 @@ fn set_saved_detached(
             let _ = updates.send(Update::Status(format!("Could not {verb} session: {error}")));
         }
     }
+}
+
+fn set_archived_detached(
+    session_id: String,
+    archived: bool,
+    updates: &UpdateSender,
+    transports: transport::RemoteTransports,
+) {
+    let result = (|| -> Result<(), String> {
+        let address = remote::SessionAddress::parse(&session_id)?;
+        let client = match &address.host {
+            Some(host) => transports.connect(host),
+            None => connect("archive"),
+        }
+        .map_err(|error| error.to_string())?;
+        let real_id = address.session_id.as_str();
+        if archived {
+            client.archive_session(real_id)
+        } else {
+            client.restore_session(real_id)
+        }
+        .map_err(|error| error.to_string())
+    })();
+    let _ = updates.send(match result {
+        Ok(()) => Update::SessionArchived {
+            session_id,
+            archived,
+        },
+        Err(error) => {
+            let verb = if archived { "archive" } else { "restore" };
+            Update::Status(format!("Could not {verb} session: {error}"))
+        }
+    });
 }
 
 /// One session's dedicated API connection, including an adopted client's reconnect.
@@ -3467,6 +3574,42 @@ mod tests {
             Some(1_768_160_401_354)
         );
         assert_eq!(session_recency_ms("legacy-name"), None);
+    }
+
+    #[test]
+    fn archived_sessions_load_newest_first_with_titles_and_skip_missing_records() {
+        let home = tempfile::tempdir().unwrap();
+        let sessions_dir = home.path().join("sessions");
+        std::fs::create_dir_all(&sessions_dir).unwrap();
+        std::fs::write(
+            sessions_dir.join("old.json"),
+            r#"{"working_dir":"/old","title":"Old"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            sessions_dir.join("new.json"),
+            r#"{"working_dir":"/new","title":"Gen","custom_title":"Named"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            home.path().join("sdk-archive.json"),
+            r#"{"sessions":{"old":100,"new":200,"gone":300}}"#,
+        )
+        .unwrap();
+        let archived = load_archived_sessions(home.path());
+        let rows = archived
+            .iter()
+            .map(|s| (s.session_id.as_str(), s.title.as_deref(), s.working_dir.as_deref()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows,
+            vec![
+                ("new", Some("Named"), Some("/new")),
+                ("old", Some("Old"), Some("/old")),
+            ]
+        );
+        assert!(archived.iter().all(|s| s.archived));
+        assert!(load_archived_sessions(&home.path().join("missing")).is_empty());
     }
 
     #[test]
