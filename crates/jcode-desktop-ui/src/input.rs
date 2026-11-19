@@ -79,6 +79,7 @@ actions!(
 );
 
 pub fn bind_keys(cx: &mut App) {
+    crate::code_editor::bind_keys(cx);
     crate::text_selection::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("PromptInput")),

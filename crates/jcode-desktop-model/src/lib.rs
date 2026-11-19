@@ -7,8 +7,10 @@
 pub mod command_workflows;
 pub mod diff;
 pub mod diff_model;
+pub mod file_tree;
 pub mod friendly_error;
 pub mod learning;
 pub mod pdf_render;
 pub mod platform_dirs;
+pub mod text_buffer;
 pub mod todoist;

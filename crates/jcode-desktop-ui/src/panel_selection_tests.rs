@@ -267,29 +267,36 @@ fn background_task_selection_copies_label_and_summary(cx: &mut gpui::TestAppCont
 }
 
 #[gpui::test]
-fn code_file_selection_copies_multiple_lines_without_gutter(cx: &mut gpui::TestAppContext) {
+fn code_file_copies_its_text_without_gutter_and_its_path(cx: &mut gpui::TestAppContext) {
     cx.update(crate::input::bind_keys);
-    let (_, vcx) = cx.add_window_view(|_, cx| {
-        let mut panel = Panel::new(
-            "file-selection".into(),
-            None,
-            None,
-            crate::harness::spawn_inert(),
-            cx,
-        );
-        panel.code_file = Some(CodeFile {
-            path: "/workspace/example.rs".into(),
-            contents: Ok("first βeta\n\nlast line".into()),
-        });
-        panel
-    });
-    assert_eq!(
-        drag_copy(vcx, "selectable-text-code-file-text"),
-        "first βeta\n\nlast line"
-    );
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("example.rs");
+    std::fs::write(&path, "first βeta\n\nlast line").unwrap();
+    let open = path.clone();
+    let (panel, vcx) =
+        cx.add_window_view(|_, cx| Panel::new_code_file(open, crate::harness::spawn_inert(), cx));
+    vcx.run_until_parked();
     assert_eq!(
         drag_copy(vcx, "selectable-text-code-file-path"),
-        "/workspace/example.rs"
+        path.display().to_string()
+    );
+    // The body is an editor: select all and copy, line numbers excluded.
+    vcx.update(|window, cx| {
+        let handle = panel.read(cx).input_focus_handle(cx);
+        window.focus(&handle, cx);
+    });
+    let modifier = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    vcx.simulate_keystrokes(&format!("{modifier}-a {modifier}-c"));
+    vcx.run_until_parked();
+    assert_eq!(
+        vcx.read_from_clipboard()
+            .and_then(|item| item.text())
+            .as_deref(),
+        Some("first βeta\n\nlast line")
     );
 }
 

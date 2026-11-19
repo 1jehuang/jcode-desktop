@@ -140,6 +140,138 @@ fn tokens(body: &str, lang: &str) -> Tokens {
     tokens
 }
 
+/// Incremental per-line highlighting for the code editor. Keeps the parser
+/// state at the start of every highlighted line, so an edit re-highlights
+/// only from the edited line to the end of the visible region.
+pub(crate) struct LineHighlighter {
+    syntax: &'static syntect::parsing::SyntaxReference,
+    highlighter: syntect::highlighting::Highlighter<'static>,
+    /// `states[i]` is the state before line `i`.
+    states: Vec<(
+        syntect::parsing::ParseState,
+        syntect::highlighting::HighlightState,
+    )>,
+    /// Byte ranges within each line and their semantic color ids.
+    tokens: Vec<Vec<(Range<usize>, u8)>>,
+}
+
+/// Minified or generated lines are shown plain rather than stalling a frame.
+const MAX_HIGHLIGHT_LINE: usize = 4096;
+
+impl LineHighlighter {
+    /// Pick the grammar from the file name and extension, like editors do.
+    pub(crate) fn for_path(path: &std::path::Path) -> Self {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default();
+        let extension = name.rsplit_once('.').map(|(_, extension)| extension);
+        let syntax = SYNTAXES
+            .find_syntax_by_extension(&name)
+            .or_else(|| {
+                extension.and_then(|extension| SYNTAXES.find_syntax_by_extension(extension))
+            })
+            .or_else(|| extension.and_then(|extension| SYNTAXES.find_syntax_by_token(extension)))
+            .unwrap_or_else(|| SYNTAXES.find_syntax_plain_text());
+        Self::with_syntax(syntax)
+    }
+
+    fn with_syntax(syntax: &'static syntect::parsing::SyntaxReference) -> Self {
+        let highlighter = syntect::highlighting::Highlighter::new(&SEMANTICS);
+        let initial = (
+            syntect::parsing::ParseState::new(syntax),
+            syntect::highlighting::HighlightState::new(
+                &highlighter,
+                syntect::parsing::ScopeStack::new(),
+            ),
+        );
+        Self {
+            syntax,
+            highlighter,
+            states: vec![initial],
+            tokens: Vec::new(),
+        }
+    }
+
+    pub(crate) fn is_plain(&self) -> bool {
+        self.syntax.name == "Plain Text"
+    }
+
+    /// Forget results from `line` on, after an edit touched it.
+    pub(crate) fn invalidate_from(&mut self, line: usize) {
+        self.tokens.truncate(line);
+        self.states.truncate(line + 1);
+    }
+
+    /// Highlight lines up to and including `last`, at most `budget` new lines.
+    /// Returns false when the budget ran out first.
+    pub(crate) fn ensure(
+        &mut self,
+        last: usize,
+        budget: usize,
+        line_text: impl Fn(usize) -> String,
+    ) -> bool {
+        let mut done = 0;
+        while self.tokens.len() <= last {
+            if done == budget {
+                return false;
+            }
+            let index = self.tokens.len();
+            let (mut parse, mut highlight) = self.states[index].clone();
+            let mut text = line_text(index);
+            let mut tokens = Vec::new();
+            if text.len() <= MAX_HIGHLIGHT_LINE {
+                text.push('\n');
+                if let Ok(ops) = parse.parse_line(&text, &SYNTAXES) {
+                    let mut start = 0;
+                    for (style, piece) in syntect::highlighting::HighlightIterator::new(
+                        &mut highlight,
+                        &ops,
+                        &text,
+                        &self.highlighter,
+                    ) {
+                        let end = (start + piece.len()).min(text.len() - 1);
+                        if style.foreground.r != 0 && start < end {
+                            tokens.push((start..end, style.foreground.r));
+                        }
+                        start += piece.len();
+                    }
+                }
+            }
+            self.tokens.push(tokens);
+            self.states.push((parse, highlight));
+            done += 1;
+        }
+        true
+    }
+
+    pub(crate) fn tokens(&self, line: usize) -> &[(Range<usize>, u8)] {
+        self.tokens.get(line).map_or(&[], Vec::as_slice)
+    }
+}
+
+/// The theme color for a semantic color id from [`LineHighlighter`].
+pub(crate) fn token_color(id: u8, theme: &Theme) -> gpui::Rgba {
+    [
+        theme.CODE_TEXT,
+        theme.CODE_KEYWORD,
+        theme.CODE_STRING,
+        theme.CODE_COMMENT,
+        theme.CODE_NUMBER,
+        theme.CODE_TYPE,
+        theme.CODE_PUNCT,
+        theme.CODE_FUNCTION,
+        theme.CODE_VARIABLE,
+        theme.CODE_CONTROL,
+        theme.CODE_CONSTANT,
+        theme.CODE_TAG,
+        theme.CODE_ATTRIBUTE,
+    ]
+    .get(id as usize)
+    .copied()
+    .unwrap_or(theme.CODE_TEXT)
+}
+
 pub(super) fn highlight(body: &str, lang: &str) -> (String, Vec<(Range<usize>, HighlightStyle)>) {
     highlight_with_theme(body, lang, Theme::global())
 }
