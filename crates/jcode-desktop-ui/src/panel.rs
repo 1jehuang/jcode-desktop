@@ -3835,12 +3835,15 @@ impl Panel {
             // Thinking is secondary transcript text, not a separate card. Keep
             // the same presentation while streaming, settled, and restored.
             // Never truncate it: there is deliberately no disclosure control.
+            // Italic, like the CLI, so it reads apart from the answer even
+            // where the dimmed color is close to the answer text.
             Item::Reasoning(text) => div()
                 .debug_selector(|| "reasoning-inline".into())
                 .font_family(Theme::global().FONT_AI)
                 .flex_none()
                 .px_1()
                 .text_size(px(12.0))
+                .italic()
                 .text_color(Theme::global().REASONING)
                 .child(markdown::with_stream_fade(
                     if index == usize::MAX - 1 {
