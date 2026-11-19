@@ -160,6 +160,9 @@ mod rename;
 #[path = "workspace_pin.rs"]
 mod pin;
 
+#[path = "workspace_archive.rs"]
+mod archive;
+
 #[path = "workspace_default_directory.rs"]
 mod default_directory;
 #[cfg(test)]
@@ -750,6 +753,8 @@ pub struct Workspace {
     side_panel_snapshots: HashMap<String, side_panel::SidePanelRoutingState>,
     /// Latest applet toast and when it arrived.
     applet_toast: Option<(String, Instant)>,
+    /// Session just archived from the sidebar, offered for Undo.
+    archive_notice: Option<(String, Instant)>,
     /// Applet ids whose consent prompt the user dismissed for this run.
     applet_consent_dismissed: HashSet<String>,
     /// Text selection scope for sidebar and overlay applet cards.
@@ -1103,6 +1108,7 @@ impl Workspace {
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
             applet_toast: None,
+            archive_notice: None,
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
@@ -1493,6 +1499,7 @@ impl Workspace {
             preview_task: None,
             side_panel_snapshots: HashMap::new(),
             applet_toast: None,
+            archive_notice: None,
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
@@ -2431,6 +2438,7 @@ impl Workspace {
                 }
             }
             Update::MessageSubmitted { .. } => {}
+            Update::SessionArchived { .. } => {}
             Update::SessionSaved {
                 session_id,
                 saved,
@@ -8945,6 +8953,7 @@ impl Render for Workspace {
             .children(self.render_applet_overlays(window, cx))
             .children(self.render_applet_consent(cx))
             .children(self.render_applet_toast(cx))
+            .children(self.render_archive_notice(cx))
             .when(self.sidebar_resizing, |root| {
                 root.child(self.render_sidebar_resize_overlay(cx))
             });
