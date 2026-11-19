@@ -2538,6 +2538,18 @@ impl Workspace {
                     }
                 }
             }
+            Update::CommandWarning {
+                session_id,
+                message,
+            } => {
+                for slot in &self.slots {
+                    if slot.panel.read(cx).session_id == session_id {
+                        slot.panel
+                            .update(cx, |panel, cx| panel.push_warning(message.clone(), cx));
+                        break;
+                    }
+                }
+            }
             Update::Disconnected { reason } => {
                 self.connected = false;
                 self.status = format!(

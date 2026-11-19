@@ -123,6 +123,8 @@ mod stream_reveal;
 #[cfg(test)]
 #[path = "panel_stream_scroll_tests.rs"]
 mod stream_scroll_tests;
+#[path = "panel_warning.rs"]
+mod warning_notice;
 pub use startup::StartupLayout;
 #[path = "panel_applet.rs"]
 pub(crate) mod applet_panel;
@@ -282,6 +284,9 @@ pub enum Item {
     },
     Todos(TodoCardPayload),
     Error(String),
+    /// An expected refusal worth noticing, such as `/compact` with nothing
+    /// to summarize. Rendered in the warning tone, not as a failure.
+    Warning(String),
     Stopped(stop_reason::StopNotice),
     /// Daemon-reported KV (prompt) cache miss for a provider request.
     CacheMiss(cache_miss::CacheMissNotice),
@@ -3741,6 +3746,7 @@ impl Panel {
             }
             Item::Stopped(notice) => self.render_stop_notice(index, notice, window, cx),
             Item::CacheMiss(notice) => self.render_cache_miss_notice(index, notice, window, cx),
+            Item::Warning(message) => self.render_warning_notice(index, message, window, cx),
             Item::ResponseStats(stats) => stats.render(index).into_any_element(),
             Item::User(text) if jcode_sdk::todo::is_auto_poke_message(text) => {
                 self.render_auto_poke_notice(index, text, window, cx)
@@ -5038,8 +5044,10 @@ impl Render for Panel {
                                     });
                                 let display = crate::config::display();
                                 let top_padding = if display.compact_notifications
-                                    && matches!(item, Item::Stopped(_) | Item::CacheMiss(_))
-                                {
+                                    && matches!(
+                                        item,
+                                        Item::Stopped(_) | Item::CacheMiss(_) | Item::Warning(_)
+                                    ) {
                                     2.0
                                 } else if matches!(item, Item::ResponseStats(_)) {
                                     2.0
@@ -5623,6 +5631,7 @@ fn role_of(item: &Item) -> Option<&'static str> {
         | Item::Todos(_)
         | Item::Stopped(_)
         | Item::CacheMiss(_)
+        | Item::Warning(_)
         | Item::Applet(_)
         | Item::Error(_) => None,
     }
