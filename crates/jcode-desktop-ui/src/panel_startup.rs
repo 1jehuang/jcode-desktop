@@ -88,6 +88,14 @@ impl Panel {
     ) -> gpui::AnyElement {
         let panel = cx.entity().downgrade();
         let list = self.transcript_list.clone();
+        // From the second prompt on, the composer belongs at the bottom even
+        // when the conversation is still short.
+        let settle_bottom = self
+            .items
+            .iter()
+            .filter(|item| matches!(item, Item::User(_)))
+            .count()
+            > 1;
         gpui::canvas(
             |_, _, _| (),
             move |panel_bounds, _, _, cx| {
@@ -123,8 +131,12 @@ impl Panel {
                             layout.compact = true;
                             notify = true;
                         }
-                        let floor =
-                            (layout.input_top - f32::from(body.top() - panel_bounds.top())).max(0.);
+                        let floor = if settle_bottom {
+                            available
+                        } else {
+                            (layout.input_top - f32::from(body.top() - panel_bounds.top()))
+                                .max(0.)
+                        };
                         // messages_height includes the non-scrolling gap,
                         // while the list's measurements contain rows only.
                         let height = floor.max(wanted).min(available);
