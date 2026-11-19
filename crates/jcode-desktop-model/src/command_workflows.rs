@@ -36,9 +36,63 @@ pub fn workflow_prompt(input: &str) -> Option<String> {
     ))
 }
 
+/// Directories Jcode loads skills from, in priority order: the project's
+/// `.jcode/skills` and `.claude/skills`, then the user's global ones.
+pub fn skill_dirs(cwd: Option<&std::path::Path>) -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(cwd) = cwd {
+        dirs.push(cwd.join(".jcode/skills"));
+        dirs.push(cwd.join(".claude/skills"));
+    }
+    if let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from) {
+        dirs.push(home.join(".jcode/skills"));
+        dirs.push(home.join(".claude/skills"));
+    }
+    dirs
+}
+
+/// Turns `/<skill> args` into a model prompt when `<skill>` names an
+/// installed skill (a directory containing `SKILL.md`) in one of `dirs`.
+pub fn skill_prompt(input: &str, dirs: &[std::path::PathBuf]) -> Option<String> {
+    let input = input.trim();
+    let (name, rest) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
+    let skill = name.strip_prefix('/')?;
+    if skill.is_empty()
+        || !skill
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return None;
+    }
+    dirs.iter()
+        .any(|dir| dir.join(skill).join("SKILL.md").is_file())
+        .then(|| {
+            let rest = rest.trim();
+            format!(
+                "The user invoked the `/{skill}` skill. Load it with the Skill tool (action load, name `{skill}`) and follow its instructions exactly.\n\nArguments: {}",
+                if rest.is_empty() { "(none)" } else { rest }
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skill_prompt_requires_installed_skill() {
+        let root = std::env::temp_dir().join(format!("jcode-skill-test-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("graphify")).unwrap();
+        std::fs::write(root.join("graphify/SKILL.md"), "x").unwrap();
+        let dirs = vec![root.clone()];
+        let prompt = skill_prompt("/graphify . --update", &dirs).unwrap();
+        assert!(prompt.contains("`graphify`") && prompt.contains(". --update"));
+        assert!(skill_prompt("/graphify", &dirs).unwrap().contains("(none)"));
+        assert!(skill_prompt("/missing", &dirs).is_none());
+        assert!(skill_prompt("/../etc", &dirs).is_none());
+        assert!(skill_prompt("graphify", &dirs).is_none());
+        std::fs::remove_dir_all(root).ok();
+    }
 
     #[test]
     fn complete_tokens_only() {

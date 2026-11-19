@@ -2276,10 +2276,20 @@ impl Panel {
                     "Make logical commits for the current uncommitted work, preserving unrelated work and validating appropriately. Then push to the tracking branch without force-pushing, and report the commits and push result.",
                     cx,
                 ),
-                _ if trimmed.starts_with('/') => self.items.push(Item::Error(format!(
-                    "{}",
-                    command_unavailable_message(trimmed)
-                ))),
+                _ if trimmed.starts_with('/') => {
+                    let dirs = jcode_desktop_model::command_workflows::skill_dirs(
+                        self.working_dir.as_deref().map(std::path::Path::new),
+                    );
+                    match jcode_desktop_model::command_workflows::skill_prompt(trimmed, &dirs) {
+                        Some(prompt) => {
+                            self.submit_or_queue(prompt, Vec::new(), true, cx);
+                            return true;
+                        }
+                        None => self
+                            .items
+                            .push(Item::Error(command_unavailable_message(trimmed))),
+                    }
+                }
                 _ => return false,
             }
         }
