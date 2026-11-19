@@ -31,8 +31,13 @@ default is remote, new session panels start in that machine's home directory.
 The local directory behavior below applies when **This computer** is the default.
 
 - **Super+Enter** opens a new session panel in your fixed most-used directory,
-  just like Super+;. **Ctrl+Alt+Enter** is its non-Super alias. Hints and the
-  tutorial teach Enter. Super+N still opens a session in home.
+  just like Super+;. **Ctrl+Alt+Enter** is its non-Super alias. On Linux, most
+  tiling window managers (Omarchy/Hyprland, i3, sway, bspwm) bind Super+Enter
+  to open a terminal at the compositor level, which consumes the chord before
+  this app's window ever receives it, so Ctrl+Alt+Enter is the shortcut that
+  actually reaches Jcode Desktop there. Hints and the tutorial teach
+  Ctrl+Alt+Enter on Linux for that reason, and Enter elsewhere. Super+N still
+  opens a session in home.
 - **Super+;** opens a session in your fixed most-used directory.
 - **Super+'** opens a session in your home directory.
 - **Super+T** opens a terminal panel.

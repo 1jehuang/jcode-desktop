@@ -448,7 +448,7 @@ fn help_prompt_is_correlated_and_closed_help_never_submits(cx: &mut gpui::TestAp
         );
     });
     assert!(
-        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "help" && content == HELP_SESSION_PROMPT)
+        matches!(commands.try_recv(), Ok(Command::Send { session_id, content, .. }) if session_id == "help" && content == help_session_prompt())
     );
     vcx.update(|window, cx| {
         workspace.update(cx, |w, cx| {
