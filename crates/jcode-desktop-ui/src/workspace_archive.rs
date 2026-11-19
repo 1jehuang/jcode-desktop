@@ -25,12 +25,154 @@ impl Workspace {
             self.archive_notice = None;
             // Restored sessions come back as past rows of this window.
             self.sidebar_closed_sessions.insert(session_id.to_string());
+            self.archived_sessions
+                .retain(|session| session.session_id != session_id);
         }
         self.bridge.send(Command::SetSessionArchived {
             session_id: session_id.to_string(),
             archived,
         });
         cx.notify();
+    }
+
+    /// Re-read local archived sessions while their section is open.
+    pub(super) fn reload_archived_sessions(&mut self) {
+        if !self.archived_open || cfg!(test) {
+            return;
+        }
+        self.archived_sessions = harness::jcode_home()
+            .map(|home| harness::load_archived_sessions(&home))
+            .unwrap_or_default();
+    }
+
+    /// Collapsible "Archived" section at the bottom of the session list.
+    pub(super) fn render_archived_section(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = Theme::global();
+        let open = self.archived_open;
+        let mut section = div()
+            .id("sidebar-archived")
+            .flex_none()
+            .w_full()
+            .min_w_0()
+            .pl_2()
+            .pr(px(crate::scrollbar::GUTTER + 4.0))
+            .py_1()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .child(
+                div()
+                    .id("sidebar-archived-toggle")
+                    .debug_selector(|| "sidebar-archived-toggle".into())
+                    .h(px(24.0))
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .text_size(px(11.0))
+                    .text_color(theme.TEXT_DIM)
+                    .hover(|el| el.bg(theme.TOOL_BG).text_color(theme.TEXT))
+                    .child(if open { "▾" } else { "▸" })
+                    .child("Archived")
+                    .when(open, |el| {
+                        el.child(
+                            div()
+                                .text_color(theme.TEXT_FAINT)
+                                .child(self.archived_sessions.len().to_string()),
+                        )
+                    })
+                    .on_mouse_down(
+                        gpui::MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            window.prevent_default();
+                            cx.stop_propagation();
+                            this.archived_open = !this.archived_open;
+                            this.reload_archived_sessions();
+                            cx.notify();
+                        }),
+                    ),
+            );
+        if !open {
+            return section.into_any_element();
+        }
+        if self.archived_sessions.is_empty() {
+            section = section.child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .text_size(px(11.0))
+                    .text_color(theme.TEXT_FAINT)
+                    .child("No archived sessions"),
+            );
+        }
+        let list = div()
+            .id("sidebar-archived-list")
+            .max_h(px(240.0))
+            .overflow_y_scroll()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(self.archived_sessions.iter().enumerate().map(|(index, session)| {
+                let id = session.session_id.clone();
+                let title = session
+                    .title
+                    .clone()
+                    .filter(|title| !title.trim().is_empty())
+                    .unwrap_or_else(|| session.session_id.clone());
+                let folder = session
+                    .working_dir
+                    .as_deref()
+                    .and_then(|dir| Path::new(dir).file_name())
+                    .map(|name| name.to_string_lossy().into_owned());
+                div()
+                    .id(("sidebar-archived-row", index))
+                    .debug_selector(move || format!("sidebar-archived-row-{index}"))
+                    .h(px(26.0))
+                    .pl_3()
+                    .pr_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .rounded_full()
+                    .text_size(px(12.0))
+                    .text_color(theme.TEXT_DIM)
+                    .hover(|el| el.bg(theme.TOOL_BG))
+                    .child(div().flex_1().min_w_0().truncate().child(title))
+                    .children(folder.map(|folder| {
+                        div()
+                            .flex_none()
+                            .max_w(px(70.0))
+                            .truncate()
+                            .text_size(px(10.0))
+                            .text_color(theme.TEXT_FAINT)
+                            .child(folder)
+                    }))
+                    .child(
+                        div()
+                            .id(("sidebar-archived-restore", index))
+                            .debug_selector(move || format!("sidebar-archived-restore-{index}"))
+                            .flex_none()
+                            .px_2()
+                            .py(px(1.0))
+                            .rounded_full()
+                            .cursor_pointer()
+                            .bg(theme.TOOL_BG)
+                            .text_size(px(10.0))
+                            .hover(|el| el.bg(theme.ACCENT_DIM).text_color(theme.TEXT))
+                            .child("Restore")
+                            .on_mouse_down(
+                                gpui::MouseButton::Left,
+                                cx.listener(move |this, _, window, cx| {
+                                    window.prevent_default();
+                                    cx.stop_propagation();
+                                    this.set_session_archived(&id, false, window, cx);
+                                }),
+                            ),
+                    )
+            }));
+        section.child(list).into_any_element()
     }
 
     /// "Session archived" pill with an Undo action, near the bottom.
@@ -104,6 +246,44 @@ impl Workspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn archived_section_lists_sessions_and_restores_one(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let (bridge, commands) = harness::spawn_recording();
+        let (workspace, vcx) = cx.add_window_view(|_, cx| {
+            let mut w = Workspace::for_test(learning::Coach::new(), cx);
+            w.set_test_bridge(bridge);
+            w
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-archived-row-0").is_none());
+        let toggle = vcx.debug_bounds("sidebar-archived-toggle").unwrap();
+        vcx.simulate_click(toggle.center(), gpui::Modifiers::none());
+        workspace.update(vcx, |w, cx| {
+            let mut archived =
+                crate::workspace::tests::session_info("session_fox_gone", Some("gone"));
+            archived.archived = true;
+            w.archived_sessions = vec![archived];
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        assert!(vcx.debug_bounds("sidebar-archived-row-0").is_some());
+        while commands.try_recv().is_ok() {}
+
+        let restore = vcx.debug_bounds("sidebar-archived-restore-0").unwrap();
+        vcx.simulate_click(restore.center(), gpui::Modifiers::none());
+        vcx.run_until_parked();
+        let sent = std::iter::from_fn(|| commands.try_recv().ok()).find_map(|c| match c {
+            Command::SetSessionArchived {
+                session_id,
+                archived,
+            } => Some((session_id, archived)),
+            _ => None,
+        });
+        assert_eq!(sent, Some(("session_fox_gone".into(), false)));
+        assert!(vcx.debug_bounds("sidebar-archived-row-0").is_none());
+    }
 
     #[gpui::test]
     fn archive_from_the_row_menu_hides_the_session_and_undo_restores_it(

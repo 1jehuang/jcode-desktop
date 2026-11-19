@@ -755,6 +755,9 @@ pub struct Workspace {
     applet_toast: Option<(String, Instant)>,
     /// Session just archived from the sidebar, offered for Undo.
     archive_notice: Option<(String, Instant)>,
+    /// Archived sessions section in the sidebar: expanded, and its rows.
+    archived_open: bool,
+    archived_sessions: Vec<jcode_sdk::SessionInfo>,
     /// Applet ids whose consent prompt the user dismissed for this run.
     applet_consent_dismissed: HashSet<String>,
     /// Text selection scope for sidebar and overlay applet cards.
@@ -1109,6 +1112,8 @@ impl Workspace {
             side_panel_snapshots: HashMap::new(),
             applet_toast: None,
             archive_notice: None,
+            archived_open: false,
+            archived_sessions: Vec::new(),
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
@@ -1500,6 +1505,8 @@ impl Workspace {
             side_panel_snapshots: HashMap::new(),
             applet_toast: None,
             archive_notice: None,
+            archived_open: false,
+            archived_sessions: Vec::new(),
             applet_consent_dismissed: HashSet::new(),
             applet_text_selection: None,
             sidebar_applets: None,
@@ -2438,7 +2445,7 @@ impl Workspace {
                 }
             }
             Update::MessageSubmitted { .. } => {}
-            Update::SessionArchived { .. } => {}
+            Update::SessionArchived { .. } => self.reload_archived_sessions(),
             Update::SessionSaved {
                 session_id,
                 saved,
@@ -6414,6 +6421,7 @@ impl Workspace {
             ));
             list = list.children(dock);
         }
+        list = list.child(self.render_archived_section(cx));
 
         if self.sidebar_session_layout.is_empty() {
             list = list.child(
