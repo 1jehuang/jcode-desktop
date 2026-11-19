@@ -366,3 +366,29 @@ fn startup_composer_keeps_docked_shape_before_transcript_fills_space(
             .is_some_and(|layout| layout.compact)
     }));
 }
+
+#[gpui::test]
+fn startup_second_prompt_docks_short_conversation_composer_at_bottom(
+    cx: &mut gpui::TestAppContext,
+) {
+    let (panel, vcx) = focused_startup_panel(cx);
+    let welcome = vcx.debug_bounds("prompt-input").unwrap();
+    for text in ["First short prompt", "continua"] {
+        crate::test_input::commit_text(vcx, text);
+        vcx.simulate_keystrokes("enter");
+        vcx.run_until_parked();
+        panel.update(vcx, |panel, cx| {
+            panel.items.push(Item::Assistant("Short reply".into()));
+            cx.notify();
+        });
+        vcx.run_until_parked();
+    }
+    vcx.run_until_parked();
+    let input = vcx.debug_bounds("prompt-input").unwrap();
+    let window = vcx.update(|window, _| window.viewport_size());
+    assert!(input.top() > welcome.top(), "composer stayed mid-panel");
+    assert!(
+        window.height - input.bottom() < px(80.),
+        "composer not at bottom: {input:?} in {window:?}"
+    );
+}
