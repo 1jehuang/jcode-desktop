@@ -17,7 +17,7 @@ fn status_label(
             ReleaseStatus::Unknown | ReleaseStatus::Checking => {
                 ("Checking for updates…".into(), None)
             }
-            ReleaseStatus::Current { .. } => ("Latest version".into(), None),
+            ReleaseStatus::Current { .. } => ("No channel update".into(), None),
             // A source checkout cannot install a release in place.
             ReleaseStatus::Newer { version } if source => (format!("{version} released"), None),
             ReleaseStatus::Newer { version } => (format!("{version} available"), Some("Update")),
@@ -45,7 +45,7 @@ fn check_feedback(release: &ReleaseStatus, update: &UpdateState) -> Option<(Stri
         UpdateState::Failed { .. } => ("Update failed".into(), Tone::Bad),
         UpdateState::Finished { .. } | UpdateState::Idle => match release {
             ReleaseStatus::Unknown | ReleaseStatus::Checking => ("Checking…".into(), Tone::Busy),
-            ReleaseStatus::Current { .. } => ("Up to date".into(), Tone::Good),
+            ReleaseStatus::Current { .. } => ("No channel update".into(), Tone::Good),
             ReleaseStatus::Newer { version } => (format!("v{version} out"), Tone::News),
             ReleaseStatus::Error { .. } => ("Couldn't check".into(), Tone::Bad),
             ReleaseStatus::Source => return None,
@@ -139,11 +139,12 @@ impl Workspace {
             self.version_pulse.retain(|_| false);
         }
         let detail = match &update {
+            UpdateState::Finished { message } if matches!(&release, ReleaseStatus::Current { .. }) => format!("{message} Betas published separately are not offered by this check."),
             UpdateState::Finished { message } | UpdateState::Failed { message } => message.clone(),
             _ => match &release {
                 ReleaseStatus::Error { message } => message.clone(),
                 ReleaseStatus::Source => "Local source build. Release status cannot establish whether this checkout is current. Use Ctrl+R to rebuild local changes.".into(),
-                ReleaseStatus::Current { latest } => format!("Latest release: v{latest}"),
+                ReleaseStatus::Current { latest } => format!("Update channel: v{latest}. Betas published separately are not offered by this check."),
                 ReleaseStatus::Newer { version } if updates::is_source_build() => format!("v{version} is released. This source build updates through Git and Ctrl+R."),
                 _ => label.clone(),
             },
@@ -247,7 +248,7 @@ mod tests {
             },
         ] {
             let (label, action) = status_label(&release, &UpdateState::Idle, false);
-            assert_ne!(label, "Latest version");
+            assert_ne!(label, "No channel update");
             assert!(action.is_none());
         }
         assert_eq!(
@@ -258,7 +259,7 @@ mod tests {
                 &UpdateState::Idle,
                 false
             ),
-            ("Latest version".into(), None)
+            ("No channel update".into(), None)
         );
         let newer = ReleaseStatus::Newer {
             version: "1.1.0".into(),
@@ -301,7 +302,7 @@ mod tests {
         );
         assert_eq!(
             check_feedback(&current, &UpdateState::Idle),
-            Some(("Up to date".into(), Tone::Good))
+            Some(("No channel update".into(), Tone::Good))
         );
         assert_eq!(
             check_feedback(
@@ -310,7 +311,7 @@ mod tests {
                     message: "current".into()
                 }
             ),
-            Some(("Up to date".into(), Tone::Good))
+            Some(("No channel update".into(), Tone::Good))
         );
         assert_eq!(
             check_feedback(
@@ -449,7 +450,10 @@ mod tests {
         });
         draw(vcx);
         assert!(vcx.debug_bounds("workspace-version-check").is_some());
-        assert_eq!(visible_feedback(), Some(("Up to date".into(), Tone::Good)));
+        assert_eq!(
+            visible_feedback(),
+            Some(("No channel update".into(), Tone::Good))
+        );
         updates::clear_test_actions();
         updates::set_release_status(ReleaseStatus::Source);
     }
