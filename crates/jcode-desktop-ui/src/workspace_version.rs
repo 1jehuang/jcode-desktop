@@ -100,7 +100,6 @@ impl Workspace {
         width: f32,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        updates::ensure_release_check();
         let release = updates::release_status();
         let update = updates::current();
         let (label, action) = status_label(&release, &update, updates::is_source_build());
