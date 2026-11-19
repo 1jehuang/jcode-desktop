@@ -8183,8 +8183,12 @@ impl Workspace {
                     self.default_working_dir(),
                 )
             } else {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
+                // Nested recent folders keep their path relative to the
+                // browsed directory so they are not mistaken for children.
+                path.strip_prefix(&directory)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string())
             };
             let sets_default = self.folder_picker_sets_default;
@@ -9160,7 +9164,14 @@ fn ranked_folder_matches_for_sessions(
             .working_dir
             .as_deref()
             .map(PathBuf::from)
-            .filter(|path| path.is_dir() && !contains_dot_directory(path, base))
+            .filter(|path| {
+                // Only folders inside the one being browsed: anything else
+                // would masquerade as a child of the current directory.
+                path.starts_with(base)
+                    && path != base
+                    && path.is_dir()
+                    && !contains_dot_directory(path, base)
+            })
         else {
             continue;
         };
@@ -12613,6 +12624,30 @@ mod tests {
             assert!(workspace.folder_search.is_none());
         });
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn picker_lists_only_folders_inside_the_browsed_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let child = root.path().join("child");
+        let nested = child.join("nested-repo");
+        std::fs::create_dir_all(&nested).unwrap();
+        let sessions = [elsewhere.path(), nested.as_path()]
+            .iter()
+            .enumerate()
+            .map(|(index, dir)| {
+                let mut session =
+                    session_info(Box::leak(format!("s{index}").into_boxed_str()), None);
+                session.working_dir = Some(dir.to_string_lossy().into_owned());
+                session
+            })
+            .collect::<Vec<_>>();
+        let entries = ranked_folder_matches_for_sessions(&sessions, root.path(), "");
+        let paths = entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>();
+        assert!(!paths.contains(&elsewhere.path().to_path_buf()));
+        assert!(paths.contains(&child));
+        assert!(paths.contains(&nested), "recent nested folders stay reachable");
     }
 
     #[test]
