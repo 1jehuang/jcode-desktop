@@ -8183,8 +8183,12 @@ impl Workspace {
                     self.default_working_dir(),
                 )
             } else {
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
+                // Nested recent folders keep their path relative to the
+                // browsed directory so they are not mistaken for children.
+                path.strip_prefix(&directory)
+                    .ok()
+                    .filter(|relative| !relative.as_os_str().is_empty())
+                    .map(|relative| relative.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string())
             };
             let sets_default = self.folder_picker_sets_default;
@@ -8269,8 +8273,11 @@ impl Workspace {
             )
             .when(inline, |el| el.size_full())
             .when(!inline, |el| {
+                // Occlude so the strip's capture-phase scroll router beneath
+                // does not treat upward scrolls as workspace row switches.
                 el.absolute()
                     .inset_0()
+                    .occlude()
                     .items_center()
                     .justify_center()
                     .bg(gpui::rgba(0x000000cc))
@@ -9157,7 +9164,14 @@ fn ranked_folder_matches_for_sessions(
             .working_dir
             .as_deref()
             .map(PathBuf::from)
-            .filter(|path| path.is_dir() && !contains_dot_directory(path, base))
+            .filter(|path| {
+                // Only folders inside the one being browsed: anything else
+                // would masquerade as a child of the current directory.
+                path.starts_with(base)
+                    && path != base
+                    && path.is_dir()
+                    && !contains_dot_directory(path, base)
+            })
         else {
             continue;
         };
@@ -11133,6 +11147,49 @@ mod tests {
     }
 
     #[gpui::test]
+    fn folder_picker_list_scrolls_back_up(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| crate::bind_workspace_keys(cx));
+        let root = tempfile::tempdir().unwrap();
+        for index in 0..60 {
+            std::fs::create_dir(root.path().join(format!("dir_{index:02}"))).unwrap();
+        }
+        let (workspace, vcx) =
+            cx.add_window_view(|_window, cx| Workspace::for_test(learning::Coach::new(), cx));
+        workspace.update_in(vcx, |workspace, window, cx| {
+            // An empty panel beneath the overlay is what turned upward wheel
+            // input into workspace row navigation.
+            workspace.new_panel(&NewPanel, window, cx);
+            workspace.open_folder(&OpenFolder, window, cx);
+            workspace.folder_picker_dir = Some(root.path().to_path_buf());
+            cx.notify();
+        });
+        vcx.run_until_parked();
+        let list = vcx.debug_bounds("folder-picker-list").unwrap();
+        let top = |vcx: &mut gpui::VisualTestContext| {
+            vcx.debug_bounds("folder-picker-parent").unwrap().top()
+        };
+        let start = top(vcx);
+        let wheel = |vcx: &mut gpui::VisualTestContext, lines: f32| {
+            vcx.simulate_event(gpui::ScrollWheelEvent {
+                position: list.center(),
+                delta: gpui::ScrollDelta::Lines(gpui::point(0.0, lines)),
+                modifiers: gpui::Modifiers::default(),
+                touch_phase: gpui::TouchPhase::Moved,
+            });
+            vcx.run_until_parked();
+        };
+        wheel(vcx, -6.0);
+        let scrolled = top(vcx);
+        assert!(scrolled < start, "scrolling down moves the list");
+        wheel(vcx, 3.0);
+        let back = top(vcx);
+        assert!(back > scrolled, "scrolling up must move the list back");
+        workspace.read_with(vcx, |w, _| {
+            assert_eq!(w.active_row, 0, "the overlay must not switch rows")
+        });
+    }
+
+    #[gpui::test]
     fn sidebar_session_history_moves_when_the_user_scrolls(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| crate::bind_workspace_keys(cx));
         let (workspace, vcx) =
@@ -12567,6 +12624,30 @@ mod tests {
             assert!(workspace.folder_search.is_none());
         });
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn picker_lists_only_folders_inside_the_browsed_directory() {
+        let root = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let child = root.path().join("child");
+        let nested = child.join("nested-repo");
+        std::fs::create_dir_all(&nested).unwrap();
+        let sessions = [elsewhere.path(), nested.as_path()]
+            .iter()
+            .enumerate()
+            .map(|(index, dir)| {
+                let mut session =
+                    session_info(Box::leak(format!("s{index}").into_boxed_str()), None);
+                session.working_dir = Some(dir.to_string_lossy().into_owned());
+                session
+            })
+            .collect::<Vec<_>>();
+        let entries = ranked_folder_matches_for_sessions(&sessions, root.path(), "");
+        let paths = entries.iter().map(|(path, _)| path.clone()).collect::<Vec<_>>();
+        assert!(!paths.contains(&elsewhere.path().to_path_buf()));
+        assert!(paths.contains(&child));
+        assert!(paths.contains(&nested), "recent nested folders stay reachable");
     }
 
     #[test]
