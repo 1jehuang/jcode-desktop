@@ -1992,6 +1992,7 @@ fn render_document_with_prompt_background(
             Block::Reasoning(text) => div()
                 .debug_selector(|| "restored-reasoning".into())
                 .text_size(px(12.0))
+                .italic()
                 .text_color(Theme::global().REASONING)
                 .line_height(relative(1.55))
                 .child(render_document_with_prompt_background(
