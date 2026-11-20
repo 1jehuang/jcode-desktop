@@ -10,6 +10,8 @@ pub(super) const TAB_STATUS_WIDTH: f32 = 88.0;
 /// Compact windows swap the FPS readout for a sidebar menu button.
 const TAB_MENU_WIDTH: f32 = 36.0;
 const TAB_NEW_WIDTH: f32 = 40.0;
+/// Toggle for the right-hand Files panel, beside the new-session plus.
+const TAB_FILES_WIDTH: f32 = 34.0;
 /// Pointer route to the next workspace, beside the new-session plus.
 const TAB_NEXT_WORKSPACE_WIDTH: f32 = 40.0;
 /// Right edge reserved past the new-session button: Jcode's own close-window
@@ -32,6 +34,7 @@ pub(super) fn minimap_fits_header(canvas_width: f32) -> bool {
             + 8.0
             + TAB_STATUS_WIDTH
             + TAB_NEW_WIDTH
+            + TAB_FILES_WIDTH
             + TAB_NEXT_WORKSPACE_WIDTH
             + TAB_CLOSE_WIDTH
             + 64.0
@@ -478,7 +481,9 @@ impl Workspace {
         div()
             .debug_selector(|| "tab-next-workspace-slot".into())
             .absolute()
-            .right(px(TAB_CLOSE_WIDTH + TAB_NEW_WIDTH))
+            .right(px(TAB_CLOSE_WIDTH
+                + TAB_NEW_WIDTH
+                + self.files_toggle_width()))
             .top_0()
             .w(px(TAB_NEXT_WORKSPACE_WIDTH))
             .h(px(TAB_HEIGHT))
@@ -548,10 +553,12 @@ impl Workspace {
         } else {
             TAB_STATUS_WIDTH
         };
+        let files_width = self.files_toggle_width();
         let tab_budget = canvas_width
             - right
             - status_width
             - TAB_NEW_WIDTH
+            - files_width
             - TAB_NEXT_WORKSPACE_WIDTH
             - TAB_CLOSE_WIDTH;
         let version_width = version_header_width(tab_budget);
@@ -582,6 +589,7 @@ impl Workspace {
             - right
             - status_width
             - TAB_NEW_WIDTH
+            - files_width
             - TAB_NEXT_WORKSPACE_WIDTH
             - TAB_CLOSE_WIDTH
             - version_width)
@@ -651,6 +659,7 @@ impl Workspace {
             .top_0()
             .left(px(version_width + status_width))
             .right(px(TAB_NEW_WIDTH
+                + files_width
                 + TAB_NEXT_WORKSPACE_WIDTH
                 + TAB_CLOSE_WIDTH))
             .h(px(FOLDER_CONTENT_INSET));
@@ -1002,12 +1011,15 @@ impl Workspace {
             .child(tabs)
             .children(coach_chip)
             .child(self.render_next_workspace_button(cx))
+            .when(!self.file_explorer.open, |el| {
+                el.child(self.render_files_toggle(cx))
+            })
             .child(
                 div()
                     .id("tab-new-session")
                     .debug_selector(|| "tab-new-session".into())
                     .absolute()
-                    .right(px(TAB_CLOSE_WIDTH))
+                    .right(px(TAB_CLOSE_WIDTH + files_width))
                     .top_0()
                     .size(px(TAB_HEIGHT))
                     .flex()
@@ -1083,6 +1095,76 @@ impl Workspace {
                         .child("×"),
                 )
             })
+            .into_any_element()
+    }
+}
+
+impl Workspace {
+    /// The Files toggle sits at the right edge of the tab row while the panel
+    /// is closed. An open panel shows the same toggle in its own header, at
+    /// the same right edge, so the tab row gives the space back.
+    fn files_toggle_width(&self) -> f32 {
+        if self.file_explorer.open {
+            0.0
+        } else {
+            TAB_FILES_WIDTH
+        }
+    }
+
+    fn render_files_toggle(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let open = self.file_explorer.open;
+        let theme = Theme::global();
+        div()
+            .debug_selector(|| "tab-files-toggle-slot".into())
+            .absolute()
+            .right(px(TAB_CLOSE_WIDTH))
+            .top_0()
+            .w(px(TAB_FILES_WIDTH))
+            .h(px(TAB_HEIGHT))
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .id("tab-files-toggle")
+                    .debug_selector(|| "tab-files-toggle".into())
+                    .size(px(28.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .cursor_pointer()
+                    .occlude()
+                    .when(open, |el| el.bg(theme.ACCENT_DIM))
+                    .hover(|el| el.bg(theme.PANEL_BG))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| {
+                            TabTooltip(match (open, cfg!(target_os = "macos")) {
+                                (false, true) => "Show files (⌘⇧E)".into(),
+                                (true, true) => "Hide files (⌘⇧E)".into(),
+                                (false, false) => "Show files (Super+Shift+E)".into(),
+                                (true, false) => "Hide files (Super+Shift+E)".into(),
+                            })
+                        })
+                        .into()
+                    })
+                    .on_mouse_down(gpui::MouseButton::Left, |_, window, cx| {
+                        cx.stop_propagation();
+                        window.prevent_default();
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.set_file_explorer_open(!this.file_explorer.open, cx);
+                    }))
+                    .child(
+                        gpui::svg()
+                            .data(include_bytes!(
+                                "../../../assets/icons/files/files-panel.svg"
+                            ))
+                            .size(px(15.0))
+                            .text_color(if open { theme.TEXT } else { theme.TEXT_DIM }),
+                    ),
+            )
             .into_any_element()
     }
 }
